@@ -23,6 +23,7 @@ import {
   getNodeOutputPoint,
   parseWorkspaceState,
   removeCanvasEdge,
+  removeCanvasNode,
   serializeWorkspaceState,
   type CanvasNodeKind,
   type CanvasNodeView,
@@ -230,6 +231,48 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(workspaceState));
   }, [workspaceState]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target;
+      const isEditingText =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+
+      if (isEditingText || (event.key !== 'Delete' && event.key !== 'Backspace')) {
+        return;
+      }
+
+      if (!selectedEdgeId && !selectedNodeId) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (selectedEdgeId) {
+        updateActiveCanvasEdges((edges) => removeCanvasEdge(edges, selectedEdgeId));
+        setSelectedEdgeId(null);
+        return;
+      }
+
+      if (selectedNodeId) {
+        setWorkspaceState((current) => ({
+          ...current,
+          canvases: current.canvases.map((canvas) =>
+            canvas.id === current.activeCanvasId
+              ? { ...removeCanvasNode(canvas, selectedNodeId), updatedAt: '刚刚' }
+              : canvas,
+          ),
+        }));
+        setSelectedNodeId(null);
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedEdgeId, selectedNodeId]);
 
   function setCanvases(updater: (canvases: CanvasView[]) => CanvasView[]) {
     setWorkspaceState((current) => ({
@@ -451,6 +494,22 @@ export function App() {
 
     updateActiveCanvasEdges((edges) => removeCanvasEdge(edges, selectedEdgeId));
     setSelectedEdgeId(null);
+  }
+
+  function deleteSelectedNode() {
+    if (!selectedNodeId) {
+      return;
+    }
+
+    setWorkspaceState((current) => ({
+      ...current,
+      canvases: current.canvases.map((canvas) =>
+        canvas.id === current.activeCanvasId
+          ? { ...removeCanvasNode(canvas, selectedNodeId), updatedAt: '刚刚' }
+          : canvas,
+      ),
+    }));
+    setSelectedNodeId(null);
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
@@ -730,6 +789,10 @@ export function App() {
                 <h2>{selectedNode.title}</h2>
                 <p>{selectedNode.modelId}</p>
               </header>
+              <button type="button" className="danger-button" onClick={deleteSelectedNode}>
+                <Trash2 size={16} />
+                删除节点
+              </button>
               <label>
                 供应商
                 <select defaultValue="">

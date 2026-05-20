@@ -9,6 +9,7 @@ import {
   getNodeOutputPoint,
   parseWorkspaceState,
   removeCanvasEdge,
+  removeCanvasNode,
   serializeWorkspaceState,
   type CanvasView,
 } from '../../src/app/canvasWorkspace';
@@ -107,5 +108,28 @@ describe('canvas workspace persistence', () => {
     expect(removeCanvasEdge(edges, 'edge_node_1_node_2')).toEqual([
       { id: 'edge_node_2_node_3', fromNodeId: 'node_2', toNodeId: 'node_3' },
     ]);
+  });
+
+  it('removes a canvas node and its connected edges', () => {
+    const canvas: CanvasView = {
+      id: 'canvas_1',
+      name: '画布',
+      updatedAt: '刚刚',
+      nodes: [
+        { id: 'node_1', title: 'A', modelId: 'a', kind: 'image', x: 0, y: 0 },
+        { id: 'node_2', title: 'B', modelId: 'b', kind: 'video', x: 320, y: 0 },
+        { id: 'node_3', title: 'C', modelId: 'c', kind: 'chat', x: 640, y: 0 },
+      ],
+      edges: [
+        { id: 'edge_node_1_node_2', fromNodeId: 'node_1', toNodeId: 'node_2' },
+        { id: 'edge_node_2_node_3', fromNodeId: 'node_2', toNodeId: 'node_3' },
+      ],
+    };
+
+    expect(removeCanvasNode(canvas, 'node_2')).toEqual({
+      ...canvas,
+      nodes: [{ id: 'node_1', title: 'A', modelId: 'a', kind: 'image', x: 0, y: 0 }, { id: 'node_3', title: 'C', modelId: 'c', kind: 'chat', x: 640, y: 0 }],
+      edges: [],
+    });
   });
 });

@@ -24,6 +24,7 @@ The first phase focuses on integrating:
 - Create canvas node edges by dragging node connection handles
 - Delete an edge after selecting it
 - Inspect selected node details and configuration entry points
+- Delete selected nodes or edges with `Delete` / `Backspace`
 - Save the canvas list, active canvas, and node positions locally in the browser
 - Canvas project domain model
 - Provider configuration and model mapping
