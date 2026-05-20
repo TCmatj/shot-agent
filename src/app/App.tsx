@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
 import {
   BoxSelect,
-  Download,
   FilePlus2,
   FileText,
   FolderOpen,
@@ -18,6 +17,7 @@ import {
   Plus,
   RotateCcw,
   Settings,
+  SquareArrowUpRight,
   Trash2,
   Video,
 } from 'lucide-react';
@@ -1295,7 +1295,7 @@ export function App() {
               title="导出当前画布"
               onClick={downloadActiveCanvas}
             >
-              <Download size={18} />
+              <SquareArrowUpRight size={18} />
             </button>
             <button
               type="button"

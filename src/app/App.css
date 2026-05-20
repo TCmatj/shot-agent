@@ -556,7 +556,7 @@ button:disabled {
   min-height: 42px;
   padding: 0;
   position: absolute;
-  top: 50%;
+  top: calc(50% + 44px);
   transform: translateY(-50%);
   width: 42px;
   z-index: 1;
