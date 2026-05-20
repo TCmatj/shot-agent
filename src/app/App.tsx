@@ -16,9 +16,11 @@ import {
 import { findProvidersForCanonicalModel } from '../domain/provider';
 import type { ProviderConfig } from '../domain/provider';
 import {
+  addCanvasEdge,
   createSequentialEdges,
   createWorkspaceState,
-  getNodeCenter,
+  getNodeInputPoint,
+  getNodeOutputPoint,
   parseWorkspaceState,
   serializeWorkspaceState,
   type CanvasNodeKind,
@@ -47,6 +49,12 @@ type AddMenuState = {
   x: number;
   y: number;
   canvasPoint: Point;
+} | null;
+
+type EdgeDraft = {
+  fromNodeId: string;
+  from: Point;
+  to: Point;
 } | null;
 
 type DragState =
@@ -206,6 +214,7 @@ export function App() {
   });
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [addMenu, setAddMenu] = useState<AddMenuState>(null);
+  const [edgeDraft, setEdgeDraft] = useState<EdgeDraft>(null);
   const { activeCanvasId, canvases } = workspaceState;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? canvases[0];
   const imageProviders = findProvidersForCanonicalModel(providers, 'gpt-image-2');
@@ -235,6 +244,19 @@ export function App() {
       canvases: current.canvases.map((canvas) =>
         canvas.id === current.activeCanvasId
           ? { ...canvas, updatedAt: '刚刚', nodes: updater(canvas.nodes) }
+          : canvas,
+      ),
+    }));
+  }
+
+  function updateActiveCanvasEdges(
+    updater: (edges: CanvasView['edges']) => CanvasView['edges'],
+  ) {
+    setWorkspaceState((current) => ({
+      ...current,
+      canvases: current.canvases.map((canvas) =>
+        canvas.id === current.activeCanvasId
+          ? { ...canvas, updatedAt: '刚刚', edges: updater(canvas.edges) }
           : canvas,
       ),
     }));
@@ -309,6 +331,7 @@ export function App() {
     }
 
     setAddMenu(null);
+    setEdgeDraft(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       mode: 'pan',
@@ -325,6 +348,7 @@ export function App() {
 
     event.stopPropagation();
     setAddMenu(null);
+    setEdgeDraft(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       mode: 'node',
@@ -336,6 +360,14 @@ export function App() {
   }
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (edgeDraft) {
+      setEdgeDraft({
+        ...edgeDraft,
+        to: getCanvasPointFromClient(event.clientX, event.clientY),
+      });
+      return;
+    }
+
     if (!dragState || dragState.pointerId !== event.pointerId) {
       return;
     }
@@ -361,9 +393,42 @@ export function App() {
   }
 
   function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
+    if (edgeDraft) {
+      setEdgeDraft(null);
+      return;
+    }
+
     if (dragState?.pointerId === event.pointerId) {
       setDragState(null);
     }
+  }
+
+  function startEdgeDraft(event: PointerEvent<HTMLButtonElement>, node: CanvasNodeView) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.stopPropagation();
+    const from = getNodeOutputPoint(node);
+
+    setAddMenu(null);
+    setDragState(null);
+    setEdgeDraft({
+      fromNodeId: node.id,
+      from,
+      to: from,
+    });
+  }
+
+  function completeEdgeDraft(event: PointerEvent<HTMLButtonElement>, toNodeId: string) {
+    event.stopPropagation();
+
+    if (!edgeDraft) {
+      return;
+    }
+
+    updateActiveCanvasEdges((edges) => addCanvasEdge(edges, edgeDraft.fromNodeId, toNodeId));
+    setEdgeDraft(null);
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
@@ -506,7 +571,7 @@ export function App() {
           </div>
           <div className="canvas-tip">
             <Move size={15} />
-            <span>右键或点击 + 添加节点，拖动画布平移，滚轮缩放</span>
+            <span>拖节点右侧圆点到另一个节点左侧圆点连线</span>
           </div>
           <div
             className="canvas-plane"
@@ -526,8 +591,8 @@ export function App() {
                   return null;
                 }
 
-                const from = getNodeCenter(fromNode);
-                const to = getNodeCenter(toNode);
+                const from = getNodeOutputPoint(fromNode);
+                const to = getNodeInputPoint(toNode);
                 const controlOffset = Math.max(120, Math.abs(to.x - from.x) * 0.45);
 
                 return (
@@ -539,6 +604,16 @@ export function App() {
                   />
                 );
               })}
+              {edgeDraft ? (
+                <path
+                  className="edge-draft"
+                  d={`M ${edgeDraft.from.x} ${edgeDraft.from.y} C ${
+                    edgeDraft.from.x + 120
+                  } ${edgeDraft.from.y}, ${edgeDraft.to.x - 120} ${edgeDraft.to.y}, ${
+                    edgeDraft.to.x
+                  } ${edgeDraft.to.y}`}
+                />
+              ) : null}
             </svg>
             {activeCanvas.nodes.map((node) => {
               const Icon = getNodeIcon(node.kind);
@@ -555,6 +630,13 @@ export function App() {
                   className={`canvas-node canvas-node-${node.kind}`}
                   style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
                 >
+                  <button
+                    type="button"
+                    className="edge-handle edge-handle-input"
+                    aria-label="连接到此节点"
+                    onPointerUp={(event) => completeEdgeDraft(event, node.id)}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  />
                   <header onPointerDown={(event) => handleNodePointerDown(event, node.id)}>
                     <span className="node-icon">
                       <Icon size={18} />
@@ -580,6 +662,12 @@ export function App() {
                       生成
                     </button>
                   </div>
+                  <button
+                    type="button"
+                    className="edge-handle edge-handle-output"
+                    aria-label="从此节点连线"
+                    onPointerDown={(event) => startEdgeDraft(event, node)}
+                  />
                 </article>
               );
             })}

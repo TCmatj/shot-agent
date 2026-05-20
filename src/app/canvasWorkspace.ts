@@ -127,10 +127,48 @@ export function getNodeCenter(node: CanvasNodeView): { x: number; y: number } {
   };
 }
 
+export function getNodeInputPoint(node: CanvasNodeView): { x: number; y: number } {
+  return {
+    x: node.x,
+    y: node.y + 88,
+  };
+}
+
+export function getNodeOutputPoint(node: CanvasNodeView): { x: number; y: number } {
+  return {
+    x: node.x + 320,
+    y: node.y + 88,
+  };
+}
+
 export function createSequentialEdges(nodes: CanvasNodeView[]): CanvasEdgeView[] {
   return nodes.slice(0, -1).map((node, index) => ({
     id: `edge_${node.id}_${nodes[index + 1].id}`,
     fromNodeId: node.id,
     toNodeId: nodes[index + 1].id,
   }));
+}
+
+export function createCanvasEdge(fromNodeId: string, toNodeId: string): CanvasEdgeView {
+  return {
+    id: `edge_${fromNodeId}_${toNodeId}`,
+    fromNodeId,
+    toNodeId,
+  };
+}
+
+export function addCanvasEdge(
+  edges: CanvasEdgeView[],
+  fromNodeId: string,
+  toNodeId: string,
+): CanvasEdgeView[] {
+  if (fromNodeId === toNodeId) {
+    return edges;
+  }
+
+  if (edges.some((edge) => edge.fromNodeId === fromNodeId && edge.toNodeId === toNodeId)) {
+    return edges;
+  }
+
+  return [...edges, createCanvasEdge(fromNodeId, toNodeId)];
 }

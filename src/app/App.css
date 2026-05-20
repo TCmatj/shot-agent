@@ -169,13 +169,13 @@ button:hover {
 }
 
 .edge-layer {
-  height: 4000px;
-  left: -1200px;
+  height: 1px;
+  left: 0;
   overflow: visible;
   pointer-events: none;
   position: absolute;
-  top: -1200px;
-  width: 4000px;
+  top: 0;
+  width: 1px;
 }
 
 .edge-layer path {
@@ -185,6 +185,11 @@ button:hover {
   stroke-linecap: round;
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
+}
+
+.edge-layer .edge-draft {
+  stroke: #85c7ff;
+  stroke-dasharray: 7 7;
 }
 
 .canvas-node {
@@ -201,6 +206,34 @@ button:hover {
   top: 0;
   user-select: none;
   width: 320px;
+}
+
+.edge-handle {
+  background: #0a0d11;
+  border: 2px solid #6f7f91;
+  border-radius: 999px;
+  height: 14px;
+  justify-content: center;
+  min-height: 14px;
+  padding: 0;
+  position: absolute;
+  top: 88px;
+  transform: translateY(-50%);
+  width: 14px;
+  z-index: 1;
+}
+
+.edge-handle:hover {
+  background: #85c7ff;
+  border-color: #d6efff;
+}
+
+.edge-handle-input {
+  left: -7px;
+}
+
+.edge-handle-output {
+  right: -7px;
 }
 
 .canvas-node-image {

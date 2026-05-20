@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addCanvasEdge,
+  createCanvasEdge,
   createSequentialEdges,
   createWorkspaceState,
   getNodeCenter,
+  getNodeInputPoint,
+  getNodeOutputPoint,
   parseWorkspaceState,
   serializeWorkspaceState,
   type CanvasView,
@@ -66,5 +70,30 @@ describe('canvas workspace persistence', () => {
       x: 200,
       y: 108,
     });
+  });
+
+  it('returns node input and output points for edge handles', () => {
+    const node = { id: 'node_1', title: 'A', modelId: 'a', kind: 'image' as const, x: 40, y: 20 };
+
+    expect(getNodeInputPoint(node)).toEqual({ x: 40, y: 108 });
+    expect(getNodeOutputPoint(node)).toEqual({ x: 360, y: 108 });
+  });
+
+  it('creates stable canvas edge ids', () => {
+    expect(createCanvasEdge('node_1', 'node_2')).toEqual({
+      id: 'edge_node_1_node_2',
+      fromNodeId: 'node_1',
+      toNodeId: 'node_2',
+    });
+  });
+
+  it('adds edges without self links or duplicates', () => {
+    const first = addCanvasEdge([], 'node_1', 'node_2');
+
+    expect(first).toEqual([
+      { id: 'edge_node_1_node_2', fromNodeId: 'node_1', toNodeId: 'node_2' },
+    ]);
+    expect(addCanvasEdge(first, 'node_1', 'node_1')).toEqual(first);
+    expect(addCanvasEdge(first, 'node_1', 'node_2')).toEqual(first);
   });
 });
