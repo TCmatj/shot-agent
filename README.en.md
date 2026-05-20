@@ -17,6 +17,8 @@ The first phase focuses on integrating:
 ## Current Capabilities
 
 - React + TypeScript + Vite application scaffold
+- Black dotted infinite canvas interface
+- Node dragging, canvas panning, and zooming
 - Canvas project domain model
 - Provider configuration and model mapping
 - Prompt `@` reference parsing
