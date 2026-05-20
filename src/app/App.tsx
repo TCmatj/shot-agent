@@ -5,6 +5,8 @@ import {
   FilePlus2,
   FileText,
   FolderPlus,
+  PanelLeftClose,
+  PanelLeftOpen,
   Image,
   Import,
   MessageSquare,
@@ -266,6 +268,7 @@ export function App() {
   const importInputRef = useRef<HTMLInputElement>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>(loadProviders);
   const [showProviderManager, setShowProviderManager] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [viewport, setViewport] = useState<CanvasViewport>({ x: 80, y: 72, scale: 1 });
   const [workspaceState, setWorkspaceState] = useState(() => {
     if (typeof window === 'undefined') {
@@ -773,39 +776,37 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${isSidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}>
       <aside className="sidebar">
-        <header>
-          <h1>shot-agent</h1>
-          <p>无限画布视觉工作台</p>
-        </header>
-        <nav>
-          <button type="button" onClick={createCanvas}>
-            <FolderPlus size={18} />
-            新建画布
-          </button>
-          <button type="button" onClick={downloadActiveCanvas}>
-            <Download size={18} />
-            导出当前
-          </button>
-          <button type="button" onClick={() => importInputRef.current?.click()}>
-            <Import size={18} />
-            导入画布
-          </button>
-          <input
-            ref={importInputRef}
-            className="hidden-file-input"
-            type="file"
-            accept="application/json,.json"
-            onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              event.currentTarget.value = '';
+        <input
+          ref={importInputRef}
+          className="hidden-file-input"
+          type="file"
+          accept="application/json,.json"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = '';
 
-              if (file) {
-                void importCanvasFile(file);
-              }
-            }}
-          />
+            if (file) {
+              void importCanvasFile(file);
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="sidebar-toggle"
+          aria-label={isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+          onClick={() => setIsSidebarCollapsed((current) => !current)}
+        >
+          {isSidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+        </button>
+        {!isSidebarCollapsed ? (
+          <>
+            <header>
+              <h1>shot-agent</h1>
+              <p>无限画布视觉工作台</p>
+            </header>
+            <nav>
           <button type="button" onClick={() => setShowProviderManager(true)}>
             <Settings size={18} />
             供应商管理
@@ -855,6 +856,8 @@ export function App() {
             ))}
           </div>
         </section>
+          </>
+        ) : null}
       </aside>
       <section className="workspace">
         <div className="toolbar">
@@ -1046,6 +1049,27 @@ export function App() {
             }
           }}
         >
+          <div className="canvas-action-rail">
+            <button type="button" aria-label="新建画布" title="新建画布" onClick={createCanvas}>
+              <FolderPlus size={18} />
+            </button>
+            <button
+              type="button"
+              aria-label="导出当前画布"
+              title="导出当前画布"
+              onClick={downloadActiveCanvas}
+            >
+              <Download size={18} />
+            </button>
+            <button
+              type="button"
+              aria-label="导入画布"
+              title="导入画布"
+              onClick={() => importInputRef.current?.click()}
+            >
+              <Import size={18} />
+            </button>
+          </div>
           <button
             type="button"
             className="canvas-add-button"

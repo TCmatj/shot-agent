@@ -20,7 +20,9 @@ The first phase focuses on integrating:
 - Black dotted infinite canvas interface
 - Node dragging, canvas panning, and zooming
 - Open the first canvas by default with a canvas list in the sidebar
+- Collapsible left sidebar
 - Create, rename, delete, import, and export canvases
+- In-canvas left floating tools for creating, exporting, and importing canvases
 - Add nodes from the in-canvas `+` button or context menu
 - Create and connect a new node by dropping an edge on empty canvas space
 - Text, image, and video asset nodes that act as output-only nodes

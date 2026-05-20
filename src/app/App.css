@@ -47,6 +47,10 @@ button:disabled {
   overflow: hidden;
 }
 
+.app-shell.is-sidebar-collapsed {
+  grid-template-columns: 56px 1fr;
+}
+
 .sidebar {
   background: #090b0e;
   border-right: 1px solid #20242b;
@@ -55,6 +59,19 @@ button:disabled {
   gap: 24px;
   padding: 20px;
   z-index: 2;
+}
+
+.app-shell.is-sidebar-collapsed .sidebar {
+  align-items: center;
+  padding: 12px 8px;
+}
+
+.sidebar-toggle {
+  height: 36px;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0;
+  width: 36px;
 }
 
 .sidebar h1 {
@@ -448,6 +465,24 @@ button:disabled {
   transform: translateY(-50%);
   width: 42px;
   z-index: 1;
+}
+
+.canvas-action-rail {
+  display: grid;
+  gap: 8px;
+  left: 18px;
+  position: absolute;
+  top: calc(50% - 154px);
+  z-index: 1;
+}
+
+.canvas-action-rail button {
+  border-radius: 999px;
+  height: 42px;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0;
+  width: 42px;
 }
 
 .add-node-menu {
