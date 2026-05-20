@@ -11,17 +11,18 @@ import {
   Plus,
   RotateCcw,
   Settings,
+  Trash2,
   Video,
 } from 'lucide-react';
 import { findProvidersForCanonicalModel } from '../domain/provider';
 import type { ProviderConfig } from '../domain/provider';
 import {
   addCanvasEdge,
-  createSequentialEdges,
   createWorkspaceState,
   getNodeInputPoint,
   getNodeOutputPoint,
   parseWorkspaceState,
+  removeCanvasEdge,
   serializeWorkspaceState,
   type CanvasNodeKind,
   type CanvasNodeView,
@@ -215,8 +216,14 @@ export function App() {
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [addMenu, setAddMenu] = useState<AddMenuState>(null);
   const [edgeDraft, setEdgeDraft] = useState<EdgeDraft>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const { activeCanvasId, canvases } = workspaceState;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? canvases[0];
+  const selectedNode =
+    activeCanvas.nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const selectedEdge =
+    activeCanvas.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const imageProviders = findProvidersForCanonicalModel(providers, 'gpt-image-2');
   const videoProviders = findProvidersForCanonicalModel(providers, 'seedance2.0');
 
@@ -332,6 +339,8 @@ export function App() {
 
     setAddMenu(null);
     setEdgeDraft(null);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       mode: 'pan',
@@ -349,6 +358,8 @@ export function App() {
     event.stopPropagation();
     setAddMenu(null);
     setEdgeDraft(null);
+    setSelectedNodeId(nodeId);
+    setSelectedEdgeId(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       mode: 'node',
@@ -428,7 +439,18 @@ export function App() {
     }
 
     updateActiveCanvasEdges((edges) => addCanvasEdge(edges, edgeDraft.fromNodeId, toNodeId));
+    setSelectedEdgeId(`edge_${edgeDraft.fromNodeId}_${toNodeId}`);
+    setSelectedNodeId(null);
     setEdgeDraft(null);
+  }
+
+  function deleteSelectedEdge() {
+    if (!selectedEdgeId) {
+      return;
+    }
+
+    updateActiveCanvasEdges((edges) => removeCanvasEdge(edges, selectedEdgeId));
+    setSelectedEdgeId(null);
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
@@ -493,6 +515,8 @@ export function App() {
                 onClick={() => {
                   setActiveCanvasId(canvas.id);
                   setAddMenu(null);
+                  setSelectedNodeId(null);
+                  setSelectedEdgeId(null);
                 }}
               >
                 <FilePlus2 size={17} />
@@ -579,11 +603,8 @@ export function App() {
               transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
             }}
           >
-            <svg className="edge-layer" aria-hidden="true">
-              {(activeCanvas.edges.length > 0
-                ? activeCanvas.edges
-                : createSequentialEdges(activeCanvas.nodes)
-              ).map((edge) => {
+            <svg className="edge-layer" aria-label="节点连线">
+              {activeCanvas.edges.map((edge) => {
                 const fromNode = activeCanvas.nodes.find((node) => node.id === edge.fromNodeId);
                 const toNode = activeCanvas.nodes.find((node) => node.id === edge.toNodeId);
 
@@ -596,12 +617,26 @@ export function App() {
                 const controlOffset = Math.max(120, Math.abs(to.x - from.x) * 0.45);
 
                 return (
-                  <path
-                    key={edge.id}
-                    d={`M ${from.x} ${from.y} C ${from.x + controlOffset} ${from.y}, ${
-                      to.x - controlOffset
-                    } ${to.y}, ${to.x} ${to.y}`}
-                  />
+                  <g key={edge.id}>
+                    <path
+                      className={edge.id === selectedEdgeId ? 'edge-path is-selected' : 'edge-path'}
+                      d={`M ${from.x} ${from.y} C ${from.x + controlOffset} ${from.y}, ${
+                        to.x - controlOffset
+                      } ${to.y}, ${to.x} ${to.y}`}
+                    />
+                    <path
+                      className="edge-hit-area"
+                      d={`M ${from.x} ${from.y} C ${from.x + controlOffset} ${from.y}, ${
+                        to.x - controlOffset
+                      } ${to.y}, ${to.x} ${to.y}`}
+                      onPointerDown={(event) => {
+                        event.stopPropagation();
+                        setSelectedEdgeId(edge.id);
+                        setSelectedNodeId(null);
+                        setAddMenu(null);
+                      }}
+                    />
+                  </g>
                 );
               })}
               {edgeDraft ? (
@@ -627,8 +662,16 @@ export function App() {
               return (
                 <article
                   key={node.id}
-                  className={`canvas-node canvas-node-${node.kind}`}
+                  className={`canvas-node canvas-node-${node.kind} ${
+                    node.id === selectedNodeId ? 'is-selected' : ''
+                  }`}
                   style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    setSelectedNodeId(node.id);
+                    setSelectedEdgeId(null);
+                    setAddMenu(null);
+                  }}
                 >
                   <button
                     type="button"
@@ -672,6 +715,45 @@ export function App() {
               );
             })}
           </div>
+          {selectedEdge ? (
+            <div className="edge-actions">
+              <span>已选中连线</span>
+              <button type="button" onClick={deleteSelectedEdge}>
+                <Trash2 size={16} />
+                删除
+              </button>
+            </div>
+          ) : null}
+          {selectedNode ? (
+            <aside className="node-inspector">
+              <header>
+                <h2>{selectedNode.title}</h2>
+                <p>{selectedNode.modelId}</p>
+              </header>
+              <label>
+                供应商
+                <select defaultValue="">
+                  <option value="" disabled>
+                    选择供应商
+                  </option>
+                  {(selectedNode.modelId === 'gpt-image-2'
+                    ? imageProviders
+                    : selectedNode.modelId === 'seedance2.0'
+                      ? videoProviders
+                      : []
+                  ).map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                提示词
+                <textarea placeholder="输入节点提示词，支持 @ 引用画布资产" />
+              </label>
+            </aside>
+          ) : null}
         </div>
       </section>
     </main>

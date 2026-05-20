@@ -22,6 +22,8 @@ The first phase focuses on integrating:
 - Open the first canvas by default with a canvas list in the sidebar
 - Add nodes from the in-canvas `+` button or context menu
 - Create canvas node edges by dragging node connection handles
+- Delete an edge after selecting it
+- Inspect selected node details and configuration entry points
 - Save the canvas list, active canvas, and node positions locally in the browser
 - Canvas project domain model
 - Provider configuration and model mapping

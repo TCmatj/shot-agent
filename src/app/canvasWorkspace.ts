@@ -172,3 +172,7 @@ export function addCanvasEdge(
 
   return [...edges, createCanvasEdge(fromNodeId, toNodeId)];
 }
+
+export function removeCanvasEdge(edges: CanvasEdgeView[], edgeId: string): CanvasEdgeView[] {
+  return edges.filter((edge) => edge.id !== edgeId);
+}

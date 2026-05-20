@@ -8,6 +8,7 @@ import {
   getNodeInputPoint,
   getNodeOutputPoint,
   parseWorkspaceState,
+  removeCanvasEdge,
   serializeWorkspaceState,
   type CanvasView,
 } from '../../src/app/canvasWorkspace';
@@ -95,5 +96,16 @@ describe('canvas workspace persistence', () => {
     ]);
     expect(addCanvasEdge(first, 'node_1', 'node_1')).toEqual(first);
     expect(addCanvasEdge(first, 'node_1', 'node_2')).toEqual(first);
+  });
+
+  it('removes a canvas edge by id', () => {
+    const edges = [
+      { id: 'edge_node_1_node_2', fromNodeId: 'node_1', toNodeId: 'node_2' },
+      { id: 'edge_node_2_node_3', fromNodeId: 'node_2', toNodeId: 'node_3' },
+    ];
+
+    expect(removeCanvasEdge(edges, 'edge_node_1_node_2')).toEqual([
+      { id: 'edge_node_2_node_3', fromNodeId: 'node_2', toNodeId: 'node_3' },
+    ]);
   });
 });

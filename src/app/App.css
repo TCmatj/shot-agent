@@ -172,13 +172,13 @@ button:hover {
   height: 1px;
   left: 0;
   overflow: visible;
-  pointer-events: none;
+  pointer-events: auto;
   position: absolute;
   top: 0;
   width: 1px;
 }
 
-.edge-layer path {
+.edge-path {
   fill: none;
   filter: drop-shadow(0 0 8px rgba(105, 125, 150, 0.2));
   stroke: #526071;
@@ -187,9 +187,28 @@ button:hover {
   vector-effect: non-scaling-stroke;
 }
 
+.edge-path.is-selected {
+  filter: drop-shadow(0 0 12px rgba(133, 199, 255, 0.38));
+  stroke: #85c7ff;
+}
+
+.edge-hit-area {
+  cursor: pointer;
+  fill: none;
+  pointer-events: stroke;
+  stroke: transparent;
+  stroke-linecap: round;
+  stroke-width: 18;
+}
+
 .edge-layer .edge-draft {
+  fill: none;
+  pointer-events: none;
   stroke: #85c7ff;
   stroke-dasharray: 7 7;
+  stroke-linecap: round;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
 }
 
 .canvas-node {
@@ -206,6 +225,13 @@ button:hover {
   top: 0;
   user-select: none;
   width: 320px;
+}
+
+.canvas-node.is-selected {
+  border-color: #85c7ff;
+  box-shadow:
+    0 22px 60px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(133, 199, 255, 0.54);
 }
 
 .edge-handle {
@@ -367,4 +393,70 @@ button:hover {
 
 .add-node-menu button {
   justify-content: flex-start;
+}
+
+.edge-actions {
+  align-items: center;
+  background: rgba(9, 11, 14, 0.88);
+  border: 1px solid #303640;
+  border-radius: 8px;
+  bottom: 72px;
+  color: #cdd6df;
+  display: flex;
+  gap: 10px;
+  left: 18px;
+  padding: 8px;
+  position: absolute;
+  z-index: 2;
+}
+
+.edge-actions span {
+  font-size: 13px;
+  padding-left: 4px;
+}
+
+.node-inspector {
+  background: rgba(9, 11, 14, 0.92);
+  border: 1px solid #252b34;
+  border-radius: 8px;
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  width: 300px;
+  z-index: 2;
+}
+
+.node-inspector h2 {
+  font-size: 16px;
+  margin: 0 0 4px;
+}
+
+.node-inspector p {
+  color: #96a2b1;
+  margin: 0;
+}
+
+.node-inspector label {
+  color: #aeb8c5;
+  display: grid;
+  font-size: 13px;
+  gap: 8px;
+}
+
+.node-inspector select,
+.node-inspector textarea {
+  background: #080a0d;
+  border: 1px solid #303640;
+  border-radius: 6px;
+  color: #eef2f5;
+  font: inherit;
+  padding: 10px;
+}
+
+.node-inspector textarea {
+  min-height: 110px;
+  resize: vertical;
 }
