@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
 import {
   BoxSelect,
+  Download,
   FilePlus2,
   FolderPlus,
   Image,
+  Import,
   MessageSquare,
   Minus,
   Move,
@@ -19,9 +21,13 @@ import type { ProviderConfig } from '../domain/provider';
 import {
   addCanvasEdge,
   createWorkspaceState,
+  deleteCanvas,
+  exportCanvas,
   getNodeInputPoint,
   getNodeOutputPoint,
+  importCanvas,
   parseWorkspaceState,
+  renameCanvas,
   removeCanvasEdge,
   removeCanvasNode,
   serializeWorkspaceState,
@@ -203,6 +209,7 @@ function getNodeIcon(kind: CanvasNodeKind) {
 
 export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [viewport, setViewport] = useState<CanvasViewport>({ x: 80, y: 72, scale: 1 });
   const [workspaceState, setWorkspaceState] = useState(() => {
     if (typeof window === 'undefined') {
@@ -219,6 +226,7 @@ export function App() {
   const [edgeDraft, setEdgeDraft] = useState<EdgeDraft>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [canvasMessage, setCanvasMessage] = useState<string | null>(null);
   const { activeCanvasId, canvases } = workspaceState;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? canvases[0];
   const selectedNode =
@@ -373,6 +381,51 @@ export function App() {
       ],
     }));
     setViewport({ x: 80, y: 72, scale: 1 });
+    setCanvasMessage(null);
+  }
+
+  function renameActiveCanvas(name: string) {
+    setWorkspaceState((current) => renameCanvas(current, current.activeCanvasId, name));
+  }
+
+  function deleteActiveCanvas() {
+    setWorkspaceState((current) => deleteCanvas(current, current.activeCanvasId));
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setAddMenu(null);
+    setViewport({ x: 80, y: 72, scale: 1 });
+    setCanvasMessage(null);
+  }
+
+  function downloadActiveCanvas() {
+    const content = exportCanvas(activeCanvas);
+    const blob = new Blob([content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    link.href = url;
+    link.download = `${activeCanvas.name || 'canvas'}.shot-agent-canvas.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importCanvasFile(file: File) {
+    try {
+      const content = await file.text();
+      const nextId =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? `canvas_${crypto.randomUUID()}`
+          : `canvas_${Date.now()}`;
+
+      setWorkspaceState((current) => importCanvas(current, content, nextId));
+      setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+      setAddMenu(null);
+      setViewport({ x: 80, y: 72, scale: 1 });
+      setCanvasMessage('画布已导入');
+    } catch (error) {
+      setCanvasMessage(error instanceof Error ? error.message : '画布导入失败');
+    }
   }
 
   function handleCanvasPointerDown(event: PointerEvent<HTMLDivElement>) {
@@ -558,11 +611,53 @@ export function App() {
             <FolderPlus size={18} />
             新建画布
           </button>
+          <button type="button" onClick={downloadActiveCanvas}>
+            <Download size={18} />
+            导出当前
+          </button>
+          <button type="button" onClick={() => importInputRef.current?.click()}>
+            <Import size={18} />
+            导入画布
+          </button>
+          <input
+            ref={importInputRef}
+            className="hidden-file-input"
+            type="file"
+            accept="application/json,.json"
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = '';
+
+              if (file) {
+                void importCanvasFile(file);
+              }
+            }}
+          />
           <button type="button">
             <Settings size={18} />
             供应商管理
           </button>
         </nav>
+        <section className="panel canvas-management">
+          <h2>当前画布</h2>
+          <label>
+            名称
+            <input
+              value={activeCanvas.name}
+              onChange={(event) => renameActiveCanvas(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            className="danger-button"
+            disabled={canvases.length <= 1}
+            onClick={deleteActiveCanvas}
+          >
+            <Trash2 size={16} />
+            删除画布
+          </button>
+          {canvasMessage ? <p className="canvas-message">{canvasMessage}</p> : null}
+        </section>
         <section className="panel">
           <h2>画布</h2>
           <div className="canvas-list">

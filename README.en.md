@@ -20,6 +20,7 @@ The first phase focuses on integrating:
 - Black dotted infinite canvas interface
 - Node dragging, canvas panning, and zooming
 - Open the first canvas by default with a canvas list in the sidebar
+- Create, rename, delete, import, and export canvases
 - Add nodes from the in-canvas `+` button or context menu
 - Create canvas node edges by dragging node connection handles
 - Delete an edge after selecting it

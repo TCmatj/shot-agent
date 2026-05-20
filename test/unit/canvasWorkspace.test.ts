@@ -4,10 +4,14 @@ import {
   createCanvasEdge,
   createSequentialEdges,
   createWorkspaceState,
+  deleteCanvas,
+  exportCanvas,
   getNodeCenter,
   getNodeInputPoint,
   getNodeOutputPoint,
+  importCanvas,
   parseWorkspaceState,
+  renameCanvas,
   removeCanvasEdge,
   removeCanvasNode,
   serializeWorkspaceState,
@@ -54,6 +58,44 @@ describe('canvas workspace persistence', () => {
     expect(parseWorkspaceState('{"version":1,"activeCanvasId":"missing","canvases":[]}', fallback)).toEqual(
       fallback,
     );
+  });
+
+  it('renames a canvas when name is not empty', () => {
+    const state = createWorkspaceState(canvases);
+
+    expect(renameCanvas(state, 'canvas_first', '  新名字  ').canvases[0].name).toBe('新名字');
+    expect(renameCanvas(state, 'canvas_first', '   ')).toEqual(state);
+  });
+
+  it('deletes canvas and moves active selection', () => {
+    const state = {
+      activeCanvasId: 'canvas_second',
+      canvases,
+    };
+
+    expect(deleteCanvas(state, 'canvas_second')).toEqual({
+      activeCanvasId: 'canvas_first',
+      canvases: [canvases[0]],
+    });
+  });
+
+  it('keeps the last canvas when deleting', () => {
+    const state = createWorkspaceState([canvases[0]]);
+
+    expect(deleteCanvas(state, 'canvas_first')).toEqual(state);
+  });
+
+  it('exports and imports a canvas with a new id', () => {
+    const state = createWorkspaceState(canvases);
+    const imported = importCanvas(state, exportCanvas(canvases[0]), 'canvas_imported');
+
+    expect(imported.activeCanvasId).toBe('canvas_imported');
+    expect(imported.canvases).toHaveLength(3);
+    expect(imported.canvases[2]).toEqual({
+      ...canvases[0],
+      id: 'canvas_imported',
+      updatedAt: '刚刚',
+    });
   });
 
   it('creates sequential edges from canvas nodes', () => {

@@ -29,9 +29,15 @@ export type CanvasWorkspaceState = {
 };
 
 const storageVersion = 1;
+const canvasExportVersion = 1;
 
 type PersistedCanvasWorkspaceState = CanvasWorkspaceState & {
   version: number;
+};
+
+type CanvasExportPayload = {
+  version: number;
+  canvas: CanvasView;
 };
 
 function isCanvasNodeView(value: unknown): value is CanvasNodeView {
@@ -50,6 +56,19 @@ function isCanvasNodeView(value: unknown): value is CanvasNodeView {
   );
 }
 
+function isCanvasEdgeView(value: unknown): value is CanvasEdgeView {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const edge = value as CanvasEdgeView;
+  return (
+    typeof edge.id === 'string' &&
+    typeof edge.fromNodeId === 'string' &&
+    typeof edge.toNodeId === 'string'
+  );
+}
+
 function isCanvasView(value: unknown): value is CanvasView {
   if (!value || typeof value !== 'object') {
     return false;
@@ -62,8 +81,16 @@ function isCanvasView(value: unknown): value is CanvasView {
     typeof canvas.updatedAt === 'string' &&
     Array.isArray(canvas.nodes) &&
     canvas.nodes.every(isCanvasNodeView) &&
-    (canvas.edges === undefined || Array.isArray(canvas.edges))
+    (canvas.edges === undefined ||
+      (Array.isArray(canvas.edges) && canvas.edges.every(isCanvasEdgeView)))
   );
+}
+
+function normalizeCanvas(canvas: CanvasView): CanvasView {
+  return {
+    ...canvas,
+    edges: canvas.edges ?? [],
+  };
 }
 
 export function createWorkspaceState(canvases: CanvasView[]): CanvasWorkspaceState {
@@ -110,14 +137,93 @@ export function parseWorkspaceState(
 
     return {
       activeCanvasId: activeCanvasExists ? parsed.activeCanvasId : parsed.canvases[0].id,
-      canvases: parsed.canvases.map((canvas) => ({
-        ...canvas,
-        edges: canvas.edges ?? [],
-      })),
+      canvases: parsed.canvases.map(normalizeCanvas),
     };
   } catch {
     return fallback;
   }
+}
+
+export function renameCanvas(
+  state: CanvasWorkspaceState,
+  canvasId: string,
+  name: string,
+): CanvasWorkspaceState {
+  const nextName = name.trim();
+
+  if (!nextName) {
+    return state;
+  }
+
+  return {
+    ...state,
+    canvases: state.canvases.map((canvas) =>
+      canvas.id === canvasId ? { ...canvas, name: nextName, updatedAt: '刚刚' } : canvas,
+    ),
+  };
+}
+
+export function deleteCanvas(
+  state: CanvasWorkspaceState,
+  canvasId: string,
+): CanvasWorkspaceState {
+  if (state.canvases.length <= 1) {
+    return state;
+  }
+
+  const deletedIndex = state.canvases.findIndex((canvas) => canvas.id === canvasId);
+  const canvases = state.canvases.filter((canvas) => canvas.id !== canvasId);
+
+  if (state.activeCanvasId !== canvasId) {
+    return {
+      ...state,
+      canvases,
+    };
+  }
+
+  const fallbackCanvas = canvases[Math.max(0, deletedIndex - 1)] ?? canvases[0];
+
+  return {
+    activeCanvasId: fallbackCanvas.id,
+    canvases,
+  };
+}
+
+export function exportCanvas(canvas: CanvasView): string {
+  return JSON.stringify(
+    {
+      version: canvasExportVersion,
+      canvas,
+    },
+    null,
+    2,
+  );
+}
+
+export function importCanvas(
+  state: CanvasWorkspaceState,
+  value: string,
+  nextId: string,
+): CanvasWorkspaceState {
+  const parsed = JSON.parse(value) as Partial<CanvasExportPayload>;
+
+  if (parsed.version !== canvasExportVersion || !isCanvasView(parsed.canvas)) {
+    throw new Error('画布文件格式无效');
+  }
+
+  const canvas = normalizeCanvas(parsed.canvas);
+  const importedCanvas: CanvasView = {
+    ...canvas,
+    id: nextId,
+    updatedAt: '刚刚',
+    nodes: canvas.nodes.map((node) => ({ ...node })),
+    edges: canvas.edges.map((edge) => ({ ...edge })),
+  };
+
+  return {
+    activeCanvasId: importedCanvas.id,
+    canvases: [...state.canvases, importedCanvas],
+  };
 }
 
 export function getNodeCenter(node: CanvasNodeView): { x: number; y: number } {
