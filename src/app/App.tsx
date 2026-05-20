@@ -859,16 +859,171 @@ export function App() {
       <section className="workspace">
         <div className="toolbar">
           <div className="toolbar-title">
-            <BoxSelect size={18} />
-            <span>{activeCanvas.name}</span>
+            {showProviderManager ? <Settings size={18} /> : <BoxSelect size={18} />}
+            <span>{showProviderManager ? '供应商管理' : activeCanvas.name}</span>
           </div>
           <div className="toolbar-actions">
-            <button type="button">
-              <Play size={18} />
-              执行
-            </button>
+            {showProviderManager ? (
+              <>
+                <button type="button" onClick={addProvider}>
+                  <Plus size={18} />
+                  新增供应商
+                </button>
+                <button type="button" onClick={() => setShowProviderManager(false)}>
+                  返回画布
+                </button>
+              </>
+            ) : (
+              <button type="button">
+                <Play size={18} />
+                执行
+              </button>
+            )}
           </div>
         </div>
+        {showProviderManager ? (
+          <div className="provider-manager-view">
+            <div className="provider-table provider-table-header">
+              <span>供应商名称</span>
+              <span>Base URL</span>
+              <span>API Token 引用</span>
+              <span>协议</span>
+              <span>状态</span>
+              <span>模型映射</span>
+            </div>
+            <div className="provider-list">
+              {providers.map((provider) => (
+                <section key={provider.id} className="provider-row">
+                  <label>
+                    供应商名称
+                    <input
+                      value={provider.name}
+                      onChange={(event) =>
+                        updateProvider(provider.id, (current) => ({
+                          ...current,
+                          name: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Base URL
+                    <input
+                      value={provider.baseURL}
+                      onChange={(event) =>
+                        updateProvider(provider.id, (current) => ({
+                          ...current,
+                          baseURL: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    API Token 引用
+                    <input
+                      value={provider.apiTokenRef}
+                      onChange={(event) =>
+                        updateProvider(provider.id, (current) => ({
+                          ...current,
+                          apiTokenRef: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    协议
+                    <select
+                      value={provider.protocol}
+                      onChange={(event) =>
+                        updateProvider(provider.id, (current) => ({
+                          ...current,
+                          protocol: event.target.value as ProviderConfig['protocol'],
+                        }))
+                      }
+                    >
+                      <option value="openai-compatible">OpenAI Compatible</option>
+                      <option value="anthropic-compatible">Anthropic Compatible</option>
+                      <option value="volcengine">火山方舟</option>
+                      <option value="custom">自定义</option>
+                    </select>
+                  </label>
+                  <label className="inline-toggle">
+                    <input
+                      type="checkbox"
+                      checked={provider.enabled}
+                      onChange={(event) =>
+                        updateProvider(provider.id, (current) => ({
+                          ...current,
+                          enabled: event.target.checked,
+                        }))
+                      }
+                    />
+                    启用
+                  </label>
+                  <div className="provider-models">
+                    {provider.models.map((model, modelIndex) => (
+                      <div key={`${model.canonicalModelId}-${model.providerModelId}-${modelIndex}`}>
+                        <label>
+                          供应商模型 ID
+                          <input
+                            value={model.providerModelId}
+                            onChange={(event) =>
+                              updateProvider(provider.id, (current) => ({
+                                ...current,
+                                models: current.models.map((currentModel, currentIndex) =>
+                                  currentIndex === modelIndex
+                                    ? { ...currentModel, providerModelId: event.target.value }
+                                    : currentModel,
+                                ),
+                              }))
+                            }
+                          />
+                        </label>
+                        <label>
+                          映射后标准模型 ID
+                          <input
+                            value={model.canonicalModelId}
+                            onChange={(event) =>
+                              updateProvider(provider.id, (current) => ({
+                                ...current,
+                                models: current.models.map((currentModel, currentIndex) =>
+                                  currentIndex === modelIndex
+                                    ? { ...currentModel, canonicalModelId: event.target.value }
+                                    : currentModel,
+                                ),
+                              }))
+                            }
+                          />
+                        </label>
+                        <label className="inline-toggle">
+                          <input
+                            type="checkbox"
+                            checked={model.enabled}
+                            onChange={(event) =>
+                              updateProvider(provider.id, (current) => ({
+                                ...current,
+                                models: current.models.map((currentModel, currentIndex) =>
+                                  currentIndex === modelIndex
+                                    ? { ...currentModel, enabled: event.target.checked }
+                                    : currentModel,
+                                ),
+                              }))
+                            }
+                          />
+                          启用
+                        </label>
+                      </div>
+                    ))}
+                    <button type="button" onClick={() => addProviderModel(provider.id)}>
+                      <Plus size={16} />
+                      添加模型映射
+                    </button>
+                  </div>
+                </section>
+              ))}
+            </div>
+          </div>
+        ) : (
         <div
           ref={canvasRef}
           className={`infinite-canvas ${dragState?.mode === 'pan' ? 'is-panning' : ''}`}
@@ -1156,148 +1311,8 @@ export function App() {
               </label>
             </aside>
           ) : null}
-          {showProviderManager ? (
-            <aside className="provider-manager">
-              <header>
-                <h2>供应商管理</h2>
-                <button type="button" onClick={() => setShowProviderManager(false)}>
-                  关闭
-                </button>
-              </header>
-              <button type="button" onClick={addProvider}>
-                <Plus size={16} />
-                新增供应商
-              </button>
-              <div className="provider-list">
-                {providers.map((provider) => (
-                  <section key={provider.id} className="provider-card">
-                    <label>
-                      名称
-                      <input
-                        value={provider.name}
-                        onChange={(event) =>
-                          updateProvider(provider.id, (current) => ({
-                            ...current,
-                            name: event.target.value,
-                          }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      Base URL
-                      <input
-                        value={provider.baseURL}
-                        onChange={(event) =>
-                          updateProvider(provider.id, (current) => ({
-                            ...current,
-                            baseURL: event.target.value,
-                          }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      API Token 引用
-                      <input
-                        value={provider.apiTokenRef}
-                        onChange={(event) =>
-                          updateProvider(provider.id, (current) => ({
-                            ...current,
-                            apiTokenRef: event.target.value,
-                          }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      协议
-                      <select
-                        value={provider.protocol}
-                        onChange={(event) =>
-                          updateProvider(provider.id, (current) => ({
-                            ...current,
-                            protocol: event.target.value as ProviderConfig['protocol'],
-                          }))
-                        }
-                      >
-                        <option value="openai-compatible">OpenAI Compatible</option>
-                        <option value="anthropic-compatible">Anthropic Compatible</option>
-                        <option value="volcengine">火山方舟</option>
-                        <option value="custom">自定义</option>
-                      </select>
-                    </label>
-                    <label className="inline-toggle">
-                      <input
-                        type="checkbox"
-                        checked={provider.enabled}
-                        onChange={(event) =>
-                          updateProvider(provider.id, (current) => ({
-                            ...current,
-                            enabled: event.target.checked,
-                          }))
-                        }
-                      />
-                      启用
-                    </label>
-                    <div className="provider-models">
-                      {provider.models.map((model, modelIndex) => (
-                        <div key={`${model.canonicalModelId}-${model.providerModelId}-${modelIndex}`}>
-                          <input
-                            value={model.canonicalModelId}
-                            aria-label="标准模型 ID"
-                            onChange={(event) =>
-                              updateProvider(provider.id, (current) => ({
-                                ...current,
-                                models: current.models.map((currentModel, currentIndex) =>
-                                  currentIndex === modelIndex
-                                    ? { ...currentModel, canonicalModelId: event.target.value }
-                                    : currentModel,
-                                ),
-                              }))
-                            }
-                          />
-                          <input
-                            value={model.providerModelId}
-                            aria-label="供应商模型 ID"
-                            onChange={(event) =>
-                              updateProvider(provider.id, (current) => ({
-                                ...current,
-                                models: current.models.map((currentModel, currentIndex) =>
-                                  currentIndex === modelIndex
-                                    ? { ...currentModel, providerModelId: event.target.value }
-                                    : currentModel,
-                                ),
-                              }))
-                            }
-                          />
-                          <label className="inline-toggle">
-                            <input
-                              type="checkbox"
-                              checked={model.enabled}
-                              onChange={(event) =>
-                                updateProvider(provider.id, (current) => ({
-                                  ...current,
-                                  models: current.models.map((currentModel, currentIndex) =>
-                                    currentIndex === modelIndex
-                                      ? { ...currentModel, enabled: event.target.checked }
-                                      : currentModel,
-                                  ),
-                                }))
-                              }
-                            />
-                            启用
-                          </label>
-                        </div>
-                      ))}
-                      <button type="button" onClick={() => addProviderModel(provider.id)}>
-                        <Plus size={16} />
-                        添加模型映射
-                      </button>
-                    </div>
-                  </section>
-                ))}
-              </div>
-            </aside>
-          ) : null}
         </div>
+        )}
       </section>
     </main>
   );

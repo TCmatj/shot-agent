@@ -34,7 +34,8 @@ The first phase focuses on integrating:
 - Canvas project domain model
 - Workflow node and edge domain operations
 - Provider configuration and model mapping
-- Provider management panel for baseURL, token references, and model mappings
+- Provider management view replaces the canvas area and displays one provider per row
+- Model mapping clearly separates provider model ID from mapped canonical model ID
 - Prompt `@` reference parsing
 - Generation history and retry rules
 - Local canvas storage interfaces

@@ -530,55 +530,54 @@ button:disabled {
   resize: vertical;
 }
 
-.provider-manager {
-  background: rgba(9, 11, 14, 0.96);
-  border-left: 1px solid #252b34;
-  bottom: 0;
-  display: grid;
-  gap: 14px;
-  grid-template-rows: auto auto 1fr;
+.provider-manager-view {
+  background: #050607;
+  min-height: 0;
+  overflow: auto;
   padding: 18px;
-  position: absolute;
-  right: 0;
-  top: 0;
-  width: 380px;
-  z-index: 4;
 }
 
-.provider-manager header {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
+.provider-table {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.2fr) minmax(160px, 1fr) 150px 86px minmax(360px, 2fr);
+  min-width: 1260px;
 }
 
-.provider-manager h2 {
-  font-size: 16px;
-  margin: 0;
+.provider-table-header {
+  border-bottom: 1px solid #252b34;
+  color: #8d98a7;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 0 10px;
 }
 
 .provider-list {
   display: grid;
-  gap: 12px;
-  overflow: auto;
+  gap: 10px;
+  margin-top: 10px;
+  min-width: 1260px;
 }
 
-.provider-card {
+.provider-row {
+  align-items: start;
   border: 1px solid #252b34;
   border-radius: 8px;
   display: grid;
   gap: 10px;
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.2fr) minmax(160px, 1fr) 150px 86px minmax(360px, 2fr);
   padding: 12px;
 }
 
-.provider-card label {
+.provider-row label {
   color: #aeb8c5;
   display: grid;
   font-size: 13px;
   gap: 6px;
 }
 
-.provider-card input,
-.provider-card select {
+.provider-row input,
+.provider-row select {
   background: #080a0d;
   border: 1px solid #303640;
   border-radius: 6px;
@@ -588,13 +587,14 @@ button:disabled {
   padding: 8px;
 }
 
-.provider-card .inline-toggle {
+.provider-row .inline-toggle {
   align-items: center;
   display: flex;
   gap: 8px;
+  min-height: 34px;
 }
 
-.provider-card .inline-toggle input {
+.provider-row .inline-toggle input {
   min-height: auto;
 }
 
@@ -609,6 +609,7 @@ button:disabled {
   border-radius: 6px;
   display: grid;
   gap: 6px;
+  grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) 70px;
   padding: 8px;
 }
 
