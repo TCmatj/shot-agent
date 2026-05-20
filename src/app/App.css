@@ -168,6 +168,25 @@ button:hover {
   width: 1px;
 }
 
+.edge-layer {
+  height: 4000px;
+  left: -1200px;
+  overflow: visible;
+  pointer-events: none;
+  position: absolute;
+  top: -1200px;
+  width: 4000px;
+}
+
+.edge-layer path {
+  fill: none;
+  filter: drop-shadow(0 0 8px rgba(105, 125, 150, 0.2));
+  stroke: #526071;
+  stroke-linecap: round;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
 .canvas-node {
   background: #0f1217;
   border: 1px solid #2d343e;

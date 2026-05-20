@@ -16,7 +16,9 @@ import {
 import { findProvidersForCanonicalModel } from '../domain/provider';
 import type { ProviderConfig } from '../domain/provider';
 import {
+  createSequentialEdges,
   createWorkspaceState,
+  getNodeCenter,
   parseWorkspaceState,
   serializeWorkspaceState,
   type CanvasNodeKind,
@@ -158,12 +160,20 @@ const initialCanvases: CanvasView[] = [
         y: -40,
       },
     ],
+    edges: [
+      {
+        id: 'edge_image_video',
+        fromNodeId: 'node_image_1',
+        toNodeId: 'node_video_1',
+      },
+    ],
   },
   {
     id: 'canvas_second',
     name: '产品短片',
     updatedAt: '示例',
     nodes: [],
+    edges: [],
   },
 ];
 const initialWorkspaceState = createWorkspaceState(initialCanvases);
@@ -281,12 +291,13 @@ export function App() {
       activeCanvasId: id,
       canvases: [
         ...current.canvases,
-        {
-          id,
-          name: `新画布 ${current.canvases.length + 1}`,
-          updatedAt: '刚刚',
-          nodes: [],
-        },
+      {
+        id,
+        name: `新画布 ${current.canvases.length + 1}`,
+        updatedAt: '刚刚',
+        nodes: [],
+        edges: [],
+      },
       ],
     }));
     setViewport({ x: 80, y: 72, scale: 1 });
@@ -503,6 +514,32 @@ export function App() {
               transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
             }}
           >
+            <svg className="edge-layer" aria-hidden="true">
+              {(activeCanvas.edges.length > 0
+                ? activeCanvas.edges
+                : createSequentialEdges(activeCanvas.nodes)
+              ).map((edge) => {
+                const fromNode = activeCanvas.nodes.find((node) => node.id === edge.fromNodeId);
+                const toNode = activeCanvas.nodes.find((node) => node.id === edge.toNodeId);
+
+                if (!fromNode || !toNode) {
+                  return null;
+                }
+
+                const from = getNodeCenter(fromNode);
+                const to = getNodeCenter(toNode);
+                const controlOffset = Math.max(120, Math.abs(to.x - from.x) * 0.45);
+
+                return (
+                  <path
+                    key={edge.id}
+                    d={`M ${from.x} ${from.y} C ${from.x + controlOffset} ${from.y}, ${
+                      to.x - controlOffset
+                    } ${to.y}, ${to.x} ${to.y}`}
+                  />
+                );
+              })}
+            </svg>
             {activeCanvas.nodes.map((node) => {
               const Icon = getNodeIcon(node.kind);
               const providersForNode =

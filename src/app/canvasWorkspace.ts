@@ -9,11 +9,18 @@ export type CanvasNodeView = {
   y: number;
 };
 
+export type CanvasEdgeView = {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+};
+
 export type CanvasView = {
   id: string;
   name: string;
   updatedAt: string;
   nodes: CanvasNodeView[];
+  edges: CanvasEdgeView[];
 };
 
 export type CanvasWorkspaceState = {
@@ -54,7 +61,8 @@ function isCanvasView(value: unknown): value is CanvasView {
     typeof canvas.name === 'string' &&
     typeof canvas.updatedAt === 'string' &&
     Array.isArray(canvas.nodes) &&
-    canvas.nodes.every(isCanvasNodeView)
+    canvas.nodes.every(isCanvasNodeView) &&
+    (canvas.edges === undefined || Array.isArray(canvas.edges))
   );
 }
 
@@ -102,9 +110,27 @@ export function parseWorkspaceState(
 
     return {
       activeCanvasId: activeCanvasExists ? parsed.activeCanvasId : parsed.canvases[0].id,
-      canvases: parsed.canvases,
+      canvases: parsed.canvases.map((canvas) => ({
+        ...canvas,
+        edges: canvas.edges ?? [],
+      })),
     };
   } catch {
     return fallback;
   }
+}
+
+export function getNodeCenter(node: CanvasNodeView): { x: number; y: number } {
+  return {
+    x: node.x + 160,
+    y: node.y + 88,
+  };
+}
+
+export function createSequentialEdges(nodes: CanvasNodeView[]): CanvasEdgeView[] {
+  return nodes.slice(0, -1).map((node, index) => ({
+    id: `edge_${node.id}_${nodes[index + 1].id}`,
+    fromNodeId: node.id,
+    toNodeId: nodes[index + 1].id,
+  }));
 }
