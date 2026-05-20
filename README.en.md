@@ -28,6 +28,7 @@ The first phase focuses on integrating:
 - Delete selected nodes or edges with `Delete` / `Backspace`
 - Save the canvas list, active canvas, and node positions locally in the browser
 - Canvas project domain model
+- Workflow node and edge domain operations
 - Provider configuration and model mapping
 - Prompt `@` reference parsing
 - Generation history and retry rules
