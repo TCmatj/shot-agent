@@ -1,4 +1,4 @@
-import { useRef, useState, type PointerEvent, type WheelEvent } from 'react';
+import { useEffect, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
 import {
   BoxSelect,
   FilePlus2,
@@ -16,6 +16,14 @@ import {
 import { findProvidersForCanonicalModel } from '../domain/provider';
 import type { ProviderConfig } from '../domain/provider';
 import {
+  createWorkspaceState,
+  parseWorkspaceState,
+  serializeWorkspaceState,
+  type CanvasNodeKind,
+  type CanvasNodeView,
+  type CanvasView,
+} from './canvasWorkspace';
+import {
   moveCanvasNode,
   panViewport,
   screenToCanvasPoint,
@@ -23,24 +31,6 @@ import {
   type CanvasViewport,
   type Point,
 } from './canvasViewport';
-
-type CanvasNodeKind = 'image' | 'video' | 'chat';
-
-type CanvasNodeView = {
-  id: string;
-  title: string;
-  modelId: string;
-  kind: CanvasNodeKind;
-  x: number;
-  y: number;
-};
-
-type CanvasView = {
-  id: string;
-  name: string;
-  updatedAt: string;
-  nodes: CanvasNodeView[];
-};
 
 type NodeTemplate = {
   id: string;
@@ -176,6 +166,8 @@ const initialCanvases: CanvasView[] = [
     nodes: [],
   },
 ];
+const initialWorkspaceState = createWorkspaceState(initialCanvases);
+const workspaceStorageKey = 'shot-agent:canvas-workspace';
 
 function getNodeIcon(kind: CanvasNodeKind) {
   if (kind === 'video') {
@@ -192,20 +184,50 @@ function getNodeIcon(kind: CanvasNodeKind) {
 export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState<CanvasViewport>({ x: 80, y: 72, scale: 1 });
-  const [canvases, setCanvases] = useState<CanvasView[]>(initialCanvases);
-  const [activeCanvasId, setActiveCanvasId] = useState(initialCanvases[0].id);
+  const [workspaceState, setWorkspaceState] = useState(() => {
+    if (typeof window === 'undefined') {
+      return initialWorkspaceState;
+    }
+
+    return parseWorkspaceState(
+      window.localStorage.getItem(workspaceStorageKey),
+      initialWorkspaceState,
+    );
+  });
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [addMenu, setAddMenu] = useState<AddMenuState>(null);
+  const { activeCanvasId, canvases } = workspaceState;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? canvases[0];
   const imageProviders = findProvidersForCanonicalModel(providers, 'gpt-image-2');
   const videoProviders = findProvidersForCanonicalModel(providers, 'seedance2.0');
 
+  useEffect(() => {
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(workspaceState));
+  }, [workspaceState]);
+
+  function setCanvases(updater: (canvases: CanvasView[]) => CanvasView[]) {
+    setWorkspaceState((current) => ({
+      ...current,
+      canvases: updater(current.canvases),
+    }));
+  }
+
+  function setActiveCanvasId(canvasId: string) {
+    setWorkspaceState((current) => ({
+      ...current,
+      activeCanvasId: canvasId,
+    }));
+  }
+
   function updateActiveCanvasNodes(updater: (nodes: CanvasNodeView[]) => CanvasNodeView[]) {
-    setCanvases((current) =>
-      current.map((canvas) =>
-        canvas.id === activeCanvas.id ? { ...canvas, nodes: updater(canvas.nodes) } : canvas,
+    setWorkspaceState((current) => ({
+      ...current,
+      canvases: current.canvases.map((canvas) =>
+        canvas.id === current.activeCanvasId
+          ? { ...canvas, updatedAt: '刚刚', nodes: updater(canvas.nodes) }
+          : canvas,
       ),
-    );
+    }));
   }
 
   function getCanvasPointFromClient(clientX: number, clientY: number): Point {
@@ -255,16 +277,18 @@ export function App() {
 
   function createCanvas() {
     const id = `canvas_${Date.now()}`;
-    setCanvases((current) => [
-      ...current,
-      {
-        id,
-        name: `新画布 ${current.length + 1}`,
-        updatedAt: '刚刚',
-        nodes: [],
-      },
-    ]);
-    setActiveCanvasId(id);
+    setWorkspaceState((current) => ({
+      activeCanvasId: id,
+      canvases: [
+        ...current.canvases,
+        {
+          id,
+          name: `新画布 ${current.canvases.length + 1}`,
+          updatedAt: '刚刚',
+          nodes: [],
+        },
+      ],
+    }));
     setViewport({ x: 80, y: 72, scale: 1 });
   }
 
