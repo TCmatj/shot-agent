@@ -14,6 +14,15 @@ The first phase focuses on integrating:
 - `seedance2.0`
 - `seedance2.0-fast`
 
+## Current Capabilities
+
+- React + TypeScript + Vite application scaffold
+- Canvas project domain model
+- Provider configuration and model mapping
+- Prompt `@` reference parsing
+- Generation history and retry rules
+- Local canvas storage interfaces
+
 ## Documentation Maintenance
 
 The Chinese main README and English README should be updated together for every future change.
