@@ -23,6 +23,7 @@ export type BillingConfig =
     };
 
 export type ProviderModelConfig = {
+  id?: ID;
   providerModelId: string;
   canonicalModelId: string;
   displayName?: string;

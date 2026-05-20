@@ -103,6 +103,7 @@ const initialProviders: ProviderConfig[] = [
     enabled: true,
     models: [
       {
+        id: 'model_openai_gpt_image_2',
         providerModelId: 'gpt-image-2',
         canonicalModelId: 'gpt-image-2',
         enabled: true,
@@ -118,11 +119,13 @@ const initialProviders: ProviderConfig[] = [
     enabled: true,
     models: [
       {
+        id: 'model_seedance_2_0',
         providerModelId: 'doubao-seedance-2-0-260128',
         canonicalModelId: 'seedance2.0',
         enabled: true,
       },
       {
+        id: 'model_seedance_2_0_fast',
         providerModelId: 'doubao-seedance-2-0-fast-260128',
         canonicalModelId: 'seedance2.0-fast',
         enabled: true,
@@ -884,6 +887,7 @@ export function App() {
       models: [
         ...provider.models,
         {
+          id: `model_${Date.now()}`,
           canonicalModelId: 'gpt-image-2',
           providerModelId: 'gpt-image-2',
           enabled: true,
@@ -1189,7 +1193,7 @@ export function App() {
                   </label>
                   <div className="provider-models">
                     {provider.models.map((model, modelIndex) => (
-                      <div key={`${model.canonicalModelId}-${model.providerModelId}-${modelIndex}`}>
+                      <div key={model.id ?? `model_${modelIndex}`}>
                         <label>
                           供应商模型 ID
                           <input
