@@ -74,9 +74,35 @@ button:hover {
   margin: 0 0 10px;
 }
 
-.node-list {
+.canvas-list {
   display: grid;
   gap: 8px;
+}
+
+.canvas-list button {
+  justify-content: flex-start;
+  min-height: 54px;
+  text-align: left;
+}
+
+.canvas-list button.is-active {
+  background: #20252d;
+  border-color: #607086;
+}
+
+.canvas-list span {
+  display: grid;
+  gap: 2px;
+}
+
+.canvas-list strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.canvas-list small {
+  color: #8d98a7;
+  font-size: 12px;
 }
 
 .workspace {
@@ -148,7 +174,6 @@ button:hover {
   border-radius: 8px;
   box-shadow: 0 22px 60px rgba(0, 0, 0, 0.42);
   color: #edf2f7;
-  cursor: grab;
   display: grid;
   gap: 14px;
   left: 0;
@@ -157,10 +182,6 @@ button:hover {
   top: 0;
   user-select: none;
   width: 320px;
-}
-
-.canvas-node:active {
-  cursor: grabbing;
 }
 
 .canvas-node-image {
@@ -177,8 +198,13 @@ button:hover {
 
 .canvas-node header {
   align-items: center;
+  cursor: grab;
   display: flex;
   gap: 10px;
+}
+
+.canvas-node header:active {
+  cursor: grabbing;
 }
 
 .node-icon {
@@ -222,7 +248,8 @@ button:hover {
 }
 
 .canvas-hud,
-.canvas-tip {
+.canvas-tip,
+.add-node-menu {
   align-items: center;
   background: rgba(9, 11, 14, 0.84);
   border: 1px solid #252b34;
@@ -260,4 +287,32 @@ button:hover {
   font-size: 13px;
   padding: 10px 12px;
   right: 18px;
+}
+
+.canvas-add-button {
+  border-radius: 999px;
+  height: 42px;
+  justify-content: center;
+  left: 18px;
+  min-height: 42px;
+  padding: 0;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 42px;
+  z-index: 1;
+}
+
+.add-node-menu {
+  align-items: stretch;
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+  padding: 8px;
+  position: absolute;
+  z-index: 3;
+}
+
+.add-node-menu button {
+  justify-content: flex-start;
 }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { panViewport, zoomViewportAtPoint, moveCanvasNode } from '../../src/app/canvasViewport';
+import {
+  moveCanvasNode,
+  panViewport,
+  screenToCanvasPoint,
+  zoomViewportAtPoint,
+} from '../../src/app/canvasViewport';
 
 describe('canvas viewport', () => {
   it('pans viewport by screen delta', () => {
@@ -24,6 +29,13 @@ describe('canvas viewport', () => {
     expect(moveCanvasNode({ x: 120, y: 80 }, { dx: 30, dy: -10 }, 2)).toEqual({
       x: 135,
       y: 75,
+    });
+  });
+
+  it('converts screen point into canvas point', () => {
+    expect(screenToCanvasPoint({ x: 220, y: 172 }, { x: 80, y: 72, scale: 2 })).toEqual({
+      x: 70,
+      y: 50,
     });
   });
 });

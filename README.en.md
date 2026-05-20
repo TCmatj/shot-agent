@@ -19,6 +19,8 @@ The first phase focuses on integrating:
 - React + TypeScript + Vite application scaffold
 - Black dotted infinite canvas interface
 - Node dragging, canvas panning, and zooming
+- Open the first canvas by default with a canvas list in the sidebar
+- Add nodes from the in-canvas `+` button or context menu
 - Canvas project domain model
 - Provider configuration and model mapping
 - Prompt `@` reference parsing

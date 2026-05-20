@@ -1,6 +1,7 @@
 import { useRef, useState, type PointerEvent, type WheelEvent } from 'react';
 import {
   BoxSelect,
+  FilePlus2,
   FolderPlus,
   Image,
   MessageSquare,
@@ -17,18 +18,44 @@ import type { ProviderConfig } from '../domain/provider';
 import {
   moveCanvasNode,
   panViewport,
+  screenToCanvasPoint,
   zoomViewportAtPoint,
   type CanvasViewport,
+  type Point,
 } from './canvasViewport';
+
+type CanvasNodeKind = 'image' | 'video' | 'chat';
 
 type CanvasNodeView = {
   id: string;
   title: string;
   modelId: string;
-  kind: 'image' | 'video' | 'chat';
+  kind: CanvasNodeKind;
   x: number;
   y: number;
 };
+
+type CanvasView = {
+  id: string;
+  name: string;
+  updatedAt: string;
+  nodes: CanvasNodeView[];
+};
+
+type NodeTemplate = {
+  id: string;
+  label: string;
+  title: string;
+  modelId: string;
+  kind: CanvasNodeKind;
+  icon: typeof Image;
+};
+
+type AddMenuState = {
+  x: number;
+  y: number;
+  canvasPoint: Point;
+} | null;
 
 type DragState =
   | {
@@ -83,52 +110,74 @@ const providers: ProviderConfig[] = [
   },
 ];
 
-const nodeTypes = [
+const nodeTemplates: NodeTemplate[] = [
   {
     id: 'gpt-image-2',
-    label: 'gpt-image-2',
+    label: 'gpt-image-2 图片节点',
+    title: '图片生成',
+    modelId: 'gpt-image-2',
+    kind: 'image',
     icon: Image,
   },
   {
     id: 'seedance2.0',
-    label: 'seedance2.0',
+    label: 'seedance2.0 视频节点',
+    title: '视频生成',
+    modelId: 'seedance2.0',
+    kind: 'video',
     icon: Video,
   },
   {
     id: 'chat-openai',
     label: '对话节点',
+    title: '提示词整理',
+    modelId: 'chat-openai',
+    kind: 'chat',
     icon: MessageSquare,
   },
 ];
 
-const initialNodes: CanvasNodeView[] = [
+const initialCanvases: CanvasView[] = [
   {
-    id: 'node_image_1',
-    title: '图片生成',
-    modelId: 'gpt-image-2',
-    kind: 'image',
-    x: 120,
-    y: 120,
+    id: 'canvas_first',
+    name: '默认画布',
+    updatedAt: '刚刚',
+    nodes: [
+      {
+        id: 'node_image_1',
+        title: '图片生成',
+        modelId: 'gpt-image-2',
+        kind: 'image',
+        x: 120,
+        y: 120,
+      },
+      {
+        id: 'node_video_1',
+        title: '视频生成',
+        modelId: 'seedance2.0',
+        kind: 'video',
+        x: 520,
+        y: 240,
+      },
+      {
+        id: 'node_chat_1',
+        title: '提示词整理',
+        modelId: 'chat-openai',
+        kind: 'chat',
+        x: 320,
+        y: -40,
+      },
+    ],
   },
   {
-    id: 'node_video_1',
-    title: '视频生成',
-    modelId: 'seedance2.0',
-    kind: 'video',
-    x: 520,
-    y: 240,
-  },
-  {
-    id: 'node_chat_1',
-    title: '提示词整理',
-    modelId: 'chat-openai',
-    kind: 'chat',
-    x: 320,
-    y: -40,
+    id: 'canvas_second',
+    name: '产品短片',
+    updatedAt: '示例',
+    nodes: [],
   },
 ];
 
-function getNodeIcon(kind: CanvasNodeView['kind']) {
+function getNodeIcon(kind: CanvasNodeKind) {
   if (kind === 'video') {
     return Video;
   }
@@ -143,16 +192,88 @@ function getNodeIcon(kind: CanvasNodeView['kind']) {
 export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState<CanvasViewport>({ x: 80, y: 72, scale: 1 });
-  const [nodes, setNodes] = useState<CanvasNodeView[]>(initialNodes);
+  const [canvases, setCanvases] = useState<CanvasView[]>(initialCanvases);
+  const [activeCanvasId, setActiveCanvasId] = useState(initialCanvases[0].id);
   const [dragState, setDragState] = useState<DragState | null>(null);
+  const [addMenu, setAddMenu] = useState<AddMenuState>(null);
+  const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? canvases[0];
   const imageProviders = findProvidersForCanonicalModel(providers, 'gpt-image-2');
   const videoProviders = findProvidersForCanonicalModel(providers, 'seedance2.0');
+
+  function updateActiveCanvasNodes(updater: (nodes: CanvasNodeView[]) => CanvasNodeView[]) {
+    setCanvases((current) =>
+      current.map((canvas) =>
+        canvas.id === activeCanvas.id ? { ...canvas, nodes: updater(canvas.nodes) } : canvas,
+      ),
+    );
+  }
+
+  function getCanvasPointFromClient(clientX: number, clientY: number): Point {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return screenToCanvasPoint({ x: clientX, y: clientY }, viewport);
+    }
+
+    return screenToCanvasPoint(
+      {
+        x: clientX - rect.left,
+        y: clientY - rect.top,
+      },
+      viewport,
+    );
+  }
+
+  function openAddMenu(clientX: number, clientY: number) {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+
+    setAddMenu({
+      x: clientX - rect.left,
+      y: clientY - rect.top,
+      canvasPoint: getCanvasPointFromClient(clientX, clientY),
+    });
+  }
+
+  function addNode(template: NodeTemplate) {
+    const point = addMenu?.canvasPoint ?? screenToCanvasPoint({ x: 260, y: 180 }, viewport);
+
+    updateActiveCanvasNodes((nodes) => [
+      ...nodes,
+      {
+        id: `node_${template.kind}_${Date.now()}`,
+        title: template.title,
+        modelId: template.modelId,
+        kind: template.kind,
+        x: point.x,
+        y: point.y,
+      },
+    ]);
+    setAddMenu(null);
+  }
+
+  function createCanvas() {
+    const id = `canvas_${Date.now()}`;
+    setCanvases((current) => [
+      ...current,
+      {
+        id,
+        name: `新画布 ${current.length + 1}`,
+        updatedAt: '刚刚',
+        nodes: [],
+      },
+    ]);
+    setActiveCanvasId(id);
+    setViewport({ x: 80, y: 72, scale: 1 });
+  }
 
   function handleCanvasPointerDown(event: PointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || event.target !== event.currentTarget) {
       return;
     }
 
+    setAddMenu(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       mode: 'pan',
@@ -168,6 +289,7 @@ export function App() {
     }
 
     event.stopPropagation();
+    setAddMenu(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       mode: 'node',
@@ -191,8 +313,8 @@ export function App() {
     if (dragState.mode === 'pan') {
       setViewport((current) => panViewport(current, delta));
     } else {
-      setNodes((current) =>
-        current.map((node) =>
+      updateActiveCanvasNodes((nodes) =>
+        nodes.map((node) =>
           node.id === dragState.nodeId
             ? { ...node, ...moveCanvasNode(node, delta, viewport.scale) }
             : node,
@@ -251,7 +373,7 @@ export function App() {
           <p>无限画布视觉工作台</p>
         </header>
         <nav>
-          <button type="button">
+          <button type="button" onClick={createCanvas}>
             <FolderPlus size={18} />
             新建画布
           </button>
@@ -261,17 +383,25 @@ export function App() {
           </button>
         </nav>
         <section className="panel">
-          <h2>节点</h2>
-          <div className="node-list">
-            {nodeTypes.map((node) => {
-              const Icon = node.icon;
-              return (
-                <button key={node.id} type="button">
-                  <Icon size={18} />
-                  {node.label}
-                </button>
-              );
-            })}
+          <h2>画布</h2>
+          <div className="canvas-list">
+            {canvases.map((canvas) => (
+              <button
+                key={canvas.id}
+                type="button"
+                className={canvas.id === activeCanvas.id ? 'is-active' : ''}
+                onClick={() => {
+                  setActiveCanvasId(canvas.id);
+                  setAddMenu(null);
+                }}
+              >
+                <FilePlus2 size={17} />
+                <span>
+                  <strong>{canvas.name}</strong>
+                  <small>{canvas.nodes.length} 个节点 · {canvas.updatedAt}</small>
+                </span>
+              </button>
+            ))}
           </div>
         </section>
       </aside>
@@ -279,7 +409,7 @@ export function App() {
         <div className="toolbar">
           <div className="toolbar-title">
             <BoxSelect size={18} />
-            <span>视觉工作流画布</span>
+            <span>{activeCanvas.name}</span>
           </div>
           <div className="toolbar-actions">
             <button type="button">
@@ -291,12 +421,42 @@ export function App() {
         <div
           ref={canvasRef}
           className={`infinite-canvas ${dragState?.mode === 'pan' ? 'is-panning' : ''}`}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            openAddMenu(event.clientX, event.clientY);
+          }}
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerEnd}
           onPointerCancel={handlePointerEnd}
           onWheel={handleWheel}
         >
+          <button
+            type="button"
+            className="canvas-add-button"
+            aria-label="添加节点"
+            onClick={(event) => openAddMenu(event.clientX, event.clientY)}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <Plus size={20} />
+          </button>
+          {addMenu ? (
+            <div
+              className="add-node-menu"
+              style={{ left: addMenu.x, top: addMenu.y }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              {nodeTemplates.map((template) => {
+                const Icon = template.icon;
+                return (
+                  <button key={template.id} type="button" onClick={() => addNode(template)}>
+                    <Icon size={17} />
+                    {template.label}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
           <div className="canvas-hud">
             <button type="button" aria-label="缩小" onClick={() => zoomBy(0.88)}>
               <Minus size={16} />
@@ -311,7 +471,7 @@ export function App() {
           </div>
           <div className="canvas-tip">
             <Move size={15} />
-            <span>拖动画布平移，滚轮缩放，拖动节点移动</span>
+            <span>右键或点击 + 添加节点，拖动画布平移，滚轮缩放</span>
           </div>
           <div
             className="canvas-plane"
@@ -319,7 +479,7 @@ export function App() {
               transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
             }}
           >
-            {nodes.map((node) => {
+            {activeCanvas.nodes.map((node) => {
               const Icon = getNodeIcon(node.kind);
               const providersForNode =
                 node.modelId === 'gpt-image-2'
@@ -333,9 +493,8 @@ export function App() {
                   key={node.id}
                   className={`canvas-node canvas-node-${node.kind}`}
                   style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
-                  onPointerDown={(event) => handleNodePointerDown(event, node.id)}
                 >
-                  <header>
+                  <header onPointerDown={(event) => handleNodePointerDown(event, node.id)}>
                     <span className="node-icon">
                       <Icon size={18} />
                     </span>
@@ -352,8 +511,13 @@ export function App() {
                             .join('、')}`
                         : '对话模型供应商待配置'}
                     </p>
-                    <textarea placeholder="输入提示词，使用 @image:asset_id 引用资产" />
-                    <button type="button">生成</button>
+                    <textarea
+                      placeholder="输入提示词，使用 @image:asset_id 引用资产"
+                      onPointerDown={(event) => event.stopPropagation()}
+                    />
+                    <button type="button" onPointerDown={(event) => event.stopPropagation()}>
+                      生成
+                    </button>
                   </div>
                 </article>
               );

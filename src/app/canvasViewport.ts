@@ -48,3 +48,10 @@ export function moveCanvasNode(position: Point, delta: Delta, scale: number): Po
     y: position.y + delta.dy / scale,
   };
 }
+
+export function screenToCanvasPoint(point: Point, viewport: CanvasViewport): Point {
+  return {
+    x: (point.x - viewport.x) / viewport.scale,
+    y: (point.y - viewport.y) / viewport.scale,
+  };
+}
