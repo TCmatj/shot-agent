@@ -788,6 +788,10 @@ export function App() {
     }));
   }
 
+  function deleteProvider(providerId: string) {
+    setProviders((current) => current.filter((provider) => provider.id !== providerId));
+  }
+
   return (
     <main className={`app-shell ${isSidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}>
       <aside className="sidebar">
@@ -931,6 +935,7 @@ export function App() {
               <span>协议</span>
               <span>状态</span>
               <span>模型映射</span>
+              <span>操作</span>
             </div>
             <div className="provider-list">
               {providers.map((provider) => (
@@ -1060,6 +1065,14 @@ export function App() {
                       添加模型映射
                     </button>
                   </div>
+                  <button
+                    type="button"
+                    className="danger-button provider-delete-button"
+                    onClick={() => deleteProvider(provider.id)}
+                  >
+                    <Trash2 size={16} />
+                    删除
+                  </button>
                 </section>
               ))}
             </div>

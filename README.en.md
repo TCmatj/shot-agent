@@ -39,6 +39,7 @@ The first phase focuses on integrating:
 - Provider configuration and model mapping
 - Provider management view replaces the canvas area and displays one provider per row
 - Model mapping clearly separates provider model ID from mapped canonical model ID
+- Providers can be deleted and fully removed from configuration
 - Prompt `@` reference parsing
 - Generation history and retry rules
 - Local canvas storage interfaces
