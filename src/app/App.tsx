@@ -289,6 +289,8 @@ export function App() {
   const [canvasMessage, setCanvasMessage] = useState<string | null>(null);
   const [isRenamingCanvas, setIsRenamingCanvas] = useState(false);
   const [draftCanvasName, setDraftCanvasName] = useState('');
+  const [editingCanvasId, setEditingCanvasId] = useState<string | null>(null);
+  const [draftListCanvasName, setDraftListCanvasName] = useState('');
   const { activeCanvasId, canvases } = workspaceState;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? canvases[0];
   const selectedNode =
@@ -539,6 +541,25 @@ export function App() {
     setAddMenu(null);
     setViewport({ x: 80, y: 72, scale: 1 });
     setCanvasMessage(null);
+  }
+
+  function deleteCanvasById(canvasId: string) {
+    setWorkspaceState((current) => deleteCanvas(current, canvasId));
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setAddMenu(null);
+    setEditingCanvasId(null);
+    setViewport({ x: 80, y: 72, scale: 1 });
+  }
+
+  function startRenameCanvasFromList(canvas: CanvasView) {
+    setEditingCanvasId(canvas.id);
+    setDraftListCanvasName(canvas.name);
+  }
+
+  function commitRenameCanvasFromList(canvasId: string) {
+    setWorkspaceState((current) => renameCanvas(current, canvasId, draftListCanvasName));
+    setEditingCanvasId(null);
   }
 
   function downloadActiveCanvas() {
@@ -829,42 +850,90 @@ export function App() {
             供应商管理
           </button>
         </nav>
-        <section className="panel canvas-management">
-          <h2>当前画布</h2>
-          <button
-            type="button"
-            className="danger-button"
-            disabled={canvases.length <= 1}
-            onClick={deleteActiveCanvas}
-          >
-            <Trash2 size={16} />
-            删除画布
-          </button>
-          {canvasMessage ? <p className="canvas-message">{canvasMessage}</p> : null}
-        </section>
         <section className="panel">
-          <h2>画布</h2>
-          <div className="canvas-list">
-            {canvases.map((canvas) => (
-              <button
-                key={canvas.id}
-                type="button"
-                className={canvas.id === activeCanvas.id ? 'is-active' : ''}
-                onClick={() => {
-                  setActiveCanvasId(canvas.id);
-                  setAddMenu(null);
-                  setSelectedNodeId(null);
-                  setSelectedEdgeId(null);
-                }}
-              >
-                <FilePlus2 size={17} />
-                <span>
-                  <strong>{canvas.name}</strong>
-                  <small>{canvas.nodes.length} 个节点 · {canvas.updatedAt}</small>
-                </span>
-              </button>
-            ))}
+          <div className="panel-title-row">
+            <h2>画布</h2>
+            <button type="button" className="icon-button" aria-label="新建画布" onClick={createCanvas}>
+              <Plus size={15} />
+            </button>
           </div>
+          <div className="canvas-list">
+            {canvases.map((canvas) => {
+              const isEditing = editingCanvasId === canvas.id;
+              return (
+                <div
+                  key={canvas.id}
+                  className={`canvas-list-item ${canvas.id === activeCanvas.id ? 'is-active' : ''}`}
+                >
+                  <button
+                    type="button"
+                    className="canvas-list-select"
+                    onClick={() => {
+                      setActiveCanvasId(canvas.id);
+                      setAddMenu(null);
+                      setSelectedNodeId(null);
+                      setSelectedEdgeId(null);
+                    }}
+                  >
+                    <FilePlus2 size={17} />
+                  </button>
+                  <div className="canvas-list-content">
+                    {isEditing ? (
+                      <input
+                        value={draftListCanvasName}
+                        autoFocus
+                        onBlur={() => commitRenameCanvasFromList(canvas.id)}
+                        onChange={(event) => setDraftListCanvasName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            commitRenameCanvasFromList(canvas.id);
+                          }
+
+                          if (event.key === 'Escape') {
+                            setEditingCanvasId(null);
+                          }
+                        }}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className="canvas-list-name"
+                        onClick={() => {
+                          setActiveCanvasId(canvas.id);
+                          setAddMenu(null);
+                          setSelectedNodeId(null);
+                          setSelectedEdgeId(null);
+                        }}
+                      >
+                        <strong>{canvas.name}</strong>
+                        <small>{canvas.nodes.length} 个节点 · {canvas.updatedAt}</small>
+                      </button>
+                    )}
+                  </div>
+                  <div className="canvas-list-actions">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="重命名画布"
+                      onClick={() => startRenameCanvasFromList(canvas)}
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button danger-icon-button"
+                      aria-label="删除画布"
+                      disabled={canvases.length <= 1}
+                      onClick={() => deleteCanvasById(canvas.id)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {canvasMessage ? <p className="canvas-message">{canvasMessage}</p> : null}
         </section>
           </>
         ) : null}
