@@ -1,4 +1,4 @@
-export type CanvasNodeKind = 'image' | 'video' | 'chat';
+export type CanvasNodeKind = 'image' | 'video' | 'chat' | 'textAsset' | 'imageAsset' | 'videoAsset';
 
 export type CanvasNodeView = {
   id: string;
@@ -7,6 +7,10 @@ export type CanvasNodeView = {
   kind: CanvasNodeKind;
   x: number;
   y: number;
+  textContent?: string;
+  assetName?: string;
+  assetDataUrl?: string;
+  assetMimeType?: string;
 };
 
 export type CanvasEdgeView = {
@@ -50,9 +54,20 @@ function isCanvasNodeView(value: unknown): value is CanvasNodeView {
     typeof node.id === 'string' &&
     typeof node.title === 'string' &&
     typeof node.modelId === 'string' &&
-    (node.kind === 'image' || node.kind === 'video' || node.kind === 'chat') &&
+    isCanvasNodeKind(node.kind) &&
     typeof node.x === 'number' &&
     typeof node.y === 'number'
+  );
+}
+
+function isCanvasNodeKind(kind: unknown): kind is CanvasNodeKind {
+  return (
+    kind === 'image' ||
+    kind === 'video' ||
+    kind === 'chat' ||
+    kind === 'textAsset' ||
+    kind === 'imageAsset' ||
+    kind === 'videoAsset'
   );
 }
 
@@ -245,6 +260,10 @@ export function getNodeOutputPoint(node: CanvasNodeView): { x: number; y: number
     x: node.x + 320,
     y: node.y + 88,
   };
+}
+
+export function canNodeReceiveInput(node: CanvasNodeView): boolean {
+  return node.kind === 'image' || node.kind === 'video' || node.kind === 'chat';
 }
 
 export function createSequentialEdges(nodes: CanvasNodeView[]): CanvasEdgeView[] {

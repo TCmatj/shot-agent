@@ -362,6 +362,38 @@ button:disabled {
   user-select: text;
 }
 
+.asset-preview {
+  background: #080a0d;
+  border: 1px solid #303640;
+  border-radius: 6px;
+  display: block;
+  max-height: 180px;
+  object-fit: contain;
+  width: 100%;
+}
+
+.asset-upload {
+  align-items: center;
+  background: #171a1f;
+  border: 1px solid #303640;
+  border-radius: 6px;
+  color: #eef2f5;
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+.asset-upload:hover {
+  background: #20252d;
+  border-color: #4a5461;
+}
+
+.asset-upload input {
+  display: none;
+}
+
 .canvas-hud,
 .canvas-tip,
 .add-node-menu {
@@ -496,6 +528,92 @@ button:disabled {
 .node-inspector textarea {
   min-height: 110px;
   resize: vertical;
+}
+
+.provider-manager {
+  background: rgba(9, 11, 14, 0.96);
+  border-left: 1px solid #252b34;
+  bottom: 0;
+  display: grid;
+  gap: 14px;
+  grid-template-rows: auto auto 1fr;
+  padding: 18px;
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 380px;
+  z-index: 4;
+}
+
+.provider-manager header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.provider-manager h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.provider-list {
+  display: grid;
+  gap: 12px;
+  overflow: auto;
+}
+
+.provider-card {
+  border: 1px solid #252b34;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.provider-card label {
+  color: #aeb8c5;
+  display: grid;
+  font-size: 13px;
+  gap: 6px;
+}
+
+.provider-card input,
+.provider-card select {
+  background: #080a0d;
+  border: 1px solid #303640;
+  border-radius: 6px;
+  color: #eef2f5;
+  font: inherit;
+  min-height: 34px;
+  padding: 8px;
+}
+
+.provider-card .inline-toggle {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.provider-card .inline-toggle input {
+  min-height: auto;
+}
+
+.provider-models {
+  display: grid;
+  gap: 8px;
+}
+
+.provider-models > div {
+  background: #11151a;
+  border: 1px solid #252b34;
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.provider-models input {
+  min-height: 32px;
 }
 
 .danger-button {

@@ -4,6 +4,7 @@ import {
   createCanvasEdge,
   createSequentialEdges,
   createWorkspaceState,
+  canNodeReceiveInput,
   deleteCanvas,
   exportCanvas,
   getNodeCenter,
@@ -121,6 +122,22 @@ describe('canvas workspace persistence', () => {
 
     expect(getNodeInputPoint(node)).toEqual({ x: 40, y: 108 });
     expect(getNodeOutputPoint(node)).toEqual({ x: 360, y: 108 });
+  });
+
+  it('marks asset nodes as output-only', () => {
+    expect(
+      canNodeReceiveInput({
+        id: 'asset_text',
+        title: '文本',
+        modelId: 'asset-text',
+        kind: 'textAsset',
+        x: 0,
+        y: 0,
+      }),
+    ).toBe(false);
+    expect(canNodeReceiveInput({ id: 'node_1', title: 'A', modelId: 'a', kind: 'image', x: 0, y: 0 })).toBe(
+      true,
+    );
   });
 
   it('creates stable canvas edge ids', () => {

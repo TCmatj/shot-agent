@@ -22,6 +22,10 @@ The first phase focuses on integrating:
 - Open the first canvas by default with a canvas list in the sidebar
 - Create, rename, delete, import, and export canvases
 - Add nodes from the in-canvas `+` button or context menu
+- Create and connect a new node by dropping an edge on empty canvas space
+- Text, image, and video asset nodes that act as output-only nodes
+- Image assets can be imported, dropped, or pasted into the canvas
+- Video assets can be imported or dropped into the canvas
 - Create canvas node edges by dragging node connection handles
 - Delete an edge after selecting it
 - Inspect selected node details and configuration entry points
@@ -30,6 +34,7 @@ The first phase focuses on integrating:
 - Canvas project domain model
 - Workflow node and edge domain operations
 - Provider configuration and model mapping
+- Provider management panel for baseURL, token references, and model mappings
 - Prompt `@` reference parsing
 - Generation history and retry rules
 - Local canvas storage interfaces

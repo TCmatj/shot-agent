@@ -3,6 +3,7 @@ import {
   BoxSelect,
   Download,
   FilePlus2,
+  FileText,
   FolderPlus,
   Image,
   Import,
@@ -20,6 +21,7 @@ import { findProvidersForCanonicalModel } from '../domain/provider';
 import type { ProviderConfig } from '../domain/provider';
 import {
   addCanvasEdge,
+  canNodeReceiveInput,
   createWorkspaceState,
   deleteCanvas,
   exportCanvas,
@@ -51,12 +53,14 @@ type NodeTemplate = {
   modelId: string;
   kind: CanvasNodeKind;
   icon: typeof Image;
+  outputOnly?: boolean;
 };
 
 type AddMenuState = {
   x: number;
   y: number;
   canvasPoint: Point;
+  fromNodeId?: string;
 } | null;
 
 type EdgeDraft = {
@@ -80,7 +84,7 @@ type DragState =
       lastY: number;
     };
 
-const providers: ProviderConfig[] = [
+const initialProviders: ProviderConfig[] = [
   {
     id: 'provider_openai',
     name: 'OpenAI 官方',
@@ -121,7 +125,7 @@ const providers: ProviderConfig[] = [
 const nodeTemplates: NodeTemplate[] = [
   {
     id: 'gpt-image-2',
-    label: 'gpt-image-2 图片节点',
+    label: 'gpt-image-2 生成节点',
     title: '图片生成',
     modelId: 'gpt-image-2',
     kind: 'image',
@@ -129,7 +133,7 @@ const nodeTemplates: NodeTemplate[] = [
   },
   {
     id: 'seedance2.0',
-    label: 'seedance2.0 视频节点',
+    label: 'seedance2.0 生成节点',
     title: '视频生成',
     modelId: 'seedance2.0',
     kind: 'video',
@@ -142,6 +146,33 @@ const nodeTemplates: NodeTemplate[] = [
     modelId: 'chat-openai',
     kind: 'chat',
     icon: MessageSquare,
+  },
+  {
+    id: 'asset-text',
+    label: '文本节点',
+    title: '文本',
+    modelId: 'asset-text',
+    kind: 'textAsset',
+    icon: FileText,
+    outputOnly: true,
+  },
+  {
+    id: 'asset-image',
+    label: '图片节点',
+    title: '图片',
+    modelId: 'asset-image',
+    kind: 'imageAsset',
+    icon: Image,
+    outputOnly: true,
+  },
+  {
+    id: 'asset-video',
+    label: '视频节点',
+    title: '视频',
+    modelId: 'asset-video',
+    kind: 'videoAsset',
+    icon: Video,
+    outputOnly: true,
   },
 ];
 
@@ -194,14 +225,37 @@ const initialCanvases: CanvasView[] = [
 ];
 const initialWorkspaceState = createWorkspaceState(initialCanvases);
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
+const providerStorageKey = 'shot-agent:providers';
+
+function loadProviders(): ProviderConfig[] {
+  if (typeof window === 'undefined') {
+    return initialProviders;
+  }
+
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(providerStorageKey) ?? '');
+
+    if (!Array.isArray(parsed)) {
+      return initialProviders;
+    }
+
+    return parsed as ProviderConfig[];
+  } catch {
+    return initialProviders;
+  }
+}
 
 function getNodeIcon(kind: CanvasNodeKind) {
-  if (kind === 'video') {
+  if (kind === 'video' || kind === 'videoAsset') {
     return Video;
   }
 
   if (kind === 'chat') {
     return MessageSquare;
+  }
+
+  if (kind === 'textAsset') {
+    return FileText;
   }
 
   return Image;
@@ -210,6 +264,8 @@ function getNodeIcon(kind: CanvasNodeKind) {
 export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const [providers, setProviders] = useState<ProviderConfig[]>(loadProviders);
+  const [showProviderManager, setShowProviderManager] = useState(false);
   const [viewport, setViewport] = useState<CanvasViewport>({ x: 80, y: 72, scale: 1 });
   const [workspaceState, setWorkspaceState] = useState(() => {
     if (typeof window === 'undefined') {
@@ -239,6 +295,36 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(workspaceState));
   }, [workspaceState]);
+
+  useEffect(() => {
+    window.localStorage.setItem(providerStorageKey, JSON.stringify(providers));
+  }, [providers]);
+
+  useEffect(() => {
+    function handlePaste(event: ClipboardEvent) {
+      const file = Array.from(event.clipboardData?.files ?? []).find((item) =>
+        item.type.startsWith('image/'),
+      );
+
+      if (!file) {
+        return;
+      }
+
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const point = screenToCanvasPoint(
+        {
+          x: rect ? rect.width / 2 : 420,
+          y: rect ? rect.height / 2 : 280,
+        },
+        viewport,
+      );
+
+      addAssetNodeFromFile(file, point);
+    }
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [viewport]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -335,7 +421,7 @@ export function App() {
     );
   }
 
-  function openAddMenu(clientX: number, clientY: number) {
+  function openAddMenu(clientX: number, clientY: number, fromNodeId?: string) {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) {
       return;
@@ -345,24 +431,66 @@ export function App() {
       x: clientX - rect.left,
       y: clientY - rect.top,
       canvasPoint: getCanvasPointFromClient(clientX, clientY),
+      fromNodeId,
     });
   }
 
   function addNode(template: NodeTemplate) {
     const point = addMenu?.canvasPoint ?? screenToCanvasPoint({ x: 260, y: 180 }, viewport);
+    const nodeId = `node_${template.kind}_${Date.now()}`;
 
     updateActiveCanvasNodes((nodes) => [
       ...nodes,
       {
-        id: `node_${template.kind}_${Date.now()}`,
+        id: nodeId,
         title: template.title,
         modelId: template.modelId,
         kind: template.kind,
         x: point.x,
         y: point.y,
+        textContent: template.kind === 'textAsset' ? '在这里输入文本' : undefined,
       },
     ]);
+    if (addMenu?.fromNodeId && !template.outputOnly) {
+      updateActiveCanvasEdges((edges) => addCanvasEdge(edges, addMenu.fromNodeId!, nodeId));
+    }
+    setSelectedNodeId(nodeId);
+    setSelectedEdgeId(null);
     setAddMenu(null);
+  }
+
+  function updateNode(nodeId: string, updater: (node: CanvasNodeView) => CanvasNodeView) {
+    updateActiveCanvasNodes((nodes) => nodes.map((node) => (node.id === nodeId ? updater(node) : node)));
+  }
+
+  function addAssetNodeFromFile(file: File, point: Point) {
+    if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.addEventListener('load', () => {
+      const isImage = file.type.startsWith('image/');
+      const nodeId = `node_${isImage ? 'imageAsset' : 'videoAsset'}_${Date.now()}`;
+
+      updateActiveCanvasNodes((nodes) => [
+        ...nodes,
+        {
+          id: nodeId,
+          title: isImage ? '图片' : '视频',
+          modelId: isImage ? 'asset-image' : 'asset-video',
+          kind: isImage ? 'imageAsset' : 'videoAsset',
+          x: point.x,
+          y: point.y,
+          assetName: file.name,
+          assetDataUrl: typeof reader.result === 'string' ? reader.result : undefined,
+          assetMimeType: file.type,
+        },
+      ]);
+      setSelectedNodeId(nodeId);
+      setSelectedEdgeId(null);
+    });
+    reader.readAsDataURL(file);
   }
 
   function createCanvas() {
@@ -501,7 +629,7 @@ export function App() {
 
   function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
     if (edgeDraft) {
-      setEdgeDraft(null);
+      finishEdgeDraftOnBlank(event);
       return;
     }
 
@@ -537,6 +665,15 @@ export function App() {
     updateActiveCanvasEdges((edges) => addCanvasEdge(edges, edgeDraft.fromNodeId, toNodeId));
     setSelectedEdgeId(`edge_${edgeDraft.fromNodeId}_${toNodeId}`);
     setSelectedNodeId(null);
+    setEdgeDraft(null);
+  }
+
+  function finishEdgeDraftOnBlank(event: PointerEvent<HTMLDivElement>) {
+    if (!edgeDraft) {
+      return;
+    }
+
+    openAddMenu(event.clientX, event.clientY, edgeDraft.fromNodeId);
     setEdgeDraft(null);
   }
 
@@ -599,6 +736,42 @@ export function App() {
     setViewport({ x: 80, y: 72, scale: 1 });
   }
 
+  function updateProvider(providerId: string, updater: (provider: ProviderConfig) => ProviderConfig) {
+    setProviders((current) =>
+      current.map((provider) => (provider.id === providerId ? updater(provider) : provider)),
+    );
+  }
+
+  function addProvider() {
+    const id = `provider_${Date.now()}`;
+    setProviders((current) => [
+      ...current,
+      {
+        id,
+        name: `供应商 ${current.length + 1}`,
+        protocol: 'openai-compatible',
+        baseURL: 'https://example.test/v1',
+        apiTokenRef: 'secret_ref',
+        enabled: true,
+        models: [],
+      },
+    ]);
+  }
+
+  function addProviderModel(providerId: string) {
+    updateProvider(providerId, (provider) => ({
+      ...provider,
+      models: [
+        ...provider.models,
+        {
+          canonicalModelId: 'gpt-image-2',
+          providerModelId: 'gpt-image-2',
+          enabled: true,
+        },
+      ],
+    }));
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -633,7 +806,7 @@ export function App() {
               }
             }}
           />
-          <button type="button">
+          <button type="button" onClick={() => setShowProviderManager(true)}>
             <Settings size={18} />
             供应商管理
           </button>
@@ -708,6 +881,15 @@ export function App() {
           onPointerUp={handlePointerEnd}
           onPointerCancel={handlePointerEnd}
           onWheel={handleWheel}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => {
+            event.preventDefault();
+            const file = event.dataTransfer.files[0];
+
+            if (file) {
+              addAssetNodeFromFile(file, getCanvasPointFromClient(event.clientX, event.clientY));
+            }
+          }}
         >
           <button
             type="button"
@@ -724,7 +906,9 @@ export function App() {
               style={{ left: addMenu.x, top: addMenu.y }}
               onPointerDown={(event) => event.stopPropagation()}
             >
-              {nodeTemplates.map((template) => {
+              {nodeTemplates
+                .filter((template) => !addMenu.fromNodeId || !template.outputOnly)
+                .map((template) => {
                 const Icon = template.icon;
                 return (
                   <button key={template.id} type="button" onClick={() => addNode(template)}>
@@ -827,13 +1011,15 @@ export function App() {
                     setAddMenu(null);
                   }}
                 >
-                  <button
-                    type="button"
-                    className="edge-handle edge-handle-input"
-                    aria-label="连接到此节点"
-                    onPointerUp={(event) => completeEdgeDraft(event, node.id)}
-                    onPointerDown={(event) => event.stopPropagation()}
-                  />
+                  {canNodeReceiveInput(node) ? (
+                    <button
+                      type="button"
+                      className="edge-handle edge-handle-input"
+                      aria-label="连接到此节点"
+                      onPointerUp={(event) => completeEdgeDraft(event, node.id)}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    />
+                  ) : null}
                   <header onPointerDown={(event) => handleNodePointerDown(event, node.id)}>
                     <span className="node-icon">
                       <Icon size={18} />
@@ -844,20 +1030,78 @@ export function App() {
                     </div>
                   </header>
                   <div className="node-body">
-                    <p>
-                      {providersForNode.length > 0
-                        ? `可用供应商：${providersForNode
-                            .map((provider) => provider.name)
-                            .join('、')}`
-                        : '对话模型供应商待配置'}
-                    </p>
-                    <textarea
-                      placeholder="输入提示词，使用 @image:asset_id 引用资产"
-                      onPointerDown={(event) => event.stopPropagation()}
-                    />
-                    <button type="button" onPointerDown={(event) => event.stopPropagation()}>
-                      生成
-                    </button>
+                    {node.kind === 'textAsset' ? (
+                      <textarea
+                        value={node.textContent ?? ''}
+                        placeholder="输入文本"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onChange={(event) =>
+                          updateNode(node.id, (current) => ({
+                            ...current,
+                            textContent: event.target.value,
+                          }))
+                        }
+                      />
+                    ) : node.kind === 'imageAsset' ? (
+                      <>
+                        {node.assetDataUrl ? (
+                          <img className="asset-preview" src={node.assetDataUrl} alt={node.assetName ?? '图片'} />
+                        ) : null}
+                        <label className="asset-upload">
+                          导入图片
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onChange={(event) => {
+                              const file = event.target.files?.[0];
+                              if (file) {
+                                addAssetNodeFromFile(file, { x: node.x, y: node.y });
+                                updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== node.id));
+                              }
+                            }}
+                          />
+                        </label>
+                      </>
+                    ) : node.kind === 'videoAsset' ? (
+                      <>
+                        {node.assetDataUrl ? (
+                          <video className="asset-preview" src={node.assetDataUrl} controls />
+                        ) : null}
+                        <label className="asset-upload">
+                          导入视频
+                          <input
+                            type="file"
+                            accept="video/*"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onChange={(event) => {
+                              const file = event.target.files?.[0];
+                              if (file) {
+                                addAssetNodeFromFile(file, { x: node.x, y: node.y });
+                                updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== node.id));
+                              }
+                            }}
+                          />
+                        </label>
+                      </>
+                    ) : (
+                      <>
+                        <p>
+                          {providersForNode.length > 0
+                            ? `可用供应商：${providersForNode
+                                .map((provider) => provider.name)
+                                .join('、')}`
+                            : '对话模型供应商待配置'}
+                        </p>
+                        <textarea
+                          placeholder="输入提示词，使用 @image:asset_id 引用资产"
+                          onPointerDown={(event) => event.stopPropagation()}
+                        />
+                        <button type="button" onPointerDown={(event) => event.stopPropagation()}>
+                          生成
+                        </button>
+                      </>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -910,6 +1154,147 @@ export function App() {
                 提示词
                 <textarea placeholder="输入节点提示词，支持 @ 引用画布资产" />
               </label>
+            </aside>
+          ) : null}
+          {showProviderManager ? (
+            <aside className="provider-manager">
+              <header>
+                <h2>供应商管理</h2>
+                <button type="button" onClick={() => setShowProviderManager(false)}>
+                  关闭
+                </button>
+              </header>
+              <button type="button" onClick={addProvider}>
+                <Plus size={16} />
+                新增供应商
+              </button>
+              <div className="provider-list">
+                {providers.map((provider) => (
+                  <section key={provider.id} className="provider-card">
+                    <label>
+                      名称
+                      <input
+                        value={provider.name}
+                        onChange={(event) =>
+                          updateProvider(provider.id, (current) => ({
+                            ...current,
+                            name: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Base URL
+                      <input
+                        value={provider.baseURL}
+                        onChange={(event) =>
+                          updateProvider(provider.id, (current) => ({
+                            ...current,
+                            baseURL: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      API Token 引用
+                      <input
+                        value={provider.apiTokenRef}
+                        onChange={(event) =>
+                          updateProvider(provider.id, (current) => ({
+                            ...current,
+                            apiTokenRef: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      协议
+                      <select
+                        value={provider.protocol}
+                        onChange={(event) =>
+                          updateProvider(provider.id, (current) => ({
+                            ...current,
+                            protocol: event.target.value as ProviderConfig['protocol'],
+                          }))
+                        }
+                      >
+                        <option value="openai-compatible">OpenAI Compatible</option>
+                        <option value="anthropic-compatible">Anthropic Compatible</option>
+                        <option value="volcengine">火山方舟</option>
+                        <option value="custom">自定义</option>
+                      </select>
+                    </label>
+                    <label className="inline-toggle">
+                      <input
+                        type="checkbox"
+                        checked={provider.enabled}
+                        onChange={(event) =>
+                          updateProvider(provider.id, (current) => ({
+                            ...current,
+                            enabled: event.target.checked,
+                          }))
+                        }
+                      />
+                      启用
+                    </label>
+                    <div className="provider-models">
+                      {provider.models.map((model, modelIndex) => (
+                        <div key={`${model.canonicalModelId}-${model.providerModelId}-${modelIndex}`}>
+                          <input
+                            value={model.canonicalModelId}
+                            aria-label="标准模型 ID"
+                            onChange={(event) =>
+                              updateProvider(provider.id, (current) => ({
+                                ...current,
+                                models: current.models.map((currentModel, currentIndex) =>
+                                  currentIndex === modelIndex
+                                    ? { ...currentModel, canonicalModelId: event.target.value }
+                                    : currentModel,
+                                ),
+                              }))
+                            }
+                          />
+                          <input
+                            value={model.providerModelId}
+                            aria-label="供应商模型 ID"
+                            onChange={(event) =>
+                              updateProvider(provider.id, (current) => ({
+                                ...current,
+                                models: current.models.map((currentModel, currentIndex) =>
+                                  currentIndex === modelIndex
+                                    ? { ...currentModel, providerModelId: event.target.value }
+                                    : currentModel,
+                                ),
+                              }))
+                            }
+                          />
+                          <label className="inline-toggle">
+                            <input
+                              type="checkbox"
+                              checked={model.enabled}
+                              onChange={(event) =>
+                                updateProvider(provider.id, (current) => ({
+                                  ...current,
+                                  models: current.models.map((currentModel, currentIndex) =>
+                                    currentIndex === modelIndex
+                                      ? { ...currentModel, enabled: event.target.checked }
+                                      : currentModel,
+                                  ),
+                                }))
+                              }
+                            />
+                            启用
+                          </label>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => addProviderModel(provider.id)}>
+                        <Plus size={16} />
+                        添加模型映射
+                      </button>
+                    </div>
+                  </section>
+                ))}
+              </div>
             </aside>
           ) : null}
         </div>
