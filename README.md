@@ -1,7 +1,23 @@
 # shot-agent
 
-`shot-agent` is initialized as an open source project.
+[English](README.en.md)
 
-## License
+`shot-agent` 旨在提供一个干净、简洁的无限画布，用于视觉创作。
 
-This project is licensed under the GNU General Public License v3.0 only. See [LICENSE](LICENSE) for details.
+本项目将逐步接入主流图片生成模型和视频生成模型，让用户可以在一个开放工作区中便捷地创建、摆放、对比和迭代生成素材。
+
+## 路线图
+
+第一期重点接入：
+
+- `gpt-image-2`
+- `seedance2.0`
+- `seedance2.0-fast`
+
+## 文档维护
+
+以后每次变更 README 时，都需要同步更新中文主文档和英文文档。
+
+## 开源协议
+
+本项目使用 GNU General Public License v3.0 only 开源协议。详情见 [LICENSE](LICENSE)。
