@@ -22,6 +22,7 @@ The first phase focuses on integrating:
 - Open the first canvas by default with a canvas list in the sidebar
 - Collapsible left sidebar
 - Create, rename, delete, import, and export canvases
+- Rename the canvas inline from the pencil button beside the canvas title
 - In-canvas left floating tools for creating, exporting, and importing canvases
 - Add nodes from the in-canvas `+` button or context menu
 - Create and connect a new node by dropping an edge on empty canvas space

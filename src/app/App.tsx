@@ -12,6 +12,7 @@ import {
   MessageSquare,
   Minus,
   Move,
+  Pencil,
   Play,
   Plus,
   RotateCcw,
@@ -286,6 +287,8 @@ export function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [canvasMessage, setCanvasMessage] = useState<string | null>(null);
+  const [isRenamingCanvas, setIsRenamingCanvas] = useState(false);
+  const [draftCanvasName, setDraftCanvasName] = useState('');
   const { activeCanvasId, canvases } = workspaceState;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? canvases[0];
   const selectedNode =
@@ -517,6 +520,16 @@ export function App() {
 
   function renameActiveCanvas(name: string) {
     setWorkspaceState((current) => renameCanvas(current, current.activeCanvasId, name));
+  }
+
+  function startRenameActiveCanvas() {
+    setDraftCanvasName(activeCanvas.name);
+    setIsRenamingCanvas(true);
+  }
+
+  function commitRenameActiveCanvas() {
+    renameActiveCanvas(draftCanvasName);
+    setIsRenamingCanvas(false);
   }
 
   function deleteActiveCanvas() {
@@ -814,13 +827,6 @@ export function App() {
         </nav>
         <section className="panel canvas-management">
           <h2>当前画布</h2>
-          <label>
-            名称
-            <input
-              value={activeCanvas.name}
-              onChange={(event) => renameActiveCanvas(event.target.value)}
-            />
-          </label>
           <button
             type="button"
             className="danger-button"
@@ -863,7 +869,39 @@ export function App() {
         <div className="toolbar">
           <div className="toolbar-title">
             {showProviderManager ? <Settings size={18} /> : <BoxSelect size={18} />}
-            <span>{showProviderManager ? '供应商管理' : activeCanvas.name}</span>
+            {showProviderManager ? (
+              <span>供应商管理</span>
+            ) : isRenamingCanvas ? (
+              <input
+                className="canvas-title-input"
+                value={draftCanvasName}
+                autoFocus
+                onBlur={commitRenameActiveCanvas}
+                onChange={(event) => setDraftCanvasName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    commitRenameActiveCanvas();
+                  }
+
+                  if (event.key === 'Escape') {
+                    setIsRenamingCanvas(false);
+                  }
+                }}
+              />
+            ) : (
+              <>
+                <span>{activeCanvas.name}</span>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="重命名画布"
+                  title="重命名画布"
+                  onClick={startRenameActiveCanvas}
+                >
+                  <Pencil size={15} />
+                </button>
+              </>
+            )}
           </div>
           <div className="toolbar-actions">
             {showProviderManager ? (

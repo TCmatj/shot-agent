@@ -106,22 +106,6 @@ button:disabled {
   gap: 10px;
 }
 
-.canvas-management label {
-  color: #aeb8c5;
-  display: grid;
-  font-size: 13px;
-  gap: 8px;
-}
-
-.canvas-management input {
-  background: #080a0d;
-  border: 1px solid #303640;
-  border-radius: 6px;
-  color: #eef2f5;
-  font: inherit;
-  padding: 10px;
-}
-
 .canvas-message {
   color: #8dffbc;
   font-size: 13px;
@@ -185,6 +169,25 @@ button:disabled {
 .toolbar-title {
   color: #dfe5ec;
   font-weight: 600;
+}
+
+.icon-button {
+  height: 30px;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0;
+  width: 30px;
+}
+
+.canvas-title-input {
+  background: #080a0d;
+  border: 1px solid #607086;
+  border-radius: 6px;
+  color: #eef2f5;
+  font: inherit;
+  min-height: 32px;
+  min-width: 220px;
+  padding: 0 10px;
 }
 
 .infinite-canvas {
