@@ -530,6 +530,34 @@ button:disabled {
   z-index: 1;
 }
 
+.empty-canvas-state {
+  align-content: center;
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  left: 50vw;
+  min-width: 360px;
+  position: absolute;
+  text-align: center;
+  top: 38vh;
+  transform: translate(-50%, -50%);
+}
+
+.empty-canvas-state h2 {
+  font-size: 22px;
+  margin: 0;
+}
+
+.empty-canvas-state p {
+  color: #8d98a7;
+  margin: 0;
+}
+
+.empty-canvas-state div {
+  display: flex;
+  gap: 10px;
+}
+
 .canvas-action-rail {
   display: grid;
   gap: 8px;

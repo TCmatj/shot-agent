@@ -292,11 +292,11 @@ export function App() {
   const [editingCanvasId, setEditingCanvasId] = useState<string | null>(null);
   const [draftListCanvasName, setDraftListCanvasName] = useState('');
   const { activeCanvasId, canvases } = workspaceState;
-  const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? canvases[0];
+  const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? null;
   const selectedNode =
-    activeCanvas.nodes.find((node) => node.id === selectedNodeId) ?? null;
+    activeCanvas?.nodes.find((node) => node.id === selectedNodeId) ?? null;
   const selectedEdge =
-    activeCanvas.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
+    activeCanvas?.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const imageProviders = findProvidersForCanonicalModel(providers, 'gpt-image-2');
   const videoProviders = findProvidersForCanonicalModel(providers, 'seedance2.0');
 
@@ -394,7 +394,7 @@ export function App() {
     setWorkspaceState((current) => ({
       ...current,
       canvases: current.canvases.map((canvas) =>
-        canvas.id === current.activeCanvasId
+        current.activeCanvasId && canvas.id === current.activeCanvasId
           ? { ...canvas, updatedAt: '刚刚', nodes: updater(canvas.nodes) }
           : canvas,
       ),
@@ -407,7 +407,7 @@ export function App() {
     setWorkspaceState((current) => ({
       ...current,
       canvases: current.canvases.map((canvas) =>
-        canvas.id === current.activeCanvasId
+        current.activeCanvasId && canvas.id === current.activeCanvasId
           ? { ...canvas, updatedAt: '刚刚', edges: updater(canvas.edges) }
           : canvas,
       ),
@@ -444,6 +444,10 @@ export function App() {
   }
 
   function addNode(template: NodeTemplate) {
+    if (!activeCanvas) {
+      return;
+    }
+
     const point = addMenu?.canvasPoint ?? screenToCanvasPoint({ x: 260, y: 180 }, viewport);
     const nodeId = `node_${template.kind}_${Date.now()}`;
 
@@ -525,6 +529,10 @@ export function App() {
   }
 
   function startRenameActiveCanvas() {
+    if (!activeCanvas) {
+      return;
+    }
+
     setDraftCanvasName(activeCanvas.name);
     setIsRenamingCanvas(true);
   }
@@ -535,6 +543,10 @@ export function App() {
   }
 
   function deleteActiveCanvas() {
+    if (!activeCanvasId) {
+      return;
+    }
+
     setWorkspaceState((current) => deleteCanvas(current, current.activeCanvasId));
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
@@ -563,6 +575,10 @@ export function App() {
   }
 
   function downloadActiveCanvas() {
+    if (!activeCanvas) {
+      return;
+    }
+
     const content = exportCanvas(activeCanvas);
     const blob = new Blob([content], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -594,6 +610,10 @@ export function App() {
   }
 
   function handleCanvasPointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (!activeCanvas) {
+      return;
+    }
+
     if (event.button !== 0 || event.target !== event.currentTarget) {
       return;
     }
@@ -676,6 +696,10 @@ export function App() {
   }
 
   function startEdgeDraft(event: PointerEvent<HTMLButtonElement>, node: CanvasNodeView) {
+    if (!activeCanvas) {
+      return;
+    }
+
     if (event.button !== 0) {
       return;
     }
@@ -863,7 +887,7 @@ export function App() {
               return (
                 <div
                   key={canvas.id}
-                  className={`canvas-list-item ${canvas.id === activeCanvas.id ? 'is-active' : ''}`}
+                  className={`canvas-list-item ${canvas.id === activeCanvas?.id ? 'is-active' : ''}`}
                 >
                   <button
                     type="button"
@@ -963,16 +987,18 @@ export function App() {
               />
             ) : (
               <>
-                <span>{activeCanvas.name}</span>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="重命名画布"
-                  title="重命名画布"
-                  onClick={startRenameActiveCanvas}
-                >
-                  <Pencil size={15} />
-                </button>
+                <span>{activeCanvas?.name ?? '暂无画布'}</span>
+                {activeCanvas ? (
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="重命名画布"
+                    title="重命名画布"
+                    onClick={startRenameActiveCanvas}
+                  >
+                    <Pencil size={15} />
+                  </button>
+                ) : null}
               </>
             )}
           </div>
@@ -1241,7 +1267,7 @@ export function App() {
             }}
           >
             <svg className="edge-layer" aria-label="节点连线">
-              {activeCanvas.edges.map((edge) => {
+              {activeCanvas?.edges.map((edge) => {
                 const fromNode = activeCanvas.nodes.find((node) => node.id === edge.fromNodeId);
                 const toNode = activeCanvas.nodes.find((node) => node.id === edge.toNodeId);
 
@@ -1287,7 +1313,7 @@ export function App() {
                 />
               ) : null}
             </svg>
-            {activeCanvas.nodes.map((node) => {
+            {activeCanvas?.nodes.map((node) => {
               const Icon = getNodeIcon(node.kind);
               const providersForNode =
                 node.modelId === 'gpt-image-2'
@@ -1411,6 +1437,22 @@ export function App() {
                 </article>
               );
             })}
+            {!activeCanvas ? (
+              <div className="empty-canvas-state">
+                <h2>暂无画布</h2>
+                <p>新建或导入一个画布后即可开始组织节点。</p>
+                <div>
+                  <button type="button" onClick={createCanvas}>
+                    <FolderPlus size={18} />
+                    新建画布
+                  </button>
+                  <button type="button" onClick={() => importInputRef.current?.click()}>
+                    <Import size={18} />
+                    导入画布
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
           {selectedEdge ? (
             <div className="edge-actions">

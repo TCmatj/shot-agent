@@ -56,9 +56,16 @@ describe('canvas workspace persistence', () => {
     const fallback = createWorkspaceState(canvases);
 
     expect(parseWorkspaceState('{bad json', fallback)).toEqual(fallback);
-    expect(parseWorkspaceState('{"version":1,"activeCanvasId":"missing","canvases":[]}', fallback)).toEqual(
-      fallback,
-    );
+    expect(parseWorkspaceState('{"version":999,"activeCanvasId":"missing","canvases":[]}', fallback)).toEqual(fallback);
+  });
+
+  it('parses an empty canvas list', () => {
+    expect(
+      parseWorkspaceState('{"version":1,"activeCanvasId":"","canvases":[]}', createWorkspaceState(canvases)),
+    ).toEqual({
+      activeCanvasId: '',
+      canvases: [],
+    });
   });
 
   it('renames a canvas when name is not empty', () => {
@@ -80,10 +87,13 @@ describe('canvas workspace persistence', () => {
     });
   });
 
-  it('keeps the last canvas when deleting', () => {
+  it('allows deleting the last canvas', () => {
     const state = createWorkspaceState([canvases[0]]);
 
-    expect(deleteCanvas(state, 'canvas_first')).toEqual(state);
+    expect(deleteCanvas(state, 'canvas_first')).toEqual({
+      activeCanvasId: '',
+      canvases: [],
+    });
   });
 
   it('exports and imports a canvas with a new id', () => {

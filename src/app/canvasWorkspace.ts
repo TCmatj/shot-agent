@@ -140,7 +140,6 @@ export function parseWorkspaceState(
       parsed.version !== storageVersion ||
       typeof parsed.activeCanvasId !== 'string' ||
       !Array.isArray(parsed.canvases) ||
-      parsed.canvases.length === 0 ||
       !parsed.canvases.every(isCanvasView)
     ) {
       return fallback;
@@ -151,7 +150,7 @@ export function parseWorkspaceState(
     );
 
     return {
-      activeCanvasId: activeCanvasExists ? parsed.activeCanvasId : parsed.canvases[0].id,
+      activeCanvasId: activeCanvasExists ? parsed.activeCanvasId : (parsed.canvases[0]?.id ?? ''),
       canvases: parsed.canvases.map(normalizeCanvas),
     };
   } catch {
@@ -182,10 +181,6 @@ export function deleteCanvas(
   state: CanvasWorkspaceState,
   canvasId: string,
 ): CanvasWorkspaceState {
-  if (state.canvases.length <= 1) {
-    return state;
-  }
-
   const deletedIndex = state.canvases.findIndex((canvas) => canvas.id === canvasId);
   const canvases = state.canvases.filter((canvas) => canvas.id !== canvasId);
 
@@ -199,7 +194,7 @@ export function deleteCanvas(
   const fallbackCanvas = canvases[Math.max(0, deletedIndex - 1)] ?? canvases[0];
 
   return {
-    activeCanvasId: fallbackCanvas.id,
+    activeCanvasId: fallbackCanvas?.id ?? '',
     canvases,
   };
 }
