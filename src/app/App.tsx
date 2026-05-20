@@ -4,6 +4,7 @@ import {
   Download,
   FilePlus2,
   FileText,
+  FolderOpen,
   FolderPlus,
   PanelLeftClose,
   PanelLeftOpen,
@@ -36,6 +37,7 @@ import {
   removeCanvasEdge,
   removeCanvasNode,
   serializeWorkspaceState,
+  updateWorkspaceStorage,
   type CanvasNodeKind,
   type CanvasNodeView,
   type CanvasView,
@@ -71,6 +73,10 @@ type EdgeDraft = {
   from: Point;
   to: Point;
 } | null;
+
+type WindowWithDirectoryPicker = Window & {
+  showDirectoryPicker?: () => Promise<{ name: string }>;
+};
 
 type DragState =
   | {
@@ -291,7 +297,7 @@ export function App() {
   const [draftCanvasName, setDraftCanvasName] = useState('');
   const [editingCanvasId, setEditingCanvasId] = useState<string | null>(null);
   const [draftListCanvasName, setDraftListCanvasName] = useState('');
-  const { activeCanvasId, canvases } = workspaceState;
+  const { activeCanvasId, canvases, storage } = workspaceState;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? null;
   const selectedNode =
     activeCanvas?.nodes.find((node) => node.id === selectedNodeId) ?? null;
@@ -508,6 +514,7 @@ export function App() {
   function createCanvas() {
     const id = `canvas_${Date.now()}`;
     setWorkspaceState((current) => ({
+      ...current,
       activeCanvasId: id,
       canvases: [
         ...current.canvases,
@@ -522,6 +529,58 @@ export function App() {
     }));
     setViewport({ x: 80, y: 72, scale: 1 });
     setCanvasMessage(null);
+  }
+
+  async function chooseCanvasStorageFolder() {
+    const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
+
+    if (!picker) {
+      setWorkspaceState((current) =>
+        updateWorkspaceStorage(current, {
+          mode: 'custom-folder',
+          folderName: current.storage.mode === 'custom-folder' ? current.storage.folderName : undefined,
+          folderPath: current.storage.mode === 'custom-folder' ? current.storage.folderPath : undefined,
+        }),
+      );
+      setCanvasMessage('当前浏览器不支持直接选择文件夹，可手动填写存储路径或名称');
+      return;
+    }
+
+    try {
+      const directory = await picker();
+      setWorkspaceState((current) =>
+        updateWorkspaceStorage(current, {
+          mode: 'custom-folder',
+          folderName: directory.name,
+          folderPath: directory.name,
+        }),
+      );
+      setCanvasMessage(`画布存储文件夹已设置为：${directory.name}`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
+
+      setCanvasMessage('选择画布存储文件夹失败');
+    }
+  }
+
+  function updateCanvasStorageFolder(value: string) {
+    const folderValue = value.trim();
+
+    setWorkspaceState((current) =>
+      updateWorkspaceStorage(
+        current,
+        folderValue
+          ? {
+              mode: 'custom-folder',
+              folderPath: folderValue,
+            }
+          : {
+              mode: 'browser-local',
+            },
+      ),
+    );
   }
 
   function renameActiveCanvas(name: string) {
@@ -874,6 +933,33 @@ export function App() {
             供应商管理
           </button>
         </nav>
+        <section className="panel storage-panel">
+          <div className="panel-title-row">
+            <h2>存储</h2>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="选择画布存储文件夹"
+              title="选择画布存储文件夹"
+              onClick={() => void chooseCanvasStorageFolder()}
+            >
+              <FolderOpen size={15} />
+            </button>
+          </div>
+          <label>
+            画布存储文件夹
+            <input
+              value={storage.mode === 'custom-folder' ? storage.folderPath ?? storage.folderName ?? '' : ''}
+              placeholder="默认使用浏览器本地存储"
+              onChange={(event) => updateCanvasStorageFolder(event.target.value)}
+            />
+          </label>
+          <p>
+            {storage.mode === 'custom-folder'
+              ? `当前：${storage.folderName ?? storage.folderPath ?? '自定义文件夹'}`
+              : '当前：浏览器本地存储'}
+          </p>
+        </section>
         <section className="panel">
           <div className="panel-title-row">
             <h2>画布</h2>

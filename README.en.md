@@ -37,6 +37,7 @@ The first phase focuses on integrating:
 - Inspect selected node details and configuration entry points
 - Delete selected nodes or edges with `Delete` / `Backspace`
 - Save the canvas list, active canvas, and node positions locally in the browser
+- Configure a custom canvas storage folder, with direct folder picking when the browser supports it
 - Canvas project domain model
 - Workflow node and edge domain operations
 - Provider configuration and model mapping

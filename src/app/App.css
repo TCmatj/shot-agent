@@ -119,6 +119,38 @@ button:disabled {
   margin: 0;
 }
 
+.storage-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.storage-panel label {
+  color: #aeb8c5;
+  display: grid;
+  font-size: 13px;
+  gap: 8px;
+}
+
+.storage-panel input {
+  background: #080a0d;
+  border: 1px solid #303640;
+  border-radius: 6px;
+  color: #eef2f5;
+  font: inherit;
+  min-height: 34px;
+  min-width: 0;
+  padding: 8px;
+  width: 100%;
+}
+
+.storage-panel p {
+  color: #8d98a7;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .canvas-list {
   display: grid;
   gap: 8px;

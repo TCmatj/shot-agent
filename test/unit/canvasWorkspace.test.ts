@@ -16,6 +16,7 @@ import {
   removeCanvasEdge,
   removeCanvasNode,
   serializeWorkspaceState,
+  updateWorkspaceStorage,
   type CanvasView,
 } from '../../src/app/canvasWorkspace';
 
@@ -41,10 +42,21 @@ describe('canvas workspace persistence', () => {
     expect(createWorkspaceState(canvases).activeCanvasId).toBe('canvas_first');
   });
 
+  it('uses browser local storage as the default canvas storage setting', () => {
+    expect(createWorkspaceState(canvases).storage).toEqual({
+      mode: 'browser-local',
+    });
+  });
+
   it('serializes and parses workspace state', () => {
     const state = {
       activeCanvasId: 'canvas_second',
       canvases,
+      storage: {
+        mode: 'custom-folder' as const,
+        folderName: 'Shot Agent',
+        folderPath: '/Users/zz/Shot Agent',
+      },
     };
 
     expect(parseWorkspaceState(serializeWorkspaceState(state), createWorkspaceState(canvases))).toEqual(
@@ -65,6 +77,38 @@ describe('canvas workspace persistence', () => {
     ).toEqual({
       activeCanvasId: '',
       canvases: [],
+      storage: {
+        mode: 'browser-local',
+      },
+    });
+  });
+
+  it('parses custom canvas storage settings', () => {
+    expect(
+      parseWorkspaceState(
+        '{"version":1,"activeCanvasId":"canvas_first","canvases":[{"id":"canvas_first","name":"默认画布","updatedAt":"刚刚","nodes":[],"edges":[]}],"storage":{"mode":"custom-folder","folderName":"镜头项目","folderPath":"/Volumes/Works/镜头项目"}}',
+        createWorkspaceState(canvases),
+      ).storage,
+    ).toEqual({
+      mode: 'custom-folder',
+      folderName: '镜头项目',
+      folderPath: '/Volumes/Works/镜头项目',
+    });
+  });
+
+  it('updates custom canvas storage folder and trims empty values', () => {
+    const state = createWorkspaceState(canvases);
+
+    expect(
+      updateWorkspaceStorage(state, {
+        mode: 'custom-folder',
+        folderName: '  Shot Agent  ',
+        folderPath: '  /Users/zz/Shot Agent  ',
+      }).storage,
+    ).toEqual({
+      mode: 'custom-folder',
+      folderName: 'Shot Agent',
+      folderPath: '/Users/zz/Shot Agent',
     });
   });
 
@@ -79,11 +123,17 @@ describe('canvas workspace persistence', () => {
     const state = {
       activeCanvasId: 'canvas_second',
       canvases,
+      storage: {
+        mode: 'browser-local' as const,
+      },
     };
 
     expect(deleteCanvas(state, 'canvas_second')).toEqual({
       activeCanvasId: 'canvas_first',
       canvases: [canvases[0]],
+      storage: {
+        mode: 'browser-local',
+      },
     });
   });
 
@@ -93,6 +143,9 @@ describe('canvas workspace persistence', () => {
     expect(deleteCanvas(state, 'canvas_first')).toEqual({
       activeCanvasId: '',
       canvases: [],
+      storage: {
+        mode: 'browser-local',
+      },
     });
   });
 

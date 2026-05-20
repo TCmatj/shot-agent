@@ -27,9 +27,20 @@ export type CanvasView = {
   edges: CanvasEdgeView[];
 };
 
+export type CanvasStorageConfig =
+  | {
+      mode: 'browser-local';
+    }
+  | {
+      mode: 'custom-folder';
+      folderName?: string;
+      folderPath?: string;
+    };
+
 export type CanvasWorkspaceState = {
   activeCanvasId: string;
   canvases: CanvasView[];
+  storage: CanvasStorageConfig;
 };
 
 const storageVersion = 1;
@@ -108,12 +119,53 @@ function normalizeCanvas(canvas: CanvasView): CanvasView {
   };
 }
 
+function isCanvasStorageConfig(value: unknown): value is CanvasStorageConfig {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const storage = value as CanvasStorageConfig;
+
+  if (storage.mode === 'browser-local') {
+    return true;
+  }
+
+  if (storage.mode !== 'custom-folder') {
+    return false;
+  }
+
+  return (
+    (storage.folderName === undefined || typeof storage.folderName === 'string') &&
+    (storage.folderPath === undefined || typeof storage.folderPath === 'string')
+  );
+}
+
+function normalizeStorageConfig(storage?: CanvasStorageConfig): CanvasStorageConfig {
+  if (!storage || storage.mode === 'browser-local') {
+    return {
+      mode: 'browser-local',
+    };
+  }
+
+  const folderName = storage.folderName?.trim();
+  const folderPath = storage.folderPath?.trim();
+
+  return {
+    mode: 'custom-folder',
+    ...(folderName ? { folderName } : {}),
+    ...(folderPath ? { folderPath } : {}),
+  };
+}
+
 export function createWorkspaceState(canvases: CanvasView[]): CanvasWorkspaceState {
   const firstCanvas = canvases[0];
 
   return {
     activeCanvasId: firstCanvas?.id ?? '',
     canvases,
+    storage: {
+      mode: 'browser-local',
+    },
   };
 }
 
@@ -122,6 +174,7 @@ export function serializeWorkspaceState(state: CanvasWorkspaceState): string {
     version: storageVersion,
     activeCanvasId: state.activeCanvasId,
     canvases: state.canvases,
+    storage: normalizeStorageConfig(state.storage),
   });
 }
 
@@ -140,7 +193,8 @@ export function parseWorkspaceState(
       parsed.version !== storageVersion ||
       typeof parsed.activeCanvasId !== 'string' ||
       !Array.isArray(parsed.canvases) ||
-      !parsed.canvases.every(isCanvasView)
+      !parsed.canvases.every(isCanvasView) ||
+      (parsed.storage !== undefined && !isCanvasStorageConfig(parsed.storage))
     ) {
       return fallback;
     }
@@ -152,10 +206,21 @@ export function parseWorkspaceState(
     return {
       activeCanvasId: activeCanvasExists ? parsed.activeCanvasId : (parsed.canvases[0]?.id ?? ''),
       canvases: parsed.canvases.map(normalizeCanvas),
+      storage: normalizeStorageConfig(parsed.storage),
     };
   } catch {
     return fallback;
   }
+}
+
+export function updateWorkspaceStorage(
+  state: CanvasWorkspaceState,
+  storage: CanvasStorageConfig,
+): CanvasWorkspaceState {
+  return {
+    ...state,
+    storage: normalizeStorageConfig(storage),
+  };
 }
 
 export function renameCanvas(
@@ -194,6 +259,7 @@ export function deleteCanvas(
   const fallbackCanvas = canvases[Math.max(0, deletedIndex - 1)] ?? canvases[0];
 
   return {
+    ...state,
     activeCanvasId: fallbackCanvas?.id ?? '',
     canvases,
   };
@@ -231,6 +297,7 @@ export function importCanvas(
   };
 
   return {
+    ...state,
     activeCanvasId: importedCanvas.id,
     canvases: [...state.canvases, importedCanvas],
   };
