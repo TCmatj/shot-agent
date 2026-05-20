@@ -562,6 +562,37 @@ button:disabled {
   z-index: 1;
 }
 
+.canvas-add-button::after,
+.canvas-action-rail button::after {
+  background: rgba(9, 11, 14, 0.94);
+  border: 1px solid #303640;
+  border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34);
+  color: #eef2f5;
+  content: attr(aria-label);
+  font-size: 13px;
+  left: calc(100% + 10px);
+  line-height: 1;
+  opacity: 0;
+  padding: 8px 10px;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translate(-4px, -50%);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+  white-space: nowrap;
+}
+
+.canvas-add-button:hover::after,
+.canvas-add-button:focus-visible::after,
+.canvas-action-rail button:hover::after,
+.canvas-action-rail button:focus-visible::after {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+
 .empty-canvas-state {
   align-content: center;
   display: grid;
@@ -605,6 +636,7 @@ button:disabled {
   justify-content: center;
   min-height: 42px;
   padding: 0;
+  position: relative;
   width: 42px;
 }
 
