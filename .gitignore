@@ -21,9 +21,18 @@ node_modules/
 dist/
 build/
 coverage/
+.npm-cache/
 
 # Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Vite
+.vite/
+*.tsbuildinfo
+
+# Test output
+test-results/
+playwright-report/
