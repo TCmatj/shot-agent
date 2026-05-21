@@ -1620,6 +1620,10 @@ export function App() {
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
+    if (event.metaKey || event.ctrlKey) {
+      return;
+    }
+
     if (
       event.target instanceof Element &&
       event.target.closest('.output-modal')
@@ -1645,6 +1649,10 @@ export function App() {
   }
 
   function handleModalScrollableWheel(event: WheelEvent<HTMLElement>) {
+    if (event.metaKey || event.ctrlKey) {
+      return;
+    }
+
     event.preventDefault();
     event.stopPropagation();
 
