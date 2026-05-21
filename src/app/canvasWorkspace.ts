@@ -49,6 +49,11 @@ export type CanvasView = {
   edges: CanvasEdgeView[];
 };
 
+export type CanvasClipboardPayload = {
+  nodes: CanvasNodeView[];
+  edges: CanvasEdgeView[];
+};
+
 export type CanvasStorageConfig =
   | {
       mode: 'browser-local';
@@ -472,6 +477,82 @@ export function moveCanvasNodes(
         }
       : node,
   );
+}
+
+export function copyCanvasSelection(
+  canvas: CanvasView,
+  nodeIds: string[],
+): CanvasClipboardPayload | null {
+  const selectedNodeIds = new Set(nodeIds);
+  const nodes = canvas.nodes.filter((node) => selectedNodeIds.has(node.id));
+
+  if (nodes.length === 0) {
+    return null;
+  }
+
+  return {
+    nodes: nodes.map((node) => ({ ...node })),
+    edges: canvas.edges
+      .filter(
+        (edge) => selectedNodeIds.has(edge.fromNodeId) && selectedNodeIds.has(edge.toNodeId),
+      )
+      .map((edge) => ({ ...edge })),
+  };
+}
+
+export function pasteCanvasClipboard(
+  canvas: CanvasView,
+  payload: CanvasClipboardPayload,
+  options: {
+    createNodeId(node: CanvasNodeView): string;
+    offset?: { dx: number; dy: number };
+  },
+): { canvas: CanvasView; pastedNodeIds: string[] } {
+  const offset = options.offset ?? { dx: 36, dy: 36 };
+  const idMap = new Map<string, string>();
+
+  payload.nodes.forEach((node) => {
+    idMap.set(node.id, options.createNodeId(node));
+  });
+
+  const pastedNodes = payload.nodes.map((node) => {
+    const nextId = idMap.get(node.id)!;
+
+    return {
+      ...node,
+      id: nextId,
+      x: node.x + offset.dx,
+      y: node.y + offset.dy,
+      prompt: node.prompt ? remapPromptNodeReferences(node.prompt, idMap) : node.prompt,
+      generationStatus: undefined,
+      generationError: undefined,
+      generationId: undefined,
+    };
+  });
+  const pastedEdges = payload.edges.flatMap((edge) => {
+    const fromNodeId = idMap.get(edge.fromNodeId);
+    const toNodeId = idMap.get(edge.toNodeId);
+
+    return fromNodeId && toNodeId ? [createCanvasEdge(fromNodeId, toNodeId)] : [];
+  });
+
+  return {
+    canvas: {
+      ...canvas,
+      updatedAt: '刚刚',
+      nodes: [...canvas.nodes, ...pastedNodes],
+      edges: [...canvas.edges, ...pastedEdges],
+    },
+    pastedNodeIds: pastedNodes.map((node) => node.id),
+  };
+}
+
+function remapPromptNodeReferences(prompt: string, idMap: Map<string, string>): string {
+  return prompt.replace(/@(text|image|video|audio|file):([a-zA-Z0-9_-]+)/g, (token, kind, nodeId) => {
+    const nextNodeId = idMap.get(nodeId);
+
+    return nextNodeId ? `@${kind}:${nextNodeId}` : token;
+  });
 }
 
 export function getUpstreamNodeIds(canvas: CanvasView, nodeId: string): string[] {

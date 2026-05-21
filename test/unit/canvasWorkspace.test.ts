@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addCanvasEdge,
   canConnectCanvasNodes,
+  copyCanvasSelection,
   createCanvasEdge,
   createSequentialEdges,
   createWorkspaceState,
@@ -17,6 +18,7 @@ import {
   importCanvas,
   moveCanvasNodes,
   parseWorkspaceState,
+  pasteCanvasClipboard,
   renameCanvas,
   removeCanvasEdge,
   removeCanvasNode,
@@ -292,6 +294,81 @@ describe('canvas workspace persistence', () => {
       { ...nodes[1], x: 372, y: -8 },
       nodes[2],
     ]);
+  });
+
+  it('copies selected nodes with their internal edges', () => {
+    const canvas: CanvasView = {
+      id: 'canvas_1',
+      name: '画布',
+      updatedAt: '刚刚',
+      nodes: [
+        { id: 'node_1', title: 'A', modelId: 'a', kind: 'image', x: 0, y: 0 },
+        { id: 'node_2', title: 'B', modelId: 'b', kind: 'video', x: 320, y: 0 },
+        { id: 'node_3', title: 'C', modelId: 'c', kind: 'chat', x: 640, y: 0 },
+      ],
+      edges: [
+        { id: 'edge_node_1_node_2', fromNodeId: 'node_1', toNodeId: 'node_2' },
+        { id: 'edge_node_2_node_3', fromNodeId: 'node_2', toNodeId: 'node_3' },
+      ],
+    };
+
+    expect(copyCanvasSelection(canvas, ['node_1', 'node_2'])).toEqual({
+      nodes: [canvas.nodes[0], canvas.nodes[1]],
+      edges: [canvas.edges[0]],
+    });
+    expect(copyCanvasSelection(canvas, [])).toBeNull();
+  });
+
+  it('pastes copied nodes with new ids, shifted positions and remapped references', () => {
+    const canvas: CanvasView = {
+      id: 'canvas_1',
+      name: '画布',
+      updatedAt: '刚刚',
+      nodes: [
+        { id: 'node_1', title: 'A', modelId: 'asset-image', kind: 'imageAsset', x: 0, y: 0 },
+        {
+          id: 'node_2',
+          title: 'B',
+          modelId: 'gpt-image-2',
+          kind: 'image',
+          x: 320,
+          y: 0,
+          prompt: '参考 @image:node_1',
+          generationStatus: 'running',
+          generationId: 'gen_1',
+          generationError: '旧错误',
+        },
+      ],
+      edges: [{ id: 'edge_node_1_node_2', fromNodeId: 'node_1', toNodeId: 'node_2' }],
+    };
+    const copied = copyCanvasSelection(canvas, ['node_1', 'node_2']);
+    let nextId = 0;
+
+    expect(copied).not.toBeNull();
+    const pasted = pasteCanvasClipboard(canvas, copied!, {
+      createNodeId: (node) => `${node.id}_copy_${++nextId}`,
+      offset: { dx: 40, dy: 48 },
+    });
+
+    expect(pasted.pastedNodeIds).toEqual(['node_1_copy_1', 'node_2_copy_2']);
+    expect(pasted.canvas.nodes.slice(2)).toEqual([
+      { ...canvas.nodes[0], id: 'node_1_copy_1', x: 40, y: 48 },
+      {
+        ...canvas.nodes[1],
+        id: 'node_2_copy_2',
+        x: 360,
+        y: 48,
+        prompt: '参考 @image:node_1_copy_1',
+        generationStatus: undefined,
+        generationId: undefined,
+        generationError: undefined,
+      },
+    ]);
+    expect(pasted.canvas.edges[1]).toEqual({
+      id: 'edge_node_1_copy_1_node_2_copy_2',
+      fromNodeId: 'node_1_copy_1',
+      toNodeId: 'node_2_copy_2',
+    });
   });
 
   it('marks asset nodes as output-only', () => {

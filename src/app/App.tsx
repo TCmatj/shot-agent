@@ -62,6 +62,7 @@ import {
   addCanvasEdge,
   canConnectCanvasNodes,
   canNodeReceiveInput,
+  copyCanvasSelection,
   createWorkspaceState,
   deleteCanvas,
   exportCanvas,
@@ -73,6 +74,7 @@ import {
   moveCanvasNodes,
   normalizeCanvasSelectionRect,
   parseWorkspaceState,
+  pasteCanvasClipboard,
   renameCanvas,
   removeCanvasEdge,
   removeCanvasNode,
@@ -81,6 +83,7 @@ import {
   type CanvasNodeKind,
   type CanvasNodeView,
   type CanvasView,
+  type CanvasClipboardPayload,
 } from './canvasWorkspace';
 import {
   getCanvasContentBounds,
@@ -1130,6 +1133,7 @@ export function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [canvasClipboard, setCanvasClipboard] = useState<CanvasClipboardPayload | null>(null);
   const [canvasMessage, setCanvasMessage] = useState<string | null>(null);
   const [isRenamingCanvas, setIsRenamingCanvas] = useState(false);
   const [draftCanvasName, setDraftCanvasName] = useState('');
@@ -1362,6 +1366,10 @@ export function App() {
       const isRedo =
         (event.ctrlKey || event.metaKey) &&
         ((event.shiftKey && key === 'z') || key === 'y');
+      const isCopy = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'c';
+      const isCut = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'x';
+      const isPaste = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'v';
+      const isSelectAll = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'a';
 
       if (isUndo || isRedo) {
         if ((isUndo && !canUndoWorkspace) || (isRedo && !canRedoWorkspace)) {
@@ -1375,6 +1383,82 @@ export function App() {
           redoWorkspace();
         }
         return;
+      }
+
+      if (!isEditingText && (isCopy || isCut || isPaste || isSelectAll)) {
+        if (isCopy || isCut) {
+          const nodeIdsToCopy = selectedNodeIds.length
+            ? selectedNodeIds
+            : selectedNodeId
+              ? [selectedNodeId]
+              : [];
+          const copied = activeCanvas ? copyCanvasSelection(activeCanvas, nodeIdsToCopy) : null;
+
+          if (!copied) {
+            return;
+          }
+
+          event.preventDefault();
+          setCanvasClipboard(copied);
+
+          if (isCut) {
+            setWorkspaceStateWithHistory((current) => ({
+              ...current,
+              canvases: current.canvases.map((canvas) =>
+                canvas.id === current.activeCanvasId
+                  ? {
+                      ...nodeIdsToCopy.reduce(removeCanvasNode, canvas),
+                      updatedAt: '刚刚',
+                    }
+                  : canvas,
+              ),
+            }));
+            clearSelection();
+          }
+          return;
+        }
+
+        if (isPaste) {
+          if (!canvasClipboard) {
+            return;
+          }
+
+          event.preventDefault();
+          let pastedNodeIds: string[] = [];
+          let nextClipboard: CanvasClipboardPayload | null = null;
+
+          setWorkspaceStateWithHistory((current) => ({
+            ...current,
+            canvases: current.canvases.map((canvas) => {
+              if (canvas.id !== current.activeCanvasId) {
+                return canvas;
+              }
+
+              const pasted = pasteCanvasClipboard(canvas, canvasClipboard, {
+                createNodeId: (node) =>
+                  `node_${node.kind}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                offset: { dx: 36, dy: 36 },
+              });
+              pastedNodeIds = pasted.pastedNodeIds;
+              nextClipboard = copyCanvasSelection(pasted.canvas, pastedNodeIds);
+              return pasted.canvas;
+            }),
+          }));
+          setCanvasClipboard(nextClipboard);
+          setSelectedNodeIds(pastedNodeIds);
+          setSelectedNodeId(pastedNodeIds.length === 1 ? pastedNodeIds[0] : null);
+          setSelectedEdgeId(null);
+          return;
+        }
+
+        if (isSelectAll && activeCanvas) {
+          event.preventDefault();
+          const allNodeIds = activeCanvas.nodes.map((node) => node.id);
+          setSelectedNodeIds(allNodeIds);
+          setSelectedNodeId(allNodeIds.length === 1 ? allNodeIds[0] : null);
+          setSelectedEdgeId(null);
+          return;
+        }
       }
 
       if (isEditingText || (event.key !== 'Delete' && event.key !== 'Backspace')) {
@@ -1420,6 +1504,8 @@ export function App() {
   }, [
     canRedoWorkspace,
     canUndoWorkspace,
+    activeCanvas,
+    canvasClipboard,
     selectedEdgeId,
     selectedNodeId,
     selectedNodeIds,
