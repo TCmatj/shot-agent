@@ -16,6 +16,8 @@ type InputAsset = {
   mimeType?: string;
 };
 
+const chatImageInputLimit = 20;
+
 export type GenerationRequest = {
   url: string;
   method: 'POST';
@@ -185,6 +187,16 @@ export function buildGenerationRequest(
   }
 
   if (node.kind === 'chat') {
+    const chatImageInputs = collectInputAssets(node, input.canvas).filter(
+      (asset) => asset.role === 'reference_image',
+    );
+    if (chatImageInputs.length > chatImageInputLimit) {
+      return {
+        ok: false,
+        error: `对话节点最多支持 ${chatImageInputLimit} 张图片输入`,
+      };
+    }
+
     if (input.provider.protocol === 'anthropic-compatible') {
       return {
         ok: true,

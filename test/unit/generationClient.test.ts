@@ -440,6 +440,50 @@ describe('generation client request building', () => {
     });
   });
 
+  it('rejects chat requests with more than 20 image inputs', () => {
+    const imageNodes = Array.from({ length: 21 }, (_, index) => ({
+      id: `image_asset_${index + 1}`,
+      title: `Reference ${index + 1}`,
+      modelId: 'asset-image',
+      kind: 'imageAsset' as const,
+      x: 0,
+      y: 0,
+      assetDataUrl: 'data:image/png;base64,aW1hZ2U=',
+      assetMimeType: 'image/png',
+    }));
+    const chatNode = {
+      id: 'chat_many_images',
+      title: 'Chat',
+      modelId: 'gpt-5.4-mini',
+      kind: 'chat' as const,
+      x: 0,
+      y: 0,
+      prompt: imageNodes.map((node) => `@image:${node.id}`).join(' '),
+    };
+
+    expect(
+      buildGenerationRequest({
+        canvas: {
+          id: 'canvas_many_images',
+          name: 'Canvas',
+          updatedAt: 'now',
+          nodes: [...imageNodes, chatNode],
+          edges: imageNodes.map((node) => ({
+            id: `edge_${node.id}_chat`,
+            fromNodeId: node.id,
+            toNodeId: chatNode.id,
+          })),
+        },
+        nodeId: chatNode.id,
+        provider: openaiProvider,
+        token: 'token',
+      }),
+    ).toEqual({
+      ok: false,
+      error: '对话节点最多支持 20 张图片输入',
+    });
+  });
+
   it('rejects synchronous text generation submissions', async () => {
     const fetcher = vi.fn<GenerationFetch>();
 
