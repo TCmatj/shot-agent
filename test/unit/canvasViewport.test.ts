@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getCanvasContentBounds,
+  getViewportForCanvasCenter,
   moveCanvasNode,
   panViewport,
   screenToCanvasPoint,
@@ -36,6 +38,34 @@ describe('canvas viewport', () => {
     expect(screenToCanvasPoint({ x: 220, y: 172 }, { x: 80, y: 72, scale: 2 })).toEqual({
       x: 70,
       y: 50,
+    });
+  });
+
+  it('adds padding around node bounds for the minimap', () => {
+    expect(
+      getCanvasContentBounds(
+        [
+          { x: 100, y: 80 },
+          { x: 500, y: 240 },
+        ],
+        { width: 320, height: 220 },
+        40,
+      ),
+    ).toEqual({
+      minX: 60,
+      minY: 40,
+      maxX: 860,
+      maxY: 500,
+      width: 800,
+      height: 460,
+    });
+  });
+
+  it('centers the viewport on a canvas point selected from the minimap', () => {
+    expect(getViewportForCanvasCenter({ x: 200, y: 120 }, { width: 800, height: 600 }, 1.5)).toEqual({
+      x: 100,
+      y: 120,
+      scale: 1.5,
     });
   });
 });

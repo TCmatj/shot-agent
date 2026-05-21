@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addCanvasEdge,
+  canConnectCanvasNodes,
   createCanvasEdge,
   createSequentialEdges,
   createWorkspaceState,
@@ -57,6 +58,7 @@ describe('canvas workspace persistence', () => {
         folderName: 'Shot Agent',
         folderPath: '/Users/zz/Shot Agent',
       },
+      generationHistory: [],
     };
 
     expect(parseWorkspaceState(serializeWorkspaceState(state), createWorkspaceState(canvases))).toEqual(
@@ -80,6 +82,7 @@ describe('canvas workspace persistence', () => {
       storage: {
         mode: 'browser-local',
       },
+      generationHistory: [],
     });
   });
 
@@ -94,6 +97,73 @@ describe('canvas workspace persistence', () => {
       folderName: '镜头项目',
       folderPath: '/Volumes/Works/镜头项目',
     });
+  });
+
+  it('marks interrupted running generations as failed when parsing persisted state', () => {
+    const fallback = createWorkspaceState(canvases);
+
+    expect(
+      parseWorkspaceState(
+        JSON.stringify({
+          version: 1,
+          activeCanvasId: 'canvas_first',
+          canvases: [
+            {
+              id: 'canvas_first',
+              name: '默认画布',
+              updatedAt: '刚刚',
+              edges: [],
+              nodes: [
+                {
+                  id: 'node_1',
+                  title: '提示词整理',
+                  modelId: 'chat-openai',
+                  kind: 'chat',
+                  x: 0,
+                  y: 0,
+                  generationStatus: 'running',
+                },
+              ],
+            },
+          ],
+          storage: { mode: 'browser-local' },
+        }),
+        fallback,
+      ).canvases[0].nodes[0],
+    ).toMatchObject({
+      generationStatus: 'failed',
+      generationError: '页面刷新后生成请求已中断，请重新提交。',
+    });
+  });
+
+  it('serializes and parses generation history records', () => {
+    const state = {
+      ...createWorkspaceState(canvases),
+      generationHistory: [
+        {
+          id: 'gen_1',
+          nodeId: 'node_1',
+          nodeKind: 'chat' as const,
+          canonicalModelId: 'chat-openai',
+          providerId: 'provider_1',
+          providerModelId: 'gpt-5',
+          prompt: '整理提示词',
+          promptReferences: [],
+          inputAssetIds: [],
+          outputAssetIds: [],
+          status: 'succeeded' as const,
+          attempts: 1,
+          retry: { enabled: true, maxAttempts: 3 },
+          createdAt: '2026-05-21T00:00:00.000Z',
+          startedAt: '2026-05-21T00:00:00.000Z',
+          endedAt: '2026-05-21T00:00:01.000Z',
+        },
+      ],
+    };
+
+    expect(parseWorkspaceState(serializeWorkspaceState(state), createWorkspaceState(canvases))).toEqual(
+      state,
+    );
   });
 
   it('updates custom canvas storage folder and trims empty values', () => {
@@ -126,6 +196,7 @@ describe('canvas workspace persistence', () => {
       storage: {
         mode: 'browser-local' as const,
       },
+      generationHistory: [],
     };
 
     expect(deleteCanvas(state, 'canvas_second')).toEqual({
@@ -134,6 +205,7 @@ describe('canvas workspace persistence', () => {
       storage: {
         mode: 'browser-local',
       },
+      generationHistory: [],
     });
   });
 
@@ -146,6 +218,7 @@ describe('canvas workspace persistence', () => {
       storage: {
         mode: 'browser-local',
       },
+      generationHistory: [],
     });
   });
 
@@ -219,6 +292,21 @@ describe('canvas workspace persistence', () => {
     ]);
     expect(addCanvasEdge(first, 'node_1', 'node_1')).toEqual(first);
     expect(addCanvasEdge(first, 'node_1', 'node_2')).toEqual(first);
+  });
+
+  it('blocks video nodes from connecting to text generation nodes', () => {
+    expect(
+      canConnectCanvasNodes(
+        { id: 'video_1', title: 'Video', modelId: 'seedance2.0', kind: 'video', x: 0, y: 0 },
+        { id: 'chat_1', title: 'Chat', modelId: 'chat-openai', kind: 'chat', x: 0, y: 0 },
+      ),
+    ).toBe(false);
+    expect(
+      canConnectCanvasNodes(
+        { id: 'image_1', title: 'Image', modelId: 'gpt-image-2', kind: 'image', x: 0, y: 0 },
+        { id: 'chat_1', title: 'Chat', modelId: 'chat-openai', kind: 'chat', x: 0, y: 0 },
+      ),
+    ).toBe(true);
   });
 
   it('removes a canvas edge by id', () => {

@@ -1,12 +1,26 @@
+import type { OutputVersion } from '../domain/outputVersions';
+import type { GenerationRecord } from '../domain/generationHistory';
+
 export type CanvasNodeKind = 'image' | 'video' | 'chat' | 'textAsset' | 'imageAsset' | 'videoAsset';
 
 export type CanvasNodeView = {
   id: string;
   title: string;
   modelId: string;
+  providerId?: string;
+  providerModelId?: string;
   kind: CanvasNodeKind;
   x: number;
   y: number;
+  prompt?: string;
+  generationStatus?: 'idle' | 'running' | 'succeeded' | 'failed';
+  generationError?: string;
+  outputVersions?: OutputVersion[];
+  modelOutputText?: string;
+  outputText?: string;
+  outputUrl?: string;
+  outputDataUrl?: string;
+  generationId?: string;
   textContent?: string;
   assetName?: string;
   assetDataUrl?: string;
@@ -41,6 +55,7 @@ export type CanvasWorkspaceState = {
   activeCanvasId: string;
   canvases: CanvasView[];
   storage: CanvasStorageConfig;
+  generationHistory: GenerationRecord[];
 };
 
 const storageVersion = 1;
@@ -115,6 +130,7 @@ function isCanvasView(value: unknown): value is CanvasView {
 function normalizeCanvas(canvas: CanvasView): CanvasView {
   return {
     ...canvas,
+    nodes: canvas.nodes.map(normalizeNode),
     edges: canvas.edges ?? [],
   };
 }
@@ -166,6 +182,7 @@ export function createWorkspaceState(canvases: CanvasView[]): CanvasWorkspaceSta
     storage: {
       mode: 'browser-local',
     },
+    generationHistory: [],
   };
 }
 
@@ -175,6 +192,7 @@ export function serializeWorkspaceState(state: CanvasWorkspaceState): string {
     activeCanvasId: state.activeCanvasId,
     canvases: state.canvases,
     storage: normalizeStorageConfig(state.storage),
+    generationHistory: state.generationHistory,
   });
 }
 
@@ -207,10 +225,61 @@ export function parseWorkspaceState(
       activeCanvasId: activeCanvasExists ? parsed.activeCanvasId : (parsed.canvases[0]?.id ?? ''),
       canvases: parsed.canvases.map(normalizeCanvas),
       storage: normalizeStorageConfig(parsed.storage),
+      generationHistory: Array.isArray(parsed.generationHistory)
+        ? parsed.generationHistory.filter(isGenerationRecord).map(normalizeGenerationRecord)
+        : [],
     };
   } catch {
     return fallback;
   }
+}
+
+function normalizeGenerationRecord(record: GenerationRecord): GenerationRecord {
+  if (record.status !== 'running') {
+    return record;
+  }
+
+  return {
+    ...record,
+    status: 'failed',
+    errorMessage: '页面刷新后生成请求已中断，请重新提交。',
+    endedAt: record.endedAt ?? new Date().toISOString(),
+  };
+}
+
+function normalizeNode(node: CanvasNodeView): CanvasNodeView {
+  if (node.generationStatus !== 'running') {
+    return node;
+  }
+
+  return {
+    ...node,
+    generationStatus: 'failed',
+    generationError: '页面刷新后生成请求已中断，请重新提交。',
+  };
+}
+
+function isGenerationRecord(value: unknown): value is GenerationRecord {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const record = value as GenerationRecord;
+  return (
+    typeof record.id === 'string' &&
+    typeof record.nodeId === 'string' &&
+    typeof record.nodeKind === 'string' &&
+    typeof record.canonicalModelId === 'string' &&
+    typeof record.providerId === 'string' &&
+    typeof record.providerModelId === 'string' &&
+    typeof record.prompt === 'string' &&
+    Array.isArray(record.promptReferences) &&
+    Array.isArray(record.inputAssetIds) &&
+    Array.isArray(record.outputAssetIds) &&
+    typeof record.status === 'string' &&
+    typeof record.attempts === 'number' &&
+    typeof record.createdAt === 'string'
+  );
 }
 
 export function updateWorkspaceStorage(
@@ -326,6 +395,22 @@ export function getNodeOutputPoint(node: CanvasNodeView): { x: number; y: number
 
 export function canNodeReceiveInput(node: CanvasNodeView): boolean {
   return node.kind === 'image' || node.kind === 'video' || node.kind === 'chat';
+}
+
+export function canConnectCanvasNodes(fromNode: CanvasNodeView, toNode: CanvasNodeView): boolean {
+  if (fromNode.id === toNode.id) {
+    return false;
+  }
+
+  if (!canNodeReceiveInput(toNode)) {
+    return false;
+  }
+
+  if (toNode.kind === 'chat' && (fromNode.kind === 'video' || fromNode.kind === 'videoAsset')) {
+    return false;
+  }
+
+  return true;
 }
 
 export function createSequentialEdges(nodes: CanvasNodeView[]): CanvasEdgeView[] {

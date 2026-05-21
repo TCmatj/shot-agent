@@ -14,6 +14,20 @@ export type Delta = {
   dy: number;
 };
 
+export type Size = {
+  width: number;
+  height: number;
+};
+
+export type Bounds = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
+};
+
 export function clampScale(scale: number): number {
   return Math.min(2.5, Math.max(0.35, scale));
 }
@@ -53,5 +67,51 @@ export function screenToCanvasPoint(point: Point, viewport: CanvasViewport): Poi
   return {
     x: (point.x - viewport.x) / viewport.scale,
     y: (point.y - viewport.y) / viewport.scale,
+  };
+}
+
+export function getCanvasContentBounds(
+  points: Point[],
+  nodeSize: Size,
+  padding = 80,
+): Bounds {
+  if (points.length === 0) {
+    const width = nodeSize.width + padding * 2;
+    const height = nodeSize.height + padding * 2;
+
+    return {
+      minX: -padding,
+      minY: -padding,
+      maxX: nodeSize.width + padding,
+      maxY: nodeSize.height + padding,
+      width,
+      height,
+    };
+  }
+
+  const minX = Math.min(...points.map((point) => point.x)) - padding;
+  const minY = Math.min(...points.map((point) => point.y)) - padding;
+  const maxX = Math.max(...points.map((point) => point.x + nodeSize.width)) + padding;
+  const maxY = Math.max(...points.map((point) => point.y + nodeSize.height)) + padding;
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
+export function getViewportForCanvasCenter(
+  center: Point,
+  viewportSize: Size,
+  scale: number,
+): CanvasViewport {
+  return {
+    x: viewportSize.width / 2 - center.x * scale,
+    y: viewportSize.height / 2 - center.y * scale,
+    scale: clampScale(scale),
   };
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
+import { createPortal } from 'react-dom';
 import {
   BoxSelect,
   FilePlus2,
@@ -16,15 +17,41 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Save,
   Settings,
   SquareArrowUpRight,
   Trash2,
+  Undo2,
+  Redo2,
   Video,
+  X,
 } from 'lucide-react';
-import { findProvidersForCanonicalModel } from '../domain/provider';
+import {
+  createProviderDraft,
+  findChatProviders,
+  findProviderModelsForNodeModel,
+  findProvidersForCanonicalModel,
+  mergeProviderDefaults,
+  saveProviderDraft,
+} from '../domain/provider';
 import type { ProviderConfig } from '../domain/provider';
 import {
+  appendOutputVersion,
+  getLatestOutputVersion,
+  getOutputVersionsForDisplay,
+  paginateOutputVersions,
+} from '../domain/outputVersions';
+import { createGenerationRecord, type GenerationRecord } from '../domain/generationHistory';
+import {
+  getEffectiveNodeOutputText,
+  resolveProviderToken,
+  streamChatGenerationNode,
+  submitGenerationNode,
+} from '../models/generationClient';
+import { renderMarkdownToHtml, shouldCollapseMarkdown } from '../lib/markdown';
+import {
   addCanvasEdge,
+  canConnectCanvasNodes,
   canNodeReceiveInput,
   createWorkspaceState,
   deleteCanvas,
@@ -44,12 +71,27 @@ import {
 } from './canvasWorkspace';
 import {
   moveCanvasNode,
+  getCanvasContentBounds,
+  getViewportForCanvasCenter,
   panViewport,
   screenToCanvasPoint,
   zoomViewportAtPoint,
   type CanvasViewport,
   type Point,
+  type Size,
 } from './canvasViewport';
+import {
+  createWorkspaceHistory,
+  pushWorkspaceHistory,
+  redoWorkspaceHistory,
+  undoWorkspaceHistory,
+  type WorkspaceHistory,
+} from './workspaceHistory';
+import {
+  parseStoredCanvasViewports,
+  serializeStoredCanvasViewports,
+  type StoredCanvasViewports,
+} from './canvasViewports';
 
 type NodeTemplate = {
   id: string;
@@ -93,6 +135,69 @@ type DragState =
       lastY: number;
     };
 
+type ModalDragState = {
+  pointerId: number;
+  lastX: number;
+  lastY: number;
+};
+
+type CanvasActionRailProps = {
+  canUndo: boolean;
+  canRedo: boolean;
+  onCreateCanvas: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onExportCanvas: () => void;
+  onImportCanvas: () => void;
+};
+
+function CanvasActionRail({
+  canUndo,
+  canRedo,
+  onCreateCanvas,
+  onUndo,
+  onRedo,
+  onExportCanvas,
+  onImportCanvas,
+}: CanvasActionRailProps) {
+  return (
+    <div className="canvas-action-rail">
+      <button type="button" aria-label="新建画布" title="新建画布" onClick={onCreateCanvas}>
+        <FolderPlus size={18} />
+      </button>
+      <button
+        type="button"
+        aria-label="撤回"
+        title="撤回 Ctrl+Z"
+        disabled={!canUndo}
+        onClick={onUndo}
+      >
+        <Undo2 size={18} />
+      </button>
+      <button
+        type="button"
+        aria-label="重做"
+        title="重做 Ctrl+Y / Ctrl+Shift+Z"
+        disabled={!canRedo}
+        onClick={onRedo}
+      >
+        <Redo2 size={18} />
+      </button>
+      <button
+        type="button"
+        aria-label="导出当前画布"
+        title="导出当前画布"
+        onClick={onExportCanvas}
+      >
+        <SquareArrowUpRight size={18} />
+      </button>
+      <button type="button" aria-label="导入画布" title="导入画布" onClick={onImportCanvas}>
+        <Import size={18} />
+      </button>
+    </div>
+  );
+}
+
 const initialProviders: ProviderConfig[] = [
   {
     id: 'provider_openai',
@@ -106,6 +211,12 @@ const initialProviders: ProviderConfig[] = [
         id: 'model_openai_gpt_image_2',
         providerModelId: 'gpt-image-2',
         canonicalModelId: 'gpt-image-2',
+        enabled: true,
+      },
+      {
+        id: 'model_openai_chat',
+        providerModelId: 'gpt-5.4-mini',
+        canonicalModelId: 'chat-openai',
         enabled: true,
       },
     ],
@@ -238,8 +349,350 @@ const initialCanvases: CanvasView[] = [
 const initialWorkspaceState = createWorkspaceState(initialCanvases);
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
 const providerStorageKey = 'shot-agent:providers';
+const canvasViewportStorageKey = 'shot-agent:canvas-viewports';
+const canvasNodeSize = { width: 320, height: 220 };
+const minimapSize = { width: 220, height: 150 };
+const defaultViewport: CanvasViewport = { x: 80, y: 72, scale: 1 };
+
+function summarizeOutputText(value: string, maxLength = 160): string {
+  const summary = value
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[#>*_`[\]()~-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return summary.length > maxLength ? `${summary.slice(0, maxLength)}...` : summary;
+}
+
+function StreamingOutputTail({ text }: { text: string }) {
+  const outputRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    const output = outputRef.current;
+
+    if (output) {
+      output.scrollTop = output.scrollHeight;
+    }
+  }, [text]);
+
+  return (
+    <pre ref={outputRef} className="node-output-stream-tail" aria-live="polite">
+      {text || '等待模型输出...'}
+    </pre>
+  );
+}
+
+type PromptReferenceSuggestion = {
+  token: string;
+  title: string;
+  subtitle: string;
+  kindLabel: string;
+  imageUrl?: string;
+  textPreview?: string;
+};
+
+type PromptReferencePreview = PromptReferenceSuggestion & {
+  kind: 'text' | 'image';
+};
+
+function getNodeTextReferencePreview(node: CanvasNodeView): string | undefined {
+  const text = node.kind === 'textAsset' ? node.textContent : getEffectiveNodeOutputText(node);
+  const compact = text?.replace(/\s+/g, ' ').trim();
+
+  return compact ? compact.slice(0, 5) : undefined;
+}
+
+function getNodeImageReferenceUrl(node: CanvasNodeView): string | undefined {
+  if (node.kind === 'imageAsset') {
+    return node.assetDataUrl;
+  }
+
+  if (node.kind === 'image') {
+    return node.outputDataUrl ?? node.outputUrl;
+  }
+
+  return undefined;
+}
+
+function getPromptReferenceSuggestions(
+  canvas: CanvasView | null,
+  currentNodeId: string,
+): PromptReferenceSuggestion[] {
+  if (!canvas) {
+    return [];
+  }
+
+  return canvas.nodes.flatMap<PromptReferenceSuggestion>((node) => {
+    if (node.id === currentNodeId) {
+      return [];
+    }
+
+    const textPreview = getNodeTextReferencePreview(node);
+    if (textPreview) {
+      return [
+        {
+          token: `@text:${node.id}`,
+          title: node.title,
+          subtitle: node.id,
+          kindLabel: '文本',
+          textPreview,
+        },
+      ];
+    }
+
+    const imageUrl = getNodeImageReferenceUrl(node);
+    if (imageUrl) {
+      return [
+        {
+          token: `@image:${node.id}`,
+          title: node.title,
+          subtitle: node.id,
+          kindLabel: '图片',
+          imageUrl,
+        },
+      ];
+    }
+
+    return [];
+  });
+}
+
+function getPromptReferencePreviews(
+  canvas: CanvasView | null,
+  currentNodeId: string,
+  prompt: string,
+): PromptReferencePreview[] {
+  if (!canvas) {
+    return [];
+  }
+
+  const seenTokens = new Set<string>();
+
+  return Array.from(prompt.matchAll(/@(text|image):([a-zA-Z0-9_-]+)/g)).flatMap<PromptReferencePreview>(
+    (match) => {
+      const kind = match[1] as 'text' | 'image';
+      const nodeId = match[2];
+      const token = match[0];
+
+      if (seenTokens.has(token)) {
+        return [];
+      }
+      seenTokens.add(token);
+
+      const referencedNode = canvas.nodes.find(
+        (candidate) => candidate.id === nodeId && candidate.id !== currentNodeId,
+      );
+      if (!referencedNode) {
+        return [];
+      }
+
+      if (kind === 'text') {
+        const textPreview = getNodeTextReferencePreview(referencedNode);
+        return textPreview
+          ? [
+              {
+                token,
+                title: referencedNode.title,
+                subtitle: referencedNode.id,
+                kindLabel: '文本',
+                kind,
+                textPreview,
+              },
+            ]
+          : [];
+      }
+
+      const imageUrl = getNodeImageReferenceUrl(referencedNode);
+      return imageUrl
+        ? [
+            {
+              token,
+              title: referencedNode.title,
+              subtitle: referencedNode.id,
+              kindLabel: '图片',
+              kind,
+              imageUrl,
+            },
+          ]
+        : [];
+    },
+  );
+}
+
+function getPromptReferenceTrigger(value: string, caret: number) {
+  const prefix = value.slice(0, caret);
+  const match = prefix.match(/(@[a-zA-Z]*(?::[a-zA-Z0-9_-]*)?)$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const token = match[1];
+  return {
+    start: caret - token.length,
+    end: caret,
+    token,
+    query: token.slice(1).toLowerCase(),
+  };
+}
+
+function filterPromptReferenceSuggestions(
+  suggestions: PromptReferenceSuggestion[],
+  query: string,
+) {
+  return suggestions.filter((suggestion) => {
+    const searchable = `${suggestion.token} ${suggestion.title} ${suggestion.subtitle}`.toLowerCase();
+
+    return searchable.includes(query);
+  });
+}
+
+function PromptTextarea({
+  canvas,
+  node,
+  placeholder,
+  stopPointerDown,
+  onChange,
+}: {
+  canvas: CanvasView | null;
+  node: CanvasNodeView;
+  placeholder: string;
+  stopPointerDown?: boolean;
+  onChange(value: string): void;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [trigger, setTrigger] = useState<ReturnType<typeof getPromptReferenceTrigger>>(null);
+  const [previewImage, setPreviewImage] = useState<PromptReferencePreview | null>(null);
+  const suggestions = getPromptReferenceSuggestions(canvas, node.id);
+  const referencePreviews = getPromptReferencePreviews(canvas, node.id, node.prompt ?? '');
+  const visibleSuggestions = trigger
+    ? filterPromptReferenceSuggestions(suggestions, trigger.query).slice(0, 8)
+    : [];
+
+  function refreshTrigger(target: HTMLTextAreaElement) {
+    setTrigger(getPromptReferenceTrigger(target.value, target.selectionStart));
+  }
+
+  function insertSuggestion(suggestion: PromptReferenceSuggestion) {
+    if (!trigger) {
+      return;
+    }
+
+    const value = node.prompt ?? '';
+    const nextValue = `${value.slice(0, trigger.start)}${suggestion.token} ${value.slice(trigger.end)}`;
+    const nextCaret = trigger.start + suggestion.token.length + 1;
+
+    onChange(nextValue);
+    setTrigger(null);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCaret, nextCaret);
+    });
+  }
+
+  return (
+    <div className="prompt-reference-field">
+      <textarea
+        ref={textareaRef}
+        value={node.prompt ?? ''}
+        placeholder={placeholder}
+        onPointerDown={stopPointerDown ? (event) => event.stopPropagation() : undefined}
+        onBlur={() => window.setTimeout(() => setTrigger(null), 120)}
+        onClick={(event) => refreshTrigger(event.currentTarget)}
+        onKeyUp={(event) => refreshTrigger(event.currentTarget)}
+        onChange={(event) => {
+          onChange(event.target.value);
+          refreshTrigger(event.target);
+        }}
+      />
+      {referencePreviews.length > 0 ? (
+        <div className="prompt-reference-chips" aria-label="已引用资产">
+          {referencePreviews.map((reference) =>
+            reference.kind === 'image' ? (
+              <button
+                key={reference.token}
+                type="button"
+                className="prompt-reference-chip is-image"
+                title={`${reference.title} ${reference.token}`}
+                onClick={() => setPreviewImage(reference)}
+              >
+                <span>@</span>
+                <img src={reference.imageUrl} alt={reference.title} />
+              </button>
+            ) : (
+              <span
+                key={reference.token}
+                className="prompt-reference-chip is-text"
+                title={`${reference.title} ${reference.token}`}
+              >
+                <span>@</span>
+                <strong>{reference.textPreview}</strong>
+              </span>
+            ),
+          )}
+        </div>
+      ) : null}
+      {visibleSuggestions.length > 0 ? (
+        <div className="prompt-reference-menu">
+          {visibleSuggestions.map((suggestion) => (
+            <button
+              key={suggestion.token}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => insertSuggestion(suggestion)}
+            >
+              {suggestion.imageUrl ? (
+                <img src={suggestion.imageUrl} alt={suggestion.title} />
+              ) : (
+                <span>{suggestion.kindLabel}</span>
+              )}
+              <strong>{suggestion.title}</strong>
+              <small>{suggestion.textPreview ? `@${suggestion.textPreview}` : suggestion.token}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {previewImage?.imageUrl
+        ? createPortal(
+            <div
+              className="prompt-reference-image-backdrop"
+              onPointerDown={() => setPreviewImage(null)}
+            >
+              <div
+                className="prompt-reference-image-modal"
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <header>
+                  <strong>{previewImage.title}</strong>
+                  <button type="button" onClick={() => setPreviewImage(null)}>
+                    <X size={16} />
+                    关闭
+                  </button>
+                </header>
+                <img src={previewImage.imageUrl} alt={previewImage.title} />
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
 
 function loadProviders(): ProviderConfig[] {
+  const normalizeProviderDisplayText = (providers: ProviderConfig[]): ProviderConfig[] =>
+    providers.map((provider) => {
+      if (provider.id === 'provider_openai' && provider.name === 'OpenAI 瀹樻柟') {
+        return { ...provider, name: 'OpenAI 官方' };
+      }
+
+      if (provider.id === 'provider_seedance' && provider.name === '火山方舟') {
+        return { ...provider, name: '火山方舟' };
+      }
+
+      return provider;
+    });
+
   if (typeof window === 'undefined') {
     return initialProviders;
   }
@@ -251,10 +704,24 @@ function loadProviders(): ProviderConfig[] {
       return initialProviders;
     }
 
-    return parsed as ProviderConfig[];
+    return normalizeProviderDisplayText(
+      mergeProviderDefaults(parsed as ProviderConfig[], initialProviders),
+    );
   } catch {
     return initialProviders;
   }
+}
+
+function loadCanvasViewports(): StoredCanvasViewports {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  return parseStoredCanvasViewports(window.localStorage.getItem(canvasViewportStorageKey));
+}
+
+function isSameViewport(first: CanvasViewport, second: CanvasViewport): boolean {
+  return first.x === second.x && first.y === second.y && first.scale === second.scale;
 }
 
 function getNodeIcon(kind: CanvasNodeKind) {
@@ -277,9 +744,10 @@ export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>(loadProviders);
+  const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderConfig>>({});
+  const [editingProviderIds, setEditingProviderIds] = useState<string[]>([]);
   const [showProviderManager, setShowProviderManager] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [viewport, setViewport] = useState<CanvasViewport>({ x: 80, y: 72, scale: 1 });
   const [workspaceState, setWorkspaceState] = useState(() => {
     if (typeof window === 'undefined') {
       return initialWorkspaceState;
@@ -290,6 +758,20 @@ export function App() {
       initialWorkspaceState,
     );
   });
+  const [canvasViewports, setCanvasViewports] = useState<StoredCanvasViewports>(
+    loadCanvasViewports,
+  );
+  const [viewport, setViewport] = useState<CanvasViewport>(
+    () => canvasViewports[workspaceState.activeCanvasId] ?? defaultViewport,
+  );
+  const [canvasSize, setCanvasSize] = useState<Size | null>(null);
+  const pendingViewportRestoreRef = useRef<{
+    canvasId: string;
+    viewport: CanvasViewport;
+  } | null>(null);
+  const workspaceStateRef = useRef(workspaceState);
+  const [workspaceHistory, setWorkspaceHistory] =
+    useState<WorkspaceHistory<typeof workspaceState>>(createWorkspaceHistory);
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [addMenu, setAddMenu] = useState<AddMenuState>(null);
   const [edgeDraft, setEdgeDraft] = useState<EdgeDraft>(null);
@@ -300,22 +782,190 @@ export function App() {
   const [draftCanvasName, setDraftCanvasName] = useState('');
   const [editingCanvasId, setEditingCanvasId] = useState<string | null>(null);
   const [draftListCanvasName, setDraftListCanvasName] = useState('');
+  const [editingOutputNodeId, setEditingOutputNodeId] = useState<string | null>(null);
+  const [selectedOutputVersionId, setSelectedOutputVersionId] = useState<string | null>(null);
+  const [outputVersionPage, setOutputVersionPage] = useState(1);
+  const [draftOutputText, setDraftOutputText] = useState('');
+  const [outputEditorMode, setOutputEditorMode] = useState<'preview' | 'edit'>('preview');
+  const [outputModalPosition, setOutputModalPosition] = useState({ x: 0, y: 0 });
+  const [modalDragState, setModalDragState] = useState<ModalDragState | null>(null);
   const { activeCanvasId, canvases, storage } = workspaceState;
+  const canUndoWorkspace = workspaceHistory.past.length > 0;
+  const canRedoWorkspace = workspaceHistory.future.length > 0;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? null;
   const selectedNode =
     activeCanvas?.nodes.find((node) => node.id === selectedNodeId) ?? null;
   const selectedEdge =
     activeCanvas?.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
-  const imageProviders = findProvidersForCanonicalModel(providers, 'gpt-image-2');
-  const videoProviders = findProvidersForCanonicalModel(providers, 'seedance2.0');
+  const editingOutputNode =
+    activeCanvas?.nodes.find((node) => node.id === editingOutputNodeId) ?? null;
+  const outputVersionsForDisplay = editingOutputNode
+    ? getOutputVersionsForDisplay(editingOutputNode)
+    : [];
+  const outputVersionPageData = paginateOutputVersions(
+    outputVersionsForDisplay,
+    outputVersionPage,
+    10,
+  );
+  const runningNodeIds = new Set(
+    activeCanvas?.nodes
+      .filter((node) => node.generationStatus === 'running')
+      .map((node) => node.id) ?? [],
+  );
+  const providerRows = [
+    ...providers,
+    ...Object.values(providerDrafts).filter(
+      (draft) => !providers.some((provider) => provider.id === draft.id),
+    ),
+  ];
+  const minimapBounds = getCanvasContentBounds(activeCanvas?.nodes ?? [], canvasNodeSize);
+  const minimapScale = Math.min(
+    minimapSize.width / minimapBounds.width,
+    minimapSize.height / minimapBounds.height,
+  );
+  const minimapViewport = canvasSize
+    ? {
+        x: (0 - viewport.x) / viewport.scale,
+        y: (0 - viewport.y) / viewport.scale,
+        width: canvasSize.width / viewport.scale,
+        height: canvasSize.height / viewport.scale,
+      }
+    : null;
+
+  function setWorkspaceStateWithHistory(
+    updater: (current: typeof workspaceState) => typeof workspaceState,
+  ) {
+    const current = workspaceStateRef.current;
+    const next = updater(current);
+
+    if (next === current) {
+      return;
+    }
+
+    workspaceStateRef.current = next;
+    setWorkspaceHistory((history) => pushWorkspaceHistory(history, current));
+    setWorkspaceState(next);
+  }
+
+  function undoWorkspace() {
+    const current = workspaceStateRef.current;
+    const result = undoWorkspaceHistory(workspaceHistory, current);
+
+    if (result.state === current) {
+      return;
+    }
+
+    workspaceStateRef.current = result.state;
+    setWorkspaceHistory(result.history);
+    setWorkspaceState(result.state);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setAddMenu(null);
+    setEdgeDraft(null);
+  }
+
+  function redoWorkspace() {
+    const current = workspaceStateRef.current;
+    const result = redoWorkspaceHistory(workspaceHistory, current);
+
+    if (result.state === current) {
+      return;
+    }
+
+    workspaceStateRef.current = result.state;
+    setWorkspaceHistory(result.history);
+    setWorkspaceState(result.state);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setAddMenu(null);
+    setEdgeDraft(null);
+  }
+
+  useEffect(() => {
+    workspaceStateRef.current = workspaceState;
+  }, [workspaceState]);
 
   useEffect(() => {
     window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(workspaceState));
   }, [workspaceState]);
 
   useEffect(() => {
+    window.localStorage.setItem(
+      canvasViewportStorageKey,
+      serializeStoredCanvasViewports(canvasViewports),
+    );
+  }, [canvasViewports]);
+
+  useEffect(() => {
     window.localStorage.setItem(providerStorageKey, JSON.stringify(providers));
   }, [providers]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || showProviderManager) {
+      setCanvasSize(null);
+      return undefined;
+    }
+
+    const updateCanvasSize = () => {
+      setCanvasSize({
+        width: canvas.offsetWidth,
+        height: canvas.offsetHeight,
+      });
+    };
+
+    updateCanvasSize();
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateCanvasSize) : null;
+    resizeObserver?.observe(canvas);
+    window.addEventListener('resize', updateCanvasSize);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updateCanvasSize);
+    };
+  }, [isSidebarCollapsed, showProviderManager]);
+
+  useEffect(() => {
+    if (!activeCanvasId) {
+      return;
+    }
+
+    const restoredViewport = canvasViewports[activeCanvasId] ?? defaultViewport;
+    pendingViewportRestoreRef.current = {
+      canvasId: activeCanvasId,
+      viewport: restoredViewport,
+    };
+    setViewport(restoredViewport);
+  }, [activeCanvasId]);
+
+  useEffect(() => {
+    if (!activeCanvasId) {
+      return;
+    }
+
+    const pendingRestore = pendingViewportRestoreRef.current;
+    if (pendingRestore?.canvasId === activeCanvasId) {
+      if (!isSameViewport(pendingRestore.viewport, viewport)) {
+        return;
+      }
+
+      pendingViewportRestoreRef.current = null;
+    }
+
+    setCanvasViewports((current) => {
+      const previous = current[activeCanvasId];
+
+      if (previous && isSameViewport(previous, viewport)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [activeCanvasId]: viewport,
+      };
+    });
+  }, [activeCanvasId, viewport]);
 
   useEffect(() => {
     function handlePaste(event: ClipboardEvent) {
@@ -351,6 +1001,25 @@ export function App() {
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement ||
         (target instanceof HTMLElement && target.isContentEditable);
+      const key = event.key.toLowerCase();
+      const isUndo = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'z';
+      const isRedo =
+        (event.ctrlKey || event.metaKey) &&
+        ((event.shiftKey && key === 'z') || key === 'y');
+
+      if (isUndo || isRedo) {
+        if ((isUndo && !canUndoWorkspace) || (isRedo && !canRedoWorkspace)) {
+          return;
+        }
+
+        event.preventDefault();
+        if (isUndo) {
+          undoWorkspace();
+        } else {
+          redoWorkspace();
+        }
+        return;
+      }
 
       if (isEditingText || (event.key !== 'Delete' && event.key !== 'Backspace')) {
         return;
@@ -369,7 +1038,7 @@ export function App() {
       }
 
       if (selectedNodeId) {
-        setWorkspaceState((current) => ({
+        setWorkspaceStateWithHistory((current) => ({
           ...current,
           canvases: current.canvases.map((canvas) =>
             canvas.id === current.activeCanvasId
@@ -383,24 +1052,62 @@ export function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedEdgeId, selectedNodeId]);
+  }, [canRedoWorkspace, canUndoWorkspace, selectedEdgeId, selectedNodeId, workspaceHistory]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return undefined;
+    }
+
+    function preventCanvasWheelScroll(event: globalThis.WheelEvent) {
+      if (
+        event.target instanceof Element &&
+        event.target.closest('.output-modal')
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+    }
+
+    canvas.addEventListener('wheel', preventCanvasWheelScroll, { passive: false });
+    return () => canvas.removeEventListener('wheel', preventCanvasWheelScroll);
+  }, [showProviderManager]);
 
   function setCanvases(updater: (canvases: CanvasView[]) => CanvasView[]) {
-    setWorkspaceState((current) => ({
+    setWorkspaceStateWithHistory((current) => ({
       ...current,
       canvases: updater(current.canvases),
     }));
   }
 
   function setActiveCanvasId(canvasId: string) {
-    setWorkspaceState((current) => ({
+    setWorkspaceStateWithHistory((current) => ({
       ...current,
       activeCanvasId: canvasId,
     }));
   }
 
-  function updateActiveCanvasNodes(updater: (nodes: CanvasNodeView[]) => CanvasNodeView[]) {
-    setWorkspaceState((current) => ({
+  function returnToCanvas() {
+    setShowProviderManager(false);
+  }
+
+  function selectCanvasFromSidebar(canvasId: string) {
+    setActiveCanvasId(canvasId);
+    setShowProviderManager(false);
+    setAddMenu(null);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+  }
+
+  function updateActiveCanvasNodes(
+    updater: (nodes: CanvasNodeView[]) => CanvasNodeView[],
+    options: { history?: boolean } = {},
+  ) {
+    const setter = options.history === false ? setWorkspaceState : setWorkspaceStateWithHistory;
+
+    setter((current) => ({
       ...current,
       canvases: current.canvases.map((canvas) =>
         current.activeCanvasId && canvas.id === current.activeCanvasId
@@ -412,8 +1119,11 @@ export function App() {
 
   function updateActiveCanvasEdges(
     updater: (edges: CanvasView['edges']) => CanvasView['edges'],
+    options: { history?: boolean } = {},
   ) {
-    setWorkspaceState((current) => ({
+    const setter = options.history === false ? setWorkspaceState : setWorkspaceStateWithHistory;
+
+    setter((current) => ({
       ...current,
       canvases: current.canvases.map((canvas) =>
         current.activeCanvasId && canvas.id === current.activeCanvasId
@@ -423,30 +1133,67 @@ export function App() {
     }));
   }
 
+  function addGenerationHistoryRecord(record: GenerationRecord) {
+    setWorkspaceStateWithHistory((current) => ({
+      ...current,
+      generationHistory: [record, ...(current.generationHistory ?? [])],
+    }));
+  }
+
+  function updateGenerationHistoryRecord(
+    recordId: string,
+    updater: (record: GenerationRecord) => GenerationRecord,
+  ) {
+    setWorkspaceState((current) => ({
+      ...current,
+      generationHistory: (current.generationHistory ?? []).map((record) =>
+        record.id === recordId ? updater(record) : record,
+      ),
+    }));
+  }
+
   function getCanvasPointFromClient(clientX: number, clientY: number): Point {
+    return screenToCanvasPoint(getCanvasLocalPointFromClient(clientX, clientY), viewport);
+  }
+
+  function getCanvasLocalPointFromClient(clientX: number, clientY: number): Point {
     const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) {
-      return screenToCanvasPoint({ x: clientX, y: clientY }, viewport);
+    const canvas = canvasRef.current;
+    if (!rect || !canvas) {
+      return { x: clientX, y: clientY };
     }
 
-    return screenToCanvasPoint(
-      {
-        x: clientX - rect.left,
-        y: clientY - rect.top,
-      },
-      viewport,
-    );
+    const scaleX = rect.width / canvas.offsetWidth || 1;
+    const scaleY = rect.height / canvas.offsetHeight || 1;
+
+    return {
+      x: (clientX - rect.left) / scaleX,
+      y: (clientY - rect.top) / scaleY,
+    };
+  }
+
+  function getCanvasDeltaFromClientDelta(delta: { dx: number; dy: number }) {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const canvas = canvasRef.current;
+    if (!rect || !canvas) {
+      return delta;
+    }
+
+    const scaleX = rect.width / canvas.offsetWidth || 1;
+    const scaleY = rect.height / canvas.offsetHeight || 1;
+
+    return {
+      dx: delta.dx / scaleX,
+      dy: delta.dy / scaleY,
+    };
   }
 
   function openAddMenu(clientX: number, clientY: number, fromNodeId?: string) {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) {
-      return;
-    }
+    const point = getCanvasLocalPointFromClient(clientX, clientY);
 
     setAddMenu({
-      x: clientX - rect.left,
-      y: clientY - rect.top,
+      x: point.x,
+      y: point.y,
       canvasPoint: getCanvasPointFromClient(clientX, clientY),
       fromNodeId,
     });
@@ -473,15 +1220,27 @@ export function App() {
       },
     ]);
     if (addMenu?.fromNodeId && !template.outputOnly) {
-      updateActiveCanvasEdges((edges) => addCanvasEdge(edges, addMenu.fromNodeId!, nodeId));
+      const fromNode = activeCanvas.nodes.find((node) => node.id === addMenu.fromNodeId);
+      const toNode = { id: nodeId, title: template.title, modelId: template.modelId, kind: template.kind, x: point.x, y: point.y };
+
+      if (fromNode && canConnectCanvasNodes(fromNode, toNode)) {
+        updateActiveCanvasEdges((edges) => addCanvasEdge(edges, addMenu.fromNodeId!, nodeId));
+      }
     }
     setSelectedNodeId(nodeId);
     setSelectedEdgeId(null);
     setAddMenu(null);
   }
 
-  function updateNode(nodeId: string, updater: (node: CanvasNodeView) => CanvasNodeView) {
-    updateActiveCanvasNodes((nodes) => nodes.map((node) => (node.id === nodeId ? updater(node) : node)));
+  function updateNode(
+    nodeId: string,
+    updater: (node: CanvasNodeView) => CanvasNodeView,
+    options: { history?: boolean } = {},
+  ) {
+    updateActiveCanvasNodes(
+      (nodes) => nodes.map((node) => (node.id === nodeId ? updater(node) : node)),
+      options,
+    );
   }
 
   function addAssetNodeFromFile(file: File, point: Point) {
@@ -516,7 +1275,7 @@ export function App() {
 
   function createCanvas() {
     const id = `canvas_${Date.now()}`;
-    setWorkspaceState((current) => ({
+    setWorkspaceStateWithHistory((current) => ({
       ...current,
       activeCanvasId: id,
       canvases: [
@@ -530,7 +1289,7 @@ export function App() {
       },
       ],
     }));
-    setViewport({ x: 80, y: 72, scale: 1 });
+    setViewport(defaultViewport);
     setCanvasMessage(null);
   }
 
@@ -538,7 +1297,7 @@ export function App() {
     const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
 
     if (!picker) {
-      setWorkspaceState((current) =>
+      setWorkspaceStateWithHistory((current) =>
         updateWorkspaceStorage(current, {
           mode: 'custom-folder',
           folderName: current.storage.mode === 'custom-folder' ? current.storage.folderName : undefined,
@@ -551,7 +1310,7 @@ export function App() {
 
     try {
       const directory = await picker();
-      setWorkspaceState((current) =>
+      setWorkspaceStateWithHistory((current) =>
         updateWorkspaceStorage(current, {
           mode: 'custom-folder',
           folderName: directory.name,
@@ -571,7 +1330,7 @@ export function App() {
   function updateCanvasStorageFolder(value: string) {
     const folderValue = value.trim();
 
-    setWorkspaceState((current) =>
+    setWorkspaceStateWithHistory((current) =>
       updateWorkspaceStorage(
         current,
         folderValue
@@ -587,7 +1346,7 @@ export function App() {
   }
 
   function renameActiveCanvas(name: string) {
-    setWorkspaceState((current) => renameCanvas(current, current.activeCanvasId, name));
+    setWorkspaceStateWithHistory((current) => renameCanvas(current, current.activeCanvasId, name));
   }
 
   function startRenameActiveCanvas() {
@@ -609,21 +1368,21 @@ export function App() {
       return;
     }
 
-    setWorkspaceState((current) => deleteCanvas(current, current.activeCanvasId));
+    setWorkspaceStateWithHistory((current) => deleteCanvas(current, current.activeCanvasId));
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
     setAddMenu(null);
-    setViewport({ x: 80, y: 72, scale: 1 });
+    setViewport(defaultViewport);
     setCanvasMessage(null);
   }
 
   function deleteCanvasById(canvasId: string) {
-    setWorkspaceState((current) => deleteCanvas(current, canvasId));
+    setWorkspaceStateWithHistory((current) => deleteCanvas(current, canvasId));
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
     setAddMenu(null);
     setEditingCanvasId(null);
-    setViewport({ x: 80, y: 72, scale: 1 });
+    setViewport(defaultViewport);
   }
 
   function startRenameCanvasFromList(canvas: CanvasView) {
@@ -632,7 +1391,7 @@ export function App() {
   }
 
   function commitRenameCanvasFromList(canvasId: string) {
-    setWorkspaceState((current) => renameCanvas(current, canvasId, draftListCanvasName));
+    setWorkspaceStateWithHistory((current) => renameCanvas(current, canvasId, draftListCanvasName));
     setEditingCanvasId(null);
   }
 
@@ -660,11 +1419,11 @@ export function App() {
           ? `canvas_${crypto.randomUUID()}`
           : `canvas_${Date.now()}`;
 
-      setWorkspaceState((current) => importCanvas(current, content, nextId));
+      setWorkspaceStateWithHistory((current) => importCanvas(current, content, nextId));
       setSelectedNodeId(null);
       setSelectedEdgeId(null);
       setAddMenu(null);
-      setViewport({ x: 80, y: 72, scale: 1 });
+      setViewport(defaultViewport);
       setCanvasMessage('画布已导入');
     } catch (error) {
       setCanvasMessage(error instanceof Error ? error.message : '画布导入失败');
@@ -703,6 +1462,7 @@ export function App() {
     setEdgeDraft(null);
     setSelectedNodeId(nodeId);
     setSelectedEdgeId(null);
+    setWorkspaceHistory((history) => pushWorkspaceHistory(history, workspaceState));
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       mode: 'node',
@@ -726,10 +1486,11 @@ export function App() {
       return;
     }
 
-    const delta = {
+    const clientDelta = {
       dx: event.clientX - dragState.lastX,
       dy: event.clientY - dragState.lastY,
     };
+    const delta = getCanvasDeltaFromClientDelta(clientDelta);
 
     if (dragState.mode === 'pan') {
       setViewport((current) => panViewport(current, delta));
@@ -740,6 +1501,7 @@ export function App() {
             ? { ...node, ...moveCanvasNode(node, delta, viewport.scale) }
             : node,
         ),
+        { history: false },
       );
     }
 
@@ -785,6 +1547,15 @@ export function App() {
       return;
     }
 
+    const fromNode = activeCanvas?.nodes.find((node) => node.id === edgeDraft.fromNodeId);
+    const toNode = activeCanvas?.nodes.find((node) => node.id === toNodeId);
+
+    if (!fromNode || !toNode || !canConnectCanvasNodes(fromNode, toNode)) {
+      setCanvasMessage('视频节点暂不允许连接到文本生成节点');
+      setEdgeDraft(null);
+      return;
+    }
+
     updateActiveCanvasEdges((edges) => addCanvasEdge(edges, edgeDraft.fromNodeId, toNodeId));
     setSelectedEdgeId(`edge_${edgeDraft.fromNodeId}_${toNodeId}`);
     setSelectedNodeId(null);
@@ -826,6 +1597,13 @@ export function App() {
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
+    if (
+      event.target instanceof Element &&
+      event.target.closest('.output-modal')
+    ) {
+      return;
+    }
+
     event.preventDefault();
 
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -837,13 +1615,18 @@ export function App() {
     setViewport((current) =>
       zoomViewportAtPoint(
         current,
-        {
-          x: event.clientX - rect.left,
-          y: event.clientY - rect.top,
-        },
+        getCanvasLocalPointFromClient(event.clientX, event.clientY),
         current.scale * zoomFactor,
       ),
     );
+  }
+
+  function handleModalScrollableWheel(event: WheelEvent<HTMLElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    event.currentTarget.scrollTop += event.deltaY;
+    event.currentTarget.scrollLeft += event.deltaX;
   }
 
   function zoomBy(factor: number) {
@@ -856,33 +1639,54 @@ export function App() {
   }
 
   function resetViewport() {
-    setViewport({ x: 80, y: 72, scale: 1 });
+    setViewport(defaultViewport);
   }
 
-  function updateProvider(providerId: string, updater: (provider: ProviderConfig) => ProviderConfig) {
-    setProviders((current) =>
-      current.map((provider) => (provider.id === providerId ? updater(provider) : provider)),
+  function focusMinimapPoint(event: PointerEvent<HTMLButtonElement>) {
+    if (!activeCanvas) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const bounds = getCanvasContentBounds(activeCanvas.nodes, canvasNodeSize);
+    const xRatio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5;
+    const yRatio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5;
+    const center = {
+      x: bounds.minX + bounds.width * Math.min(1, Math.max(0, xRatio)),
+      y: bounds.minY + bounds.height * Math.min(1, Math.max(0, yRatio)),
+    };
+    const canvas = canvasRef.current;
+
+    setViewport(
+      getViewportForCanvasCenter(
+        center,
+        canvasSize ??
+          (canvas
+            ? { width: canvas.offsetWidth, height: canvas.offsetHeight }
+            : { width: 960, height: 640 }),
+        viewport.scale,
+      ),
     );
   }
 
   function addProvider() {
     const id = `provider_${Date.now()}`;
-    setProviders((current) => [
-      ...current,
-      {
-        id,
-        name: `供应商 ${current.length + 1}`,
-        protocol: 'openai-compatible',
-        baseURL: 'https://example.test/v1',
-        apiTokenRef: 'secret_ref',
-        enabled: true,
-        models: [],
-      },
-    ]);
+    const draft: ProviderConfig = {
+      id,
+      name: `供应商 ${providers.length + 1}`,
+      protocol: 'openai-compatible',
+      baseURL: 'https://example.test/v1',
+      apiTokenRef: 'secret_ref',
+      enabled: true,
+      models: [],
+    };
+
+    setProviderDrafts((current) => ({ ...current, [id]: draft }));
+    setEditingProviderIds((current) => [...current, id]);
   }
 
   function addProviderModel(providerId: string) {
-    updateProvider(providerId, (provider) => ({
+    updateProviderDraft(providerId, (provider) => ({
       ...provider,
       models: [
         ...provider.models,
@@ -897,8 +1701,431 @@ export function App() {
   }
 
   function deleteProvider(providerId: string) {
+    if (!window.confirm('确认删除这个供应商？')) {
+      return;
+    }
+
     setProviders((current) => current.filter((provider) => provider.id !== providerId));
+    setProviderDrafts((current) => {
+      const { [providerId]: _deleted, ...rest } = current;
+      return rest;
+    });
+    setEditingProviderIds((current) => current.filter((id) => id !== providerId));
   }
+
+  function startEditProvider(provider: ProviderConfig) {
+    setProviderDrafts((current) => ({
+      ...current,
+      [provider.id]: createProviderDraft(provider),
+    }));
+    setEditingProviderIds((current) =>
+      current.includes(provider.id) ? current : [...current, provider.id],
+    );
+  }
+
+  function cancelEditProvider(providerId: string) {
+    setProviderDrafts((current) => {
+      const { [providerId]: _canceled, ...rest } = current;
+      return rest;
+    });
+    setEditingProviderIds((current) => current.filter((id) => id !== providerId));
+  }
+
+  function saveEditedProvider(providerId: string) {
+    const draft = providerDrafts[providerId];
+    if (!draft) {
+      return;
+    }
+
+    setProviders((current) => saveProviderDraft(current, draft));
+    cancelEditProvider(providerId);
+  }
+
+  function updateProviderDraft(
+    providerId: string,
+    updater: (provider: ProviderConfig) => ProviderConfig,
+  ) {
+    setProviderDrafts((current) => {
+      const base =
+        current[providerId] ??
+        providers.find((provider) => provider.id === providerId);
+
+      if (!base) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [providerId]: updater(createProviderDraft(base)),
+      };
+    });
+  }
+
+  function findProvidersForNode(node: CanvasNodeView): ProviderConfig[] {
+    if (node.kind === 'chat' || node.modelId === 'chat-openai') {
+      return findChatProviders(providers);
+    }
+
+    return findProvidersForCanonicalModel(providers, node.modelId);
+  }
+
+  function findSelectedProviderForNode(node: CanvasNodeView): ProviderConfig | undefined {
+    const availableProviders = findProvidersForNode(node);
+
+    return node.providerId
+      ? availableProviders.find((provider) => provider.id === node.providerId)
+      : availableProviders[0];
+  }
+
+  function findProviderModelsForNode(node: CanvasNodeView) {
+    const provider = findSelectedProviderForNode(node);
+
+    return provider ? findProviderModelsForNodeModel(provider, node.modelId) : [];
+  }
+
+  function markNodeGenerationFailed(nodeId: string, error: string) {
+    updateNode(nodeId, (current) => ({
+      ...current,
+      generationStatus: 'failed',
+      generationError: error,
+    }), { history: false });
+  }
+
+  function openOutputEditor(node: CanvasNodeView) {
+    const outputVersions = getOutputVersionsForDisplay(node);
+    const latestVersion = getLatestOutputVersion(outputVersions);
+    setEditingOutputNodeId(node.id);
+    setSelectedOutputVersionId(latestVersion?.id ?? null);
+    setOutputVersionPage(1);
+    setOutputEditorMode('preview');
+    setOutputModalPosition({ x: 0, y: 0 });
+    setDraftOutputText(latestVersion?.content ?? getEffectiveNodeOutputText(node) ?? '');
+  }
+
+  function saveOutputEditor() {
+    if (!editingOutputNodeId || !editingOutputNode) {
+      return;
+    }
+
+    const nextVersions = appendOutputVersion(outputVersionsForDisplay, draftOutputText, 'edit');
+    const latestVersion = getLatestOutputVersion(nextVersions);
+
+    updateNode(editingOutputNodeId, (current) => ({
+      ...current,
+      outputVersions: nextVersions,
+      outputText: draftOutputText,
+    }));
+    setSelectedOutputVersionId(latestVersion?.id ?? null);
+    setOutputVersionPage(1);
+    setOutputEditorMode('preview');
+  }
+
+  function closeOutputEditor() {
+    setEditingOutputNodeId(null);
+    setSelectedOutputVersionId(null);
+    setDraftOutputText('');
+    setOutputEditorMode('preview');
+    setModalDragState(null);
+  }
+
+  function selectOutputVersion(versionId: string) {
+    const version = outputVersionsForDisplay.find((current) => current.id === versionId);
+
+    if (!version) {
+      return;
+    }
+
+    setSelectedOutputVersionId(version.id);
+    setDraftOutputText(version.content);
+    setOutputEditorMode('preview');
+  }
+
+  function deleteSelectedOutputVersion() {
+    if (!editingOutputNodeId || !selectedOutputVersionId) {
+      return;
+    }
+
+    if (!window.confirm('确定删除当前输出版本吗？')) {
+      return;
+    }
+
+    const nextVersions = outputVersionsForDisplay.filter(
+      (version) => version.id !== selectedOutputVersionId,
+    );
+    const latestVersion = getLatestOutputVersion(nextVersions);
+
+    updateNode(editingOutputNodeId, (current) => ({
+      ...current,
+      outputVersions: nextVersions,
+      modelOutputText: latestVersion?.content,
+      outputText: undefined,
+    }));
+
+    if (!latestVersion) {
+      closeOutputEditor();
+      return;
+    }
+
+    setSelectedOutputVersionId(latestVersion.id);
+    setDraftOutputText(latestVersion.content);
+    setOutputVersionPage(1);
+    setOutputEditorMode('preview');
+  }
+
+  function startOutputModalDrag(event: PointerEvent<HTMLElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    if (
+      event.target instanceof Element &&
+      event.target.closest('button, textarea, input, select, a')
+    ) {
+      return;
+    }
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setModalDragState({
+      pointerId: event.pointerId,
+      lastX: event.clientX,
+      lastY: event.clientY,
+    });
+  }
+
+  function handleOutputModalDrag(event: PointerEvent<HTMLElement>) {
+    if (!modalDragState || modalDragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    setOutputModalPosition((current) => ({
+      x: current.x + event.clientX - modalDragState.lastX,
+      y: current.y + event.clientY - modalDragState.lastY,
+    }));
+    setModalDragState({
+      ...modalDragState,
+      lastX: event.clientX,
+      lastY: event.clientY,
+    });
+  }
+
+  function stopOutputModalDrag(event: PointerEvent<HTMLElement>) {
+    if (modalDragState?.pointerId === event.pointerId) {
+      setModalDragState(null);
+    }
+  }
+
+  async function submitNodeGeneration(node: CanvasNodeView) {
+    if (!activeCanvas) {
+      return;
+    }
+
+    const provider = findSelectedProviderForNode(node);
+    if (!provider) {
+      markNodeGenerationFailed(
+        node.id,
+        node.providerId
+          ? '所选供应商不可用，请重新选择'
+          : `未找到可用供应商：${node.modelId}`,
+      );
+      return;
+    }
+
+    const generationRecordId = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const generationStartedAt = new Date().toISOString();
+    const providerModelId =
+      node.providerModelId ?? findProviderModelsForNode(node)[0]?.providerModelId ?? node.modelId;
+    const inputAssetIds = activeCanvas.edges
+      .filter((edge) => edge.toNodeId === node.id)
+      .map((edge) => edge.fromNodeId);
+    addGenerationHistoryRecord({
+      ...createGenerationRecord({
+        id: generationRecordId,
+        nodeId: node.id,
+        nodeKind: node.kind === 'video' ? 'video' : node.kind === 'image' ? 'image' : 'chat',
+        canonicalModelId: node.modelId,
+        providerId: provider.id,
+        providerModelId,
+        prompt: node.prompt ?? '',
+        inputAssetIds,
+        now: generationStartedAt,
+      }),
+      status: 'running',
+      attempts: 1,
+      startedAt: generationStartedAt,
+    });
+
+    const token = resolveProviderToken(provider);
+    updateNode(node.id, (current) => ({
+      ...current,
+      generationId: generationRecordId,
+      generationStatus: 'running',
+      generationError: undefined,
+      ...(node.kind === 'chat'
+        ? {
+            modelOutputText: '',
+            outputText: undefined,
+          }
+        : {}),
+    }), { history: false });
+
+    if (node.kind === 'chat') {
+      const result = await streamChatGenerationNode({
+        canvas: activeCanvas,
+        nodeId: node.id,
+        provider,
+        token,
+        onDelta: (_delta, fullText) => {
+          updateNode(node.id, (current) => ({
+            ...current,
+            modelOutputText: fullText,
+            outputText: undefined,
+          }), { history: false });
+        },
+      });
+
+      if (!result.ok) {
+        markNodeGenerationFailed(node.id, result.error);
+        updateGenerationHistoryRecord(generationRecordId, (record) => ({
+          ...record,
+          status: 'failed',
+          errorMessage: result.error,
+          endedAt: new Date().toISOString(),
+        }));
+        return;
+      }
+
+      updateNode(node.id, (current) => ({
+        ...current,
+        generationStatus: 'succeeded',
+        generationError: undefined,
+        modelOutputText: result.output.kind === 'text' ? result.output.text : current.modelOutputText,
+        outputVersions:
+          result.output.kind === 'text'
+            ? appendOutputVersion(getOutputVersionsForDisplay(current), result.output.text, 'model')
+            : current.outputVersions,
+        outputText: undefined,
+      }), { history: false });
+      updateGenerationHistoryRecord(generationRecordId, (record) => ({
+        ...record,
+        status: 'succeeded',
+        outputAssetIds: [node.id],
+        endedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const result = await submitGenerationNode({
+      canvas: activeCanvas,
+      nodeId: node.id,
+      provider,
+      token,
+    });
+
+    if (!result.ok) {
+      markNodeGenerationFailed(node.id, result.error);
+      updateGenerationHistoryRecord(generationRecordId, (record) => ({
+        ...record,
+        status: 'failed',
+        errorMessage: result.error,
+        endedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    updateNode(node.id, (current) => {
+      if (result.output.kind === 'image') {
+        return {
+          ...current,
+          generationStatus: 'succeeded',
+          generationError: undefined,
+          outputDataUrl: result.output.dataUrl,
+          outputUrl: result.output.url,
+          outputText: undefined,
+        };
+      }
+
+      if (result.output.kind === 'text') {
+        return {
+          ...current,
+          generationStatus: 'succeeded',
+          generationError: undefined,
+          modelOutputText: result.output.text,
+          outputVersions: appendOutputVersion(getOutputVersionsForDisplay(current), result.output.text, 'model'),
+          outputText: undefined,
+          outputDataUrl: undefined,
+          outputUrl: undefined,
+        };
+      }
+
+      return {
+        ...current,
+        generationStatus: result.output.videoUrl ? 'succeeded' : 'running',
+        generationError: undefined,
+        generationId: result.output.taskId ?? generationRecordId,
+        outputUrl: result.output.videoUrl,
+        outputText: result.output.status ? `任务状态：${result.output.status}` : undefined,
+      };
+    }, { history: false });
+    updateGenerationHistoryRecord(generationRecordId, (record) => ({
+      ...record,
+      status: result.output.kind === 'video-task' && !result.output.videoUrl ? 'running' : 'succeeded',
+      outputAssetIds:
+        result.output.kind === 'image' && (result.output.dataUrl || result.output.url)
+          ? [node.id]
+          : result.output.kind === 'video-task' && result.output.videoUrl
+            ? [node.id]
+            : record.outputAssetIds,
+      endedAt:
+        result.output.kind === 'video-task' && !result.output.videoUrl
+          ? record.endedAt
+          : new Date().toISOString(),
+    }));
+  }
+
+  const canvasNavigationPanel =
+    !showProviderManager && activeCanvas
+      ? (
+          <div
+            className="canvas-navigation-panel"
+            style={{
+              left: isSidebarCollapsed ? '66px' : 'min(219px, calc(100vw - 252px))',
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="canvas-minimap"
+              aria-label="缩略位置图"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={focusMinimapPoint}
+            >
+              {activeCanvas.nodes.map((node) => (
+                <span
+                  key={node.id}
+                  className={`canvas-minimap-node is-${node.kind}`}
+                  style={{
+                    left: (node.x - minimapBounds.minX) * minimapScale,
+                    top: (node.y - minimapBounds.minY) * minimapScale,
+                    width: Math.max(12, canvasNodeSize.width * minimapScale),
+                    height: Math.max(8, canvasNodeSize.height * minimapScale),
+                  }}
+                />
+              ))}
+              {minimapViewport ? (
+                <span
+                  className="canvas-minimap-window"
+                  style={{
+                    left: (minimapViewport.x - minimapBounds.minX) * minimapScale,
+                    top: (minimapViewport.y - minimapBounds.minY) * minimapScale,
+                    width: Math.max(14, minimapViewport.width * minimapScale),
+                    height: Math.max(10, minimapViewport.height * minimapScale),
+                  }}
+                />
+              ) : null}
+            </button>
+          </div>
+        )
+      : null;
 
   return (
     <main className={`app-shell ${isSidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}>
@@ -939,7 +2166,7 @@ export function App() {
         </nav>
         <section className="panel storage-panel">
           <div className="panel-title-row">
-            <h2>存储</h2>
+            <h2>瀛樺偍</h2>
             <button
               type="button"
               className="icon-button"
@@ -960,7 +2187,7 @@ export function App() {
           </label>
           <p>
             {storage.mode === 'custom-folder'
-              ? `当前：${storage.folderName ?? storage.folderPath ?? '自定义文件夹'}`
+              ? `当前：{storage.folderName ?? storage.folderPath ?? '自定义文件夹'}`
               : '当前：浏览器本地存储'}
           </p>
         </section>
@@ -982,12 +2209,7 @@ export function App() {
                   <button
                     type="button"
                     className="canvas-list-select"
-                    onClick={() => {
-                      setActiveCanvasId(canvas.id);
-                      setAddMenu(null);
-                      setSelectedNodeId(null);
-                      setSelectedEdgeId(null);
-                    }}
+                    onClick={() => selectCanvasFromSidebar(canvas.id)}
                   >
                     <FilePlus2 size={17} />
                   </button>
@@ -1012,15 +2234,10 @@ export function App() {
                       <button
                         type="button"
                         className="canvas-list-name"
-                        onClick={() => {
-                          setActiveCanvasId(canvas.id);
-                          setAddMenu(null);
-                          setSelectedNodeId(null);
-                          setSelectedEdgeId(null);
-                        }}
+                        onClick={() => selectCanvasFromSidebar(canvas.id)}
                       >
                         <strong>{canvas.name}</strong>
-                        <small>{canvas.nodes.length} 个节点 · {canvas.updatedAt}</small>
+                    <small>{canvas.nodes.length} 个节点 · {canvas.updatedAt}</small>
                       </button>
                     )}
                   </div>
@@ -1077,7 +2294,7 @@ export function App() {
               />
             ) : (
               <>
-                <span>{activeCanvas?.name ?? '暂无画布'}</span>
+                <span>{activeCanvas?.name ?? '鏆傛棤画布'}</span>
                 {activeCanvas ? (
                   <button
                     type="button"
@@ -1099,8 +2316,14 @@ export function App() {
                   <Plus size={18} />
                   新增供应商
                 </button>
-                <button type="button" onClick={() => setShowProviderManager(false)}>
-                  返回画布
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="关闭供应商管理"
+                  title="关闭供应商管理"
+                  onClick={returnToCanvas}
+                >
+                  <X size={18} />
                 </button>
               </>
             ) : (
@@ -1116,21 +2339,29 @@ export function App() {
             <div className="provider-table provider-table-header">
               <span>供应商名称</span>
               <span>Base URL</span>
-              <span>API Token 引用</span>
+              <span>API Key / 引用</span>
               <span>协议</span>
               <span>状态</span>
               <span>模型映射</span>
               <span>操作</span>
             </div>
             <div className="provider-list">
-              {providers.map((provider) => (
-                <section key={provider.id} className="provider-row">
+              {providerRows.map((provider) => {
+                const isEditingProvider = editingProviderIds.includes(provider.id);
+                const providerView = providerDrafts[provider.id] ?? provider;
+
+                return (
+                <section
+                  key={provider.id}
+                  className={`provider-row ${isEditingProvider ? 'is-editing' : ''}`}
+                >
                   <label>
                     供应商名称
                     <input
-                      value={provider.name}
+                      value={providerView.name}
+                      disabled={!isEditingProvider}
                       onChange={(event) =>
-                        updateProvider(provider.id, (current) => ({
+                        updateProviderDraft(provider.id, (current) => ({
                           ...current,
                           name: event.target.value,
                         }))
@@ -1140,9 +2371,10 @@ export function App() {
                   <label>
                     Base URL
                     <input
-                      value={provider.baseURL}
+                      value={providerView.baseURL}
+                      disabled={!isEditingProvider}
                       onChange={(event) =>
-                        updateProvider(provider.id, (current) => ({
+                        updateProviderDraft(provider.id, (current) => ({
                           ...current,
                           baseURL: event.target.value,
                         }))
@@ -1150,11 +2382,12 @@ export function App() {
                     />
                   </label>
                   <label>
-                    API Token 引用
+                    API Key / 引用
                     <input
-                      value={provider.apiTokenRef}
+                      value={providerView.apiTokenRef}
+                      disabled={!isEditingProvider}
                       onChange={(event) =>
-                        updateProvider(provider.id, (current) => ({
+                        updateProviderDraft(provider.id, (current) => ({
                           ...current,
                           apiTokenRef: event.target.value,
                         }))
@@ -1164,9 +2397,10 @@ export function App() {
                   <label>
                     协议
                     <select
-                      value={provider.protocol}
+                      value={providerView.protocol}
+                      disabled={!isEditingProvider}
                       onChange={(event) =>
-                        updateProvider(provider.id, (current) => ({
+                        updateProviderDraft(provider.id, (current) => ({
                           ...current,
                           protocol: event.target.value as ProviderConfig['protocol'],
                         }))
@@ -1181,9 +2415,10 @@ export function App() {
                   <label className="inline-toggle">
                     <input
                       type="checkbox"
-                      checked={provider.enabled}
+                      checked={providerView.enabled}
+                      disabled={!isEditingProvider}
                       onChange={(event) =>
-                        updateProvider(provider.id, (current) => ({
+                        updateProviderDraft(provider.id, (current) => ({
                           ...current,
                           enabled: event.target.checked,
                         }))
@@ -1192,14 +2427,15 @@ export function App() {
                     启用
                   </label>
                   <div className="provider-models">
-                    {provider.models.map((model, modelIndex) => (
+                    {providerView.models.map((model, modelIndex) => (
                       <div key={model.id ?? `model_${modelIndex}`}>
                         <label>
                           供应商模型 ID
                           <input
                             value={model.providerModelId}
+                            disabled={!isEditingProvider}
                             onChange={(event) =>
-                              updateProvider(provider.id, (current) => ({
+                              updateProviderDraft(provider.id, (current) => ({
                                 ...current,
                                 models: current.models.map((currentModel, currentIndex) =>
                                   currentIndex === modelIndex
@@ -1214,8 +2450,9 @@ export function App() {
                           映射后标准模型 ID
                           <input
                             value={model.canonicalModelId}
+                            disabled={!isEditingProvider}
                             onChange={(event) =>
-                              updateProvider(provider.id, (current) => ({
+                              updateProviderDraft(provider.id, (current) => ({
                                 ...current,
                                 models: current.models.map((currentModel, currentIndex) =>
                                   currentIndex === modelIndex
@@ -1230,8 +2467,9 @@ export function App() {
                           <input
                             type="checkbox"
                             checked={model.enabled}
+                            disabled={!isEditingProvider}
                             onChange={(event) =>
-                              updateProvider(provider.id, (current) => ({
+                              updateProviderDraft(provider.id, (current) => ({
                                 ...current,
                                 models: current.models.map((currentModel, currentIndex) =>
                                   currentIndex === modelIndex
@@ -1245,21 +2483,46 @@ export function App() {
                         </label>
                       </div>
                     ))}
-                    <button type="button" onClick={() => addProviderModel(provider.id)}>
+                    <button
+                      type="button"
+                      disabled={!isEditingProvider}
+                      onClick={() => addProviderModel(provider.id)}
+                    >
                       <Plus size={16} />
                       添加模型映射
                     </button>
                   </div>
-                  <button
-                    type="button"
-                    className="danger-button provider-delete-button"
-                    onClick={() => deleteProvider(provider.id)}
-                  >
-                    <Trash2 size={16} />
-                    删除
-                  </button>
+                  <div className="provider-row-actions">
+                    {isEditingProvider ? (
+                      <>
+                        <button type="button" onClick={() => saveEditedProvider(provider.id)}>
+                          <Save size={16} />
+                          保存
+                        </button>
+                        <button type="button" onClick={() => cancelEditProvider(provider.id)}>
+                          <X size={16} />
+                          取消
+                        </button>
+                      </>
+                    ) : (
+                      <button type="button" onClick={() => startEditProvider(provider)}>
+                        <Pencil size={16} />
+                        编辑
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={isEditingProvider}
+                      onClick={() => deleteProvider(provider.id)}
+                    >
+                      <Trash2 size={16} />
+                      删除
+                    </button>
+                  </div>
                 </section>
-              ))}
+                );
+              })}
             </div>
           </div>
         ) : (
@@ -1285,27 +2548,15 @@ export function App() {
             }
           }}
         >
-          <div className="canvas-action-rail">
-            <button type="button" aria-label="新建画布" title="新建画布" onClick={createCanvas}>
-              <FolderPlus size={18} />
-            </button>
-            <button
-              type="button"
-              aria-label="导出当前画布"
-              title="导出当前画布"
-              onClick={downloadActiveCanvas}
-            >
-              <SquareArrowUpRight size={18} />
-            </button>
-            <button
-              type="button"
-              aria-label="导入画布"
-              title="导入画布"
-              onClick={() => importInputRef.current?.click()}
-            >
-              <Import size={18} />
-            </button>
-          </div>
+          <CanvasActionRail
+            canUndo={canUndoWorkspace}
+            canRedo={canRedoWorkspace}
+            onCreateCanvas={createCanvas}
+            onUndo={undoWorkspace}
+            onRedo={redoWorkspace}
+            onExportCanvas={downloadActiveCanvas}
+            onImportCanvas={() => importInputRef.current?.click()}
+          />
           <button
             type="button"
             className="canvas-add-button"
@@ -1405,12 +2656,11 @@ export function App() {
             </svg>
             {activeCanvas?.nodes.map((node) => {
               const Icon = getNodeIcon(node.kind);
-              const providersForNode =
-                node.modelId === 'gpt-image-2'
-                  ? imageProviders
-                  : node.modelId === 'seedance2.0'
-                    ? videoProviders
-                    : [];
+              const providersForNode = findProvidersForNode(node);
+              const isGenerating = runningNodeIds.has(node.id);
+              const effectiveOutputText = getEffectiveNodeOutputText(node);
+              const isLongOutput =
+                effectiveOutputText !== undefined && shouldCollapseMarkdown(effectiveOutputText);
 
               return (
                 <article
@@ -1508,20 +2758,77 @@ export function App() {
                                 .join('、')}`
                             : '对话模型供应商待配置'}
                         </p>
-                        <textarea
-                          placeholder="输入提示词，使用 @image:asset_id 引用资产"
-                          onPointerDown={(event) => event.stopPropagation()}
+                        <PromptTextarea
+                          canvas={activeCanvas}
+                          node={node}
+                          placeholder="输入提示词，使用 @text:节点ID 引用全文，@image:节点ID 引用图片"
+                          stopPointerDown
+                          onChange={(value) =>
+                            updateNode(node.id, (current) => ({
+                              ...current,
+                              prompt: value,
+                            }))
+                          }
                         />
-                        <button type="button" onPointerDown={(event) => event.stopPropagation()}>
-                          生成
+                        <button
+                          type="button"
+                          disabled={isGenerating}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() => void submitNodeGeneration(node)}
+                        >
+                          {isGenerating ? '提交中' : '生成'}
                         </button>
+                        {node.generationError ? (
+                          <p className="node-error">{node.generationError}</p>
+                        ) : null}
+                        {node.outputDataUrl || node.outputUrl ? (
+                          node.kind === 'video' ? (
+                            <video
+                              className="asset-preview"
+                              src={node.outputDataUrl ?? node.outputUrl}
+                              controls
+                            />
+                          ) : (
+                            <img
+                              className="asset-preview"
+                              src={node.outputDataUrl ?? node.outputUrl}
+                              alt={`${node.title} 输出`}
+                            />
+                          )
+                        ) : null}
+                        {isGenerating ? (
+                          <StreamingOutputTail text={effectiveOutputText ?? ''} />
+                        ) : effectiveOutputText ? (
+                          isLongOutput ? (
+                            <>
+                            <div className="node-output-summary">
+                              {summarizeOutputText(effectiveOutputText)}
+                            </div>
+                            <button
+                              type="button"
+                              className="node-output-open"
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onClick={() => openOutputEditor(node)}
+                            >
+                              查看 / 编辑完整输出
+                            </button>
+                            </>
+                          ) : (
+                            <div
+                              className="node-output-markdown"
+                              dangerouslySetInnerHTML={{
+                                __html: renderMarkdownToHtml(effectiveOutputText),
+                              }}
+                            />
+                          )
+                        ) : null}
                       </>
                     )}
                   </div>
                   <button
                     type="button"
                     className="edge-handle edge-handle-output"
-                    aria-label="从此节点连线"
+                    aria-label="浠庢节点连线"
                     onPointerDown={(event) => startEdgeDraft(event, node)}
                   />
                 </article>
@@ -1529,7 +2836,7 @@ export function App() {
             })}
             {!activeCanvas ? (
               <div className="empty-canvas-state">
-                <h2>暂无画布</h2>
+                <h2>鏆傛棤画布</h2>
                 <p>新建或导入一个画布后即可开始组织节点。</p>
                 <div>
                   <button type="button" onClick={createCanvas}>
@@ -1565,16 +2872,20 @@ export function App() {
               </button>
               <label>
                 供应商
-                <select defaultValue="">
-                  <option value="" disabled>
-                    选择供应商
+                <select
+                  value={selectedNode.providerId ?? ''}
+                  onChange={(event) =>
+                    updateNode(selectedNode.id, (current) => ({
+                      ...current,
+                      providerId: event.target.value || undefined,
+                      providerModelId: undefined,
+                    }))
+                  }
+                >
+                  <option value="">
+                    自动选择供应商
                   </option>
-                  {(selectedNode.modelId === 'gpt-image-2'
-                    ? imageProviders
-                    : selectedNode.modelId === 'seedance2.0'
-                      ? videoProviders
-                      : []
-                  ).map((provider) => (
+                  {findProvidersForNode(selectedNode).map((provider) => (
                     <option key={provider.id} value={provider.id}>
                       {provider.name}
                     </option>
@@ -1582,14 +2893,174 @@ export function App() {
                 </select>
               </label>
               <label>
-                提示词
-                <textarea placeholder="输入节点提示词，支持 @ 引用画布资产" />
+                供应商模型
+                <select
+                  value={selectedNode.providerModelId ?? ''}
+                  onChange={(event) =>
+                    updateNode(selectedNode.id, (current) => ({
+                      ...current,
+                      providerModelId: event.target.value || undefined,
+                    }))
+                  }
+                >
+                  <option value="">自动选择模型</option>
+                  {findProviderModelsForNode(selectedNode).map((model) => (
+                    <option
+                      key={`${model.canonicalModelId}:${model.providerModelId}`}
+                      value={model.providerModelId}
+                    >
+                      {model.displayName ?? model.providerModelId}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                鎻愮ず璇?                <PromptTextarea
+                  canvas={activeCanvas}
+                  node={selectedNode}
+                  placeholder="输入节点提示词，支持 @text:节点ID 和 @image:节点ID"
+                  onChange={(value) =>
+                    updateNode(selectedNode.id, (current) => ({
+                      ...current,
+                      prompt: value,
+                    }))
+                  }
+                />
               </label>
             </aside>
+          ) : null}
+          {editingOutputNode ? createPortal(
+            <div className="output-modal-backdrop" onPointerDown={closeOutputEditor}>
+              <section
+                className="output-modal"
+                style={{
+                  transform: `translate(${outputModalPosition.x}px, ${outputModalPosition.y}px)`,
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                onPointerMove={handleOutputModalDrag}
+                onPointerUp={stopOutputModalDrag}
+                onPointerCancel={stopOutputModalDrag}
+              >
+                <header className="output-modal-header" onPointerDown={startOutputModalDrag}>
+                  <div>
+                    <h2>{editingOutputNode.title} 输出鐗堟湰</h2>
+                    <p>拖拽标题栏移动窗口</p>
+                  </div>
+                  <button
+                    type="button"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={closeOutputEditor}
+                  >
+                    <X size={16} />
+                    关闭
+                  </button>
+                </header>
+                <div className="output-modal-layout">
+                  <aside className="output-version-sidebar">
+                    <div className="output-version-list">
+                      {outputVersionPageData.items.map((version) => (
+                        <button
+                          key={version.id}
+                          type="button"
+                          className={version.id === selectedOutputVersionId ? 'is-active' : ''}
+                          onClick={() => selectOutputVersion(version.id)}
+                        >
+                          <span>{version.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="output-version-pagination">
+                      <button
+                        type="button"
+                        disabled={outputVersionPageData.page <= 1}
+                        onClick={() => setOutputVersionPage((current) => Math.max(1, current - 1))}
+                      >
+                        上一页                      </button>
+                      <span>
+                        {outputVersionPageData.page} / {outputVersionPageData.pageCount}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={outputVersionPageData.page >= outputVersionPageData.pageCount}
+                        onClick={() =>
+                          setOutputVersionPage((current) =>
+                            Math.min(outputVersionPageData.pageCount, current + 1),
+                          )
+                        }
+                      >
+                        下一页                      </button>
+                    </div>
+                  </aside>
+                  <div className="output-version-detail">
+                    <div className="output-version-detail-actions">
+                      <button
+                        type="button"
+                        className={outputEditorMode === 'preview' ? 'is-active' : ''}
+                        onClick={() => setOutputEditorMode('preview')}
+                      >
+                        预览
+                      </button>
+                      <button
+                        type="button"
+                        className={outputEditorMode === 'edit' ? 'is-active' : ''}
+                        onClick={() => setOutputEditorMode('edit')}
+                      >
+                        <Pencil size={16} />
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        className="danger-button"
+                        disabled={!selectedOutputVersionId}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={deleteSelectedOutputVersion}
+                      >
+                        <Trash2 size={16} />
+                        删除
+                      </button>
+                    </div>
+                    {outputEditorMode === 'preview' ? (
+                      <div
+                        className="output-modal-preview"
+                        onWheel={handleModalScrollableWheel}
+                        dangerouslySetInnerHTML={{
+                          __html: renderMarkdownToHtml(draftOutputText),
+                        }}
+                      />
+                    ) : (
+                      <textarea
+                        value={draftOutputText}
+                        onWheel={handleModalScrollableWheel}
+                        onChange={(event) => setDraftOutputText(event.target.value)}
+                      />
+                    )}
+                  </div>
+                </div>
+                <footer>
+                  <button
+                    type="button"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={closeOutputEditor}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={saveOutputEditor}
+                  >
+                    <Save size={16} />
+                    保存为新版本
+                  </button>
+                </footer>
+              </section>
+            </div>,
+            document.body,
           ) : null}
         </div>
         )}
       </section>
+      {canvasNavigationPanel ? createPortal(canvasNavigationPanel, document.body) : null}
     </main>
   );
 }

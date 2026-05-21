@@ -1,0 +1,388 @@
+import { describe, expect, it, vi } from 'vitest';
+import type { CanvasView } from '../../src/app/canvasWorkspace';
+import type { ProviderConfig } from '../../src/domain/provider';
+import {
+  buildGenerationRequest,
+  getEffectiveNodeOutputText,
+  parseOpenAIStreamTextDelta,
+  resolveProviderToken,
+  streamChatGenerationNode,
+  submitGenerationNode,
+  type GenerationFetch,
+} from '../../src/models/generationClient';
+
+const openaiProvider: ProviderConfig = {
+  id: 'provider_openai',
+  name: 'OpenAI',
+  protocol: 'openai-compatible',
+  baseURL: 'https://api.openai.com',
+  apiTokenRef: 'secret_openai',
+  enabled: true,
+  models: [
+    {
+      canonicalModelId: 'gpt-image-2',
+      providerModelId: 'gpt-image-2',
+      enabled: true,
+    },
+    {
+      canonicalModelId: 'gpt-image-2',
+      providerModelId: 'custom-image-model',
+      enabled: true,
+    },
+    {
+      canonicalModelId: 'chat-openai',
+      providerModelId: 'gpt-5.4-mini',
+      enabled: true,
+    },
+  ],
+};
+
+const seedanceProvider: ProviderConfig = {
+  id: 'provider_seedance',
+  name: 'Seedance',
+  protocol: 'volcengine',
+  baseURL: 'https://ark.cn-beijing.volces.com',
+  apiTokenRef: 'secret_seedance',
+  enabled: true,
+  models: [
+    {
+      canonicalModelId: 'seedance2.0',
+      providerModelId: 'doubao-seedance-2-0-260128',
+      enabled: true,
+    },
+  ],
+};
+
+const canvas: CanvasView = {
+  id: 'canvas_1',
+  name: 'Canvas',
+  updatedAt: 'now',
+  nodes: [
+    {
+      id: 'text_1',
+      title: 'Text',
+      modelId: 'asset-text',
+      kind: 'textAsset',
+      x: 0,
+      y: 0,
+      textContent: 'use a clean studio background',
+    },
+    {
+      id: 'image_asset_1',
+      title: 'Reference',
+      modelId: 'asset-image',
+      kind: 'imageAsset',
+      x: 0,
+      y: 0,
+      assetName: 'reference.png',
+      assetDataUrl: 'data:image/png;base64,aW1hZ2U=',
+      assetMimeType: 'image/png',
+    },
+    {
+      id: 'image_1',
+      title: 'Image',
+      modelId: 'gpt-image-2',
+      providerModelId: 'custom-image-model',
+      kind: 'image',
+      x: 0,
+      y: 0,
+      prompt: 'A ceramic cup',
+    },
+    {
+      id: 'video_1',
+      title: 'Video',
+      modelId: 'seedance2.0',
+      kind: 'video',
+      x: 0,
+      y: 0,
+      prompt: 'Slow camera orbit',
+    },
+    {
+      id: 'chat_1',
+      title: 'Chat',
+      modelId: 'chat-openai',
+      kind: 'chat',
+      x: 0,
+      y: 0,
+      prompt: 'Rewrite this prompt @text:text_1 @image:image_asset_1',
+    },
+  ],
+  edges: [
+    { id: 'edge_text_image', fromNodeId: 'text_1', toNodeId: 'image_1' },
+    { id: 'edge_image_video', fromNodeId: 'image_asset_1', toNodeId: 'video_1' },
+  ],
+};
+
+describe('generation client request building', () => {
+  it('uses a direct provider API key when the token field contains one', () => {
+    expect(
+      resolveProviderToken({
+        ...openaiProvider,
+        apiTokenRef: 'sk-test-direct-token',
+      }),
+    ).toBe('sk-test-direct-token');
+  });
+
+  it('resolves provider token references from environment variables', () => {
+    expect(resolveProviderToken(openaiProvider, { secret_openai: 'env-token' })).toBe(
+      'env-token',
+    );
+  });
+
+  it('rejects asset nodes before any provider call', () => {
+    expect(
+      buildGenerationRequest({
+        canvas,
+        nodeId: 'text_1',
+        provider: openaiProvider,
+        token: 'token',
+      }),
+    ).toEqual({
+      ok: false,
+      error: '资产节点不能直接提交生成请求',
+    });
+  });
+
+  it('rejects missing prompt because model calls are expensive', () => {
+    expect(
+      buildGenerationRequest({
+        canvas: {
+          ...canvas,
+          nodes: [{ id: 'image_1', title: 'Image', modelId: 'gpt-image-2', kind: 'image', x: 0, y: 0 }],
+          edges: [],
+        },
+        nodeId: 'image_1',
+        provider: openaiProvider,
+        token: 'token',
+      }),
+    ).toEqual({
+      ok: false,
+      error: '提交前必须填写提示词',
+    });
+  });
+
+  it('builds an OpenAI image generation request with text inputs appended', () => {
+    const result = buildGenerationRequest({
+      canvas,
+      nodeId: 'image_1',
+      provider: openaiProvider,
+      token: 'token',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      request: {
+        url: 'https://api.openai.com/v1/images/generations',
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer token',
+          'Content-Type': 'application/json',
+        },
+        responseKind: 'image',
+      },
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string)).toEqual({
+      model: 'custom-image-model',
+      prompt: 'A ceramic cup\n\n参考文本：\n- use a clean studio background',
+      n: 1,
+      size: '1024x1024',
+    });
+  });
+
+  it('builds a Seedance video task request with reference images', () => {
+    const result = buildGenerationRequest({
+      canvas,
+      nodeId: 'video_1',
+      provider: seedanceProvider,
+      token: 'seedance-token',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      request: {
+        url: 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks',
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer seedance-token',
+          'Content-Type': 'application/json',
+        },
+        responseKind: 'video-task',
+      },
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string)).toEqual({
+      model: 'doubao-seedance-2-0-260128',
+      content: [
+        { type: 'text', text: 'Slow camera orbit' },
+        {
+          type: 'image_url',
+          image_url: {
+            url: 'data:image/png;base64,aW1hZ2U=',
+            role: 'reference_image',
+          },
+        },
+      ],
+    });
+  });
+
+  it('builds text generation requests with stream enabled when requested', () => {
+    const result = buildGenerationRequest({
+      canvas,
+      nodeId: 'chat_1',
+      provider: openaiProvider,
+      token: 'token',
+      stream: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      request: {
+        url: 'https://api.openai.com/v1/chat/completions',
+        responseKind: 'text',
+      },
+    });
+    expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
+      model: 'gpt-5.4-mini',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text:
+                'Rewrite this prompt @text:text_1 @image:image_asset_1\n\n' +
+                '引用文本：\n' +
+                '1. @text:text_1\nuse a clean studio background',
+            },
+            {
+              type: 'image_url',
+              image_url: { url: 'data:image/png;base64,aW1hZ2U=' },
+            },
+          ],
+        },
+      ],
+      stream: true,
+    });
+  });
+
+  it('rejects synchronous text generation submissions', async () => {
+    const fetcher = vi.fn<GenerationFetch>();
+
+    await expect(
+      submitGenerationNode({
+        canvas,
+        nodeId: 'chat_1',
+        provider: openaiProvider,
+        token: 'token',
+        fetcher,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: '文本生成必须使用流式接口',
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('submits and normalizes image outputs', async () => {
+    const fetcher = vi.fn<GenerationFetch>(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{ b64_json: 'abc123' }],
+      }),
+    }));
+
+    await expect(
+      submitGenerationNode({
+        canvas,
+        nodeId: 'image_1',
+        provider: openaiProvider,
+        token: 'token',
+        fetcher,
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      output: {
+        kind: 'image',
+        dataUrl: 'data:image/png;base64,abc123',
+        rawResponse: { data: [{ b64_json: 'abc123' }] },
+      },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('parses OpenAI chat completion stream deltas', () => {
+    expect(
+      parseOpenAIStreamTextDelta(
+        'data: {"choices":[{"delta":{"content":"你"}}]}\n\n' +
+          'data: {"choices":[{"delta":{"content":"好"}}]}\n\n' +
+          'data: [DONE]\n\n',
+      ),
+    ).toEqual(['你', '好']);
+  });
+
+  it('emits stream deltas as CRLF-delimited chunks arrive', async () => {
+    const encoder = new TextEncoder();
+    let pushSecondChunk: (() => void) | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode('data: {"choices":[{"delta":{"content":"Hel"}}]}\r\n\r\n'),
+        );
+        pushSecondChunk = () => {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"choices":[{"delta":{"content":"lo"}}]}\r\n\r\n' +
+                'data: [DONE]\r\n\r\n',
+            ),
+          );
+          controller.close();
+        };
+      },
+    });
+    const deltas: string[] = [];
+    const fullTexts: string[] = [];
+    const resultPromise = streamChatGenerationNode({
+      canvas,
+      nodeId: 'chat_1',
+      provider: openaiProvider,
+      token: 'token',
+      fetcher: vi.fn(async () => new Response(stream, { status: 200 })),
+      onDelta(delta, fullText) {
+        deltas.push(delta);
+        fullTexts.push(fullText);
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(deltas).toEqual(['Hel']);
+    expect(fullTexts).toEqual(['Hel']);
+
+    pushSecondChunk?.();
+    await expect(resultPromise).resolves.toMatchObject({
+      ok: true,
+      output: {
+        kind: 'text',
+        text: 'Hello',
+      },
+    });
+    expect(deltas).toEqual(['Hel', 'lo']);
+    expect(fullTexts).toEqual(['Hel', 'Hello']);
+  });
+
+  it('uses edited output text before original model output text', () => {
+    expect(
+      getEffectiveNodeOutputText({
+        id: 'chat_1',
+        title: 'Chat',
+        modelId: 'chat-openai',
+        kind: 'chat',
+        x: 0,
+        y: 0,
+        modelOutputText: '模型输出',
+        outputText: '修改输出',
+      }),
+    ).toBe('修改输出');
+  });
+});
