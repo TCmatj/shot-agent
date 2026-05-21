@@ -127,7 +127,7 @@ button:disabled {
 }
 
 .canvas-message {
-  color: #8dffbc;
+  color: #c7d0da;
   font-size: 13px;
   margin: 0;
 }
@@ -188,16 +188,16 @@ button:disabled {
 }
 
 .storage-migrate-button svg {
-  color: #8dffbc;
+  color: #d7dde5;
 }
 
 .storage-folder-button svg {
-  color: #9dbbff;
+  color: #aeb8c5;
 }
 
 .storage-action-button:not(:disabled):hover {
-  background: #18212a;
-  border-color: #6b7d90;
+  background: #1b2026;
+  border-color: #7d8793;
 }
 
 .storage-action-button:disabled svg {
