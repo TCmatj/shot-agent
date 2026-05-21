@@ -1548,6 +1548,8 @@ export function App() {
 
     setAddMenu(null);
     setDragState(null);
+    setSelectedNodeId(node.id);
+    setSelectedEdgeId(null);
     setEdgeDraft({
       fromNodeId: node.id,
       from,
@@ -1579,6 +1581,12 @@ export function App() {
 
   function finishEdgeDraftOnBlank(event: PointerEvent<HTMLDivElement>) {
     if (!edgeDraft) {
+      return;
+    }
+
+    const dragDistance = Math.hypot(edgeDraft.to.x - edgeDraft.from.x, edgeDraft.to.y - edgeDraft.from.y);
+    if (dragDistance < 8) {
+      setEdgeDraft(null);
       return;
     }
 
@@ -2925,7 +2933,8 @@ export function App() {
                 </select>
               </label>
               <label>
-                鎻愮ず璇?                <PromptTextarea
+                提示词
+                <PromptTextarea
                   canvas={activeCanvas}
                   node={selectedNode}
                   placeholder="输入节点提示词，支持 @text:节点ID 和 @image:节点ID"
