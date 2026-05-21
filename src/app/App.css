@@ -1058,21 +1058,6 @@ button:disabled {
   }
 }
 
-.canvas-add-button {
-  border-radius: 999px;
-  height: 42px;
-  justify-content: center;
-  left: 18px;
-  min-height: 42px;
-  padding: 0;
-  position: absolute;
-  top: calc(50% + 44px);
-  transform: translateY(-50%);
-  width: 42px;
-  z-index: 1;
-}
-
-.canvas-add-button::after,
 .canvas-action-rail button::after {
   background: rgba(9, 11, 14, 0.94);
   border: 1px solid #303640;
@@ -1095,8 +1080,6 @@ button:disabled {
   white-space: nowrap;
 }
 
-.canvas-add-button:hover::after,
-.canvas-add-button:focus-visible::after,
 .canvas-action-rail button:hover::after,
 .canvas-action-rail button:focus-visible::after {
   opacity: 1;
@@ -1133,11 +1116,16 @@ button:disabled {
 
 .canvas-action-rail {
   display: grid;
-  gap: 8px;
+  gap: 84px;
   left: 18px;
   position: absolute;
   top: calc(50% - 154px);
   z-index: 1;
+}
+
+.canvas-action-group {
+  display: grid;
+  gap: 8px;
 }
 
 .canvas-action-rail button {

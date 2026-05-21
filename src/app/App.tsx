@@ -144,6 +144,7 @@ type ModalDragState = {
 type CanvasActionRailProps = {
   canUndo: boolean;
   canRedo: boolean;
+  onAddNode: (clientX: number, clientY: number) => void;
   onCreateCanvas: () => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -154,6 +155,7 @@ type CanvasActionRailProps = {
 function CanvasActionRail({
   canUndo,
   canRedo,
+  onAddNode,
   onCreateCanvas,
   onUndo,
   onRedo,
@@ -162,38 +164,51 @@ function CanvasActionRail({
 }: CanvasActionRailProps) {
   return (
     <div className="canvas-action-rail">
-      <button type="button" aria-label="新建画布" title="新建画布" onClick={onCreateCanvas}>
-        <FolderPlus size={18} />
-      </button>
-      <button
-        type="button"
-        aria-label="撤回"
-        title="撤回 Ctrl+Z"
-        disabled={!canUndo}
-        onClick={onUndo}
-      >
-        <Undo2 size={18} />
-      </button>
-      <button
-        type="button"
-        aria-label="重做"
-        title="重做 Ctrl+Y / Ctrl+Shift+Z"
-        disabled={!canRedo}
-        onClick={onRedo}
-      >
-        <Redo2 size={18} />
-      </button>
-      <button
-        type="button"
-        aria-label="导出当前画布"
-        title="导出当前画布"
-        onClick={onExportCanvas}
-      >
-        <SquareArrowUpRight size={18} />
-      </button>
-      <button type="button" aria-label="导入画布" title="导入画布" onClick={onImportCanvas}>
-        <Import size={18} />
-      </button>
+      <div className="canvas-action-group">
+        <button
+          type="button"
+          aria-label="添加节点"
+          title="添加节点"
+          onClick={(event) => onAddNode(event.clientX, event.clientY)}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <Plus size={20} />
+        </button>
+        <button
+          type="button"
+          aria-label="撤销"
+          title="撤销 Ctrl+Z"
+          disabled={!canUndo}
+          onClick={onUndo}
+        >
+          <Undo2 size={18} />
+        </button>
+        <button
+          type="button"
+          aria-label="回退"
+          title="回退 Ctrl+Y / Ctrl+Shift+Z"
+          disabled={!canRedo}
+          onClick={onRedo}
+        >
+          <Redo2 size={18} />
+        </button>
+      </div>
+      <div className="canvas-action-group">
+        <button type="button" aria-label="新建画布" title="新建画布" onClick={onCreateCanvas}>
+          <FolderPlus size={18} />
+        </button>
+        <button
+          type="button"
+          aria-label="导出当前画布"
+          title="导出当前画布"
+          onClick={onExportCanvas}
+        >
+          <SquareArrowUpRight size={18} />
+        </button>
+        <button type="button" aria-label="导入画布" title="导入画布" onClick={onImportCanvas}>
+          <Import size={18} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -2551,21 +2566,13 @@ export function App() {
           <CanvasActionRail
             canUndo={canUndoWorkspace}
             canRedo={canRedoWorkspace}
+            onAddNode={(clientX, clientY) => openAddMenu(clientX, clientY)}
             onCreateCanvas={createCanvas}
             onUndo={undoWorkspace}
             onRedo={redoWorkspace}
             onExportCanvas={downloadActiveCanvas}
             onImportCanvas={() => importInputRef.current?.click()}
           />
-          <button
-            type="button"
-            className="canvas-add-button"
-            aria-label="添加节点"
-            onClick={(event) => openAddMenu(event.clientX, event.clientY)}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            <Plus size={20} />
-          </button>
           {addMenu ? (
             <div
               className="add-node-menu"
