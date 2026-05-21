@@ -432,6 +432,8 @@ const canvasViewportStorageKey = 'shot-agent:canvas-viewports';
 const canvasNodeSize = { width: 320, height: 220 };
 const minimapSize = { width: 220, height: 150 };
 const defaultViewport: CanvasViewport = { x: 80, y: 72, scale: 1 };
+const maxBrowserLocalAssetBytes = 2 * 1024 * 1024;
+const maxBrowserLocalAssetSizeLabel = '2MB';
 
 function summarizeOutputText(value: string, maxLength = 160): string {
   const summary = value
@@ -1095,6 +1097,22 @@ function getNodeIcon(kind: CanvasNodeKind) {
   return Image;
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))}KB`;
+  }
+
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+}
+
+function getLocalStorageErrorMessage(error: unknown): string {
+  if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+    return '浏览器本地存储空间不足，当前更改可能刷新后丢失。请先删除较大的本地素材，或等待后续对象存储接入。';
+  }
+
+  return '画布保存到浏览器本地存储失败，当前更改可能刷新后丢失。';
+}
+
 export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -1246,18 +1264,30 @@ export function App() {
   }, [workspaceState]);
 
   useEffect(() => {
-    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(workspaceState));
+    try {
+      window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(workspaceState));
+    } catch (error) {
+      setCanvasMessage(getLocalStorageErrorMessage(error));
+    }
   }, [workspaceState]);
 
   useEffect(() => {
-    window.localStorage.setItem(
-      canvasViewportStorageKey,
-      serializeStoredCanvasViewports(canvasViewports),
-    );
+    try {
+      window.localStorage.setItem(
+        canvasViewportStorageKey,
+        serializeStoredCanvasViewports(canvasViewports),
+      );
+    } catch {
+      // 视口信息是辅助状态，保存失败不应影响画布主流程。
+    }
   }, [canvasViewports]);
 
   useEffect(() => {
-    window.localStorage.setItem(providerStorageKey, JSON.stringify(providers));
+    try {
+      window.localStorage.setItem(providerStorageKey, JSON.stringify(providers));
+    } catch (error) {
+      setCanvasMessage(getLocalStorageErrorMessage(error));
+    }
   }, [providers]);
 
   useEffect(() => {
@@ -1733,7 +1763,17 @@ export function App() {
       return;
     }
 
+    if (file.size > maxBrowserLocalAssetBytes) {
+      setCanvasMessage(
+        `素材 ${file.name} 大小为 ${formatFileSize(file.size)}，超过当前浏览器本地存储安全上限 ${maxBrowserLocalAssetSizeLabel}，已取消导入以避免页面崩溃。`,
+      );
+      return;
+    }
+
     const reader = new FileReader();
+    reader.addEventListener('error', () => {
+      setCanvasMessage(`读取素材 ${file.name} 失败，请重新选择文件。`);
+    });
     reader.addEventListener('load', () => {
       const isImage = file.type.startsWith('image/');
       const nodeId = `node_${isImage ? 'imageAsset' : 'videoAsset'}_${Date.now()}`;
@@ -1753,6 +1793,7 @@ export function App() {
         },
       ]);
       selectSingleNode(nodeId);
+      setCanvasMessage(null);
     });
     reader.readAsDataURL(file);
   }
