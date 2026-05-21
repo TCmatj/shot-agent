@@ -376,6 +376,14 @@ button:disabled {
   vector-effect: non-scaling-stroke;
 }
 
+.canvas-selection-box {
+  background: rgba(133, 199, 255, 0.12);
+  border: 1px solid rgba(133, 199, 255, 0.78);
+  box-shadow: 0 0 18px rgba(133, 199, 255, 0.18);
+  pointer-events: none;
+  position: absolute;
+}
+
 .canvas-node {
   background: #0f1217;
   border: 1px solid #2d343e;

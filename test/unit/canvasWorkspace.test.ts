@@ -8,9 +8,11 @@ import {
   canNodeReceiveInput,
   deleteCanvas,
   exportCanvas,
+  findNodesInSelectionRect,
   getNodeCenter,
   getNodeInputPoint,
   getNodeOutputPoint,
+  normalizeCanvasSelectionRect,
   importCanvas,
   parseWorkspaceState,
   renameCanvas,
@@ -259,6 +261,21 @@ describe('canvas workspace persistence', () => {
 
     expect(getNodeInputPoint(node)).toEqual({ x: 40, y: 108 });
     expect(getNodeOutputPoint(node)).toEqual({ x: 360, y: 108 });
+  });
+
+  it('normalizes selection rectangles and finds intersecting nodes', () => {
+    const nodes = [
+      { id: 'node_1', title: 'One', modelId: 'gpt-image-2', kind: 'image' as const, x: 0, y: 0 },
+      { id: 'node_2', title: 'Two', modelId: 'gpt-image-2', kind: 'image' as const, x: 360, y: 0 },
+      { id: 'node_3', title: 'Three', modelId: 'gpt-image-2', kind: 'image' as const, x: 720, y: 0 },
+    ];
+    const rect = normalizeCanvasSelectionRect({ x: 620, y: 180 }, { x: 100, y: -20 });
+
+    expect(rect).toEqual({ x: 100, y: -20, width: 520, height: 200 });
+    expect(findNodesInSelectionRect(nodes, rect, { width: 320, height: 220 })).toEqual([
+      'node_1',
+      'node_2',
+    ]);
   });
 
   it('marks asset nodes as output-only', () => {

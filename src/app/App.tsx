@@ -65,9 +65,11 @@ import {
   createWorkspaceState,
   deleteCanvas,
   exportCanvas,
+  findNodesInSelectionRect,
   getNodeInputPoint,
   getNodeOutputPoint,
   importCanvas,
+  normalizeCanvasSelectionRect,
   parseWorkspaceState,
   renameCanvas,
   removeCanvasEdge,
@@ -142,6 +144,12 @@ type DragState =
       nodeId: string;
       lastX: number;
       lastY: number;
+    }
+  | {
+      mode: 'select';
+      pointerId: number;
+      start: Point;
+      current: Point;
     };
 
 type ModalDragState = {
@@ -1074,6 +1082,7 @@ export function App() {
   const [addMenu, setAddMenu] = useState<AddMenuState>(null);
   const [edgeDraft, setEdgeDraft] = useState<EdgeDraft>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [canvasMessage, setCanvasMessage] = useState<string | null>(null);
   const [isRenamingCanvas, setIsRenamingCanvas] = useState(false);
@@ -1158,8 +1167,7 @@ export function App() {
     workspaceStateRef.current = result.state;
     setWorkspaceHistory(result.history);
     setWorkspaceState(result.state);
-    setSelectedNodeId(null);
-    setSelectedEdgeId(null);
+    clearSelection();
     setAddMenu(null);
     setEdgeDraft(null);
   }
@@ -1175,8 +1183,7 @@ export function App() {
     workspaceStateRef.current = result.state;
     setWorkspaceHistory(result.history);
     setWorkspaceState(result.state);
-    setSelectedNodeId(null);
-    setSelectedEdgeId(null);
+    clearSelection();
     setAddMenu(null);
     setEdgeDraft(null);
   }
@@ -1325,7 +1332,13 @@ export function App() {
         return;
       }
 
-      if (!selectedEdgeId && !selectedNodeId) {
+      const nodeIdsToDelete = selectedNodeIds.length
+        ? selectedNodeIds
+        : selectedNodeId
+          ? [selectedNodeId]
+          : [];
+
+      if (!selectedEdgeId && nodeIdsToDelete.length === 0) {
         return;
       }
 
@@ -1337,22 +1350,32 @@ export function App() {
         return;
       }
 
-      if (selectedNodeId) {
+      if (nodeIdsToDelete.length > 0) {
         setWorkspaceStateWithHistory((current) => ({
           ...current,
           canvases: current.canvases.map((canvas) =>
             canvas.id === current.activeCanvasId
-              ? { ...removeCanvasNode(canvas, selectedNodeId), updatedAt: '刚刚' }
+              ? {
+                  ...nodeIdsToDelete.reduce(removeCanvasNode, canvas),
+                  updatedAt: '刚刚',
+                }
               : canvas,
           ),
         }));
-        setSelectedNodeId(null);
+        clearSelection();
       }
     }
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [canRedoWorkspace, canUndoWorkspace, selectedEdgeId, selectedNodeId, workspaceHistory]);
+  }, [
+    canRedoWorkspace,
+    canUndoWorkspace,
+    selectedEdgeId,
+    selectedNodeId,
+    selectedNodeIds,
+    workspaceHistory,
+  ]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1397,8 +1420,7 @@ export function App() {
     setActiveCanvasId(canvasId);
     setShowProviderManager(false);
     setAddMenu(null);
-    setSelectedNodeId(null);
-    setSelectedEdgeId(null);
+    clearSelection();
   }
 
   function updateActiveCanvasNodes(
@@ -1527,8 +1549,7 @@ export function App() {
         updateActiveCanvasEdges((edges) => addCanvasEdge(edges, addMenu.fromNodeId!, nodeId));
       }
     }
-    setSelectedNodeId(nodeId);
-    setSelectedEdgeId(null);
+    selectSingleNode(nodeId);
     setAddMenu(null);
   }
 
@@ -1590,8 +1611,7 @@ export function App() {
           assetMimeType: file.type,
         },
       ]);
-      setSelectedNodeId(nodeId);
-      setSelectedEdgeId(null);
+      selectSingleNode(nodeId);
     });
     reader.readAsDataURL(file);
   }
@@ -1692,8 +1712,7 @@ export function App() {
     }
 
     setWorkspaceStateWithHistory((current) => deleteCanvas(current, current.activeCanvasId));
-    setSelectedNodeId(null);
-    setSelectedEdgeId(null);
+    clearSelection();
     setAddMenu(null);
     setViewport(defaultViewport);
     setCanvasMessage(null);
@@ -1701,8 +1720,7 @@ export function App() {
 
   function deleteCanvasById(canvasId: string) {
     setWorkspaceStateWithHistory((current) => deleteCanvas(current, canvasId));
-    setSelectedNodeId(null);
-    setSelectedEdgeId(null);
+    clearSelection();
     setAddMenu(null);
     setEditingCanvasId(null);
     setViewport(defaultViewport);
@@ -1743,8 +1761,7 @@ export function App() {
           : `canvas_${Date.now()}`;
 
       setWorkspaceStateWithHistory((current) => importCanvas(current, content, nextId));
-      setSelectedNodeId(null);
-      setSelectedEdgeId(null);
+      clearSelection();
       setAddMenu(null);
       setViewport(defaultViewport);
       setCanvasMessage('画布已导入');
@@ -1764,9 +1781,20 @@ export function App() {
 
     setAddMenu(null);
     setEdgeDraft(null);
-    setSelectedNodeId(null);
-    setSelectedEdgeId(null);
+    clearSelection();
     event.currentTarget.setPointerCapture(event.pointerId);
+
+    if (event.metaKey || event.ctrlKey) {
+      const point = getCanvasPointFromClient(event.clientX, event.clientY);
+      setDragState({
+        mode: 'select',
+        pointerId: event.pointerId,
+        start: point,
+        current: point,
+      });
+      return;
+    }
+
     setDragState({
       mode: 'pan',
       pointerId: event.pointerId,
@@ -1783,8 +1811,7 @@ export function App() {
     event.stopPropagation();
     setAddMenu(null);
     setEdgeDraft(null);
-    setSelectedNodeId(nodeId);
-    setSelectedEdgeId(null);
+    selectSingleNode(nodeId);
     setWorkspaceHistory((history) => pushWorkspaceHistory(history, workspaceState));
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
@@ -1806,6 +1833,14 @@ export function App() {
     }
 
     if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (dragState.mode === 'select') {
+      setDragState({
+        ...dragState,
+        current: getCanvasPointFromClient(event.clientX, event.clientY),
+      });
       return;
     }
 
@@ -1838,6 +1873,21 @@ export function App() {
     }
 
     if (dragState?.pointerId === event.pointerId) {
+      if (dragState.mode === 'select') {
+        const rect = normalizeCanvasSelectionRect(
+          dragState.start,
+          getCanvasPointFromClient(event.clientX, event.clientY),
+        );
+        const selectedIds =
+          rect.width < 4 && rect.height < 4
+            ? []
+            : findNodesInSelectionRect(activeCanvas?.nodes ?? [], rect, canvasNodeSize);
+
+        setSelectedNodeIds(selectedIds);
+        setSelectedNodeId(selectedIds.length === 1 ? selectedIds[0] : null);
+        setSelectedEdgeId(null);
+      }
+
       setDragState(null);
     }
   }
@@ -1856,8 +1906,7 @@ export function App() {
 
     setAddMenu(null);
     setDragState(null);
-    setSelectedNodeId(node.id);
-    setSelectedEdgeId(null);
+    selectSingleNode(node.id);
     setEdgeDraft({
       fromNodeId: node.id,
       from,
@@ -1884,6 +1933,7 @@ export function App() {
     updateActiveCanvasEdges((edges) => addCanvasEdge(edges, edgeDraft.fromNodeId, toNodeId));
     setSelectedEdgeId(`edge_${edgeDraft.fromNodeId}_${toNodeId}`);
     setSelectedNodeId(null);
+    setSelectedNodeIds([]);
     setEdgeDraft(null);
   }
 
@@ -1908,11 +1958,17 @@ export function App() {
     }
 
     updateActiveCanvasEdges((edges) => removeCanvasEdge(edges, selectedEdgeId));
-    setSelectedEdgeId(null);
+    clearSelection();
   }
 
   function deleteSelectedNode() {
-    if (!selectedNodeId) {
+    const nodeIdsToDelete = selectedNodeIds.length
+      ? selectedNodeIds
+      : selectedNodeId
+        ? [selectedNodeId]
+        : [];
+
+    if (nodeIdsToDelete.length === 0) {
       return;
     }
 
@@ -1920,11 +1976,14 @@ export function App() {
       ...current,
       canvases: current.canvases.map((canvas) =>
         canvas.id === current.activeCanvasId
-          ? { ...removeCanvasNode(canvas, selectedNodeId), updatedAt: '刚刚' }
+          ? {
+              ...nodeIdsToDelete.reduce(removeCanvasNode, canvas),
+              updatedAt: '刚刚',
+            }
           : canvas,
       ),
     }));
-    setSelectedNodeId(null);
+    clearSelection();
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
@@ -2489,6 +2548,22 @@ export function App() {
           </div>
         )
       : null;
+  const selectionRect =
+    dragState?.mode === 'select'
+      ? normalizeCanvasSelectionRect(dragState.start, dragState.current)
+      : null;
+
+  function clearSelection() {
+    setSelectedNodeId(null);
+    setSelectedNodeIds([]);
+    setSelectedEdgeId(null);
+  }
+
+  function selectSingleNode(nodeId: string) {
+    setSelectedNodeId(nodeId);
+    setSelectedNodeIds([nodeId]);
+    setSelectedEdgeId(null);
+  }
 
   return (
     <main className={`app-shell ${isSidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}>
@@ -2995,6 +3070,7 @@ export function App() {
                         event.stopPropagation();
                         setSelectedEdgeId(edge.id);
                         setSelectedNodeId(null);
+                        setSelectedNodeIds([]);
                         setAddMenu(null);
                       }}
                     />
@@ -3012,6 +3088,17 @@ export function App() {
                 />
               ) : null}
             </svg>
+            {selectionRect ? (
+              <div
+                className="canvas-selection-box"
+                style={{
+                  left: selectionRect.x,
+                  top: selectionRect.y,
+                  width: selectionRect.width,
+                  height: selectionRect.height,
+                }}
+              />
+            ) : null}
             {activeCanvas?.nodes.map((node) => {
               const Icon = getNodeIcon(node.kind);
               const providersForNode = findProvidersForNode(node);
@@ -3024,13 +3111,14 @@ export function App() {
                 <article
                   key={node.id}
                   className={`canvas-node canvas-node-${node.kind} ${
-                    node.id === selectedNodeId ? 'is-selected' : ''
+                    node.id === selectedNodeId || selectedNodeIds.includes(node.id)
+                      ? 'is-selected'
+                      : ''
                   }`}
                   style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
                   onPointerDown={(event) => {
                     event.stopPropagation();
-                    setSelectedNodeId(node.id);
-                    setSelectedEdgeId(null);
+                    selectSingleNode(node.id);
                     setAddMenu(null);
                   }}
                 >

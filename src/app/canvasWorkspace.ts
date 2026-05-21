@@ -34,6 +34,13 @@ export type CanvasEdgeView = {
   toNodeId: string;
 };
 
+export type CanvasSelectionRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 export type CanvasView = {
   id: string;
   name: string;
@@ -418,6 +425,44 @@ export function getNodeOutputPoint(node: CanvasNodeView): { x: number; y: number
     x: node.x + 320,
     y: node.y + 88,
   };
+}
+
+export function normalizeCanvasSelectionRect(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+): CanvasSelectionRect {
+  return {
+    x: Math.min(start.x, end.x),
+    y: Math.min(start.y, end.y),
+    width: Math.abs(end.x - start.x),
+    height: Math.abs(end.y - start.y),
+  };
+}
+
+export function findNodesInSelectionRect(
+  nodes: CanvasNodeView[],
+  rect: CanvasSelectionRect,
+  nodeSize: { width: number; height: number },
+): string[] {
+  return nodes
+    .filter((node) =>
+      rectanglesIntersect(rect, {
+        x: node.x,
+        y: node.y,
+        width: nodeSize.width,
+        height: nodeSize.height,
+      }),
+    )
+    .map((node) => node.id);
+}
+
+function rectanglesIntersect(first: CanvasSelectionRect, second: CanvasSelectionRect): boolean {
+  return (
+    first.x <= second.x + second.width &&
+    first.x + first.width >= second.x &&
+    first.y <= second.y + second.height &&
+    first.y + first.height >= second.y
+  );
 }
 
 export function canNodeReceiveInput(node: CanvasNodeView): boolean {
