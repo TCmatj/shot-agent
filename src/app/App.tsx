@@ -3166,14 +3166,29 @@ export function App() {
                           }}
                         />
                       ) : (
-                        <h2
-                          onDoubleClick={(event) => {
-                            event.stopPropagation();
-                            startRenameNode(node);
-                          }}
-                        >
-                          {node.title}
-                        </h2>
+                        <div className="node-title-row">
+                          <h2
+                            onDoubleClick={(event) => {
+                              event.stopPropagation();
+                              startRenameNode(node);
+                            }}
+                          >
+                            {node.title}
+                          </h2>
+                          <button
+                            type="button"
+                            className="node-title-edit-button"
+                            aria-label="编辑节点名称"
+                            title="编辑节点名称"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              startRenameNode(node);
+                            }}
+                          >
+                            <Pencil size={13} />
+                          </button>
+                        </div>
                       )}
                       <p>{node.modelId}</p>
                     </div>
@@ -3366,9 +3381,20 @@ export function App() {
                     }}
                   />
                 ) : (
-                  <h2 onDoubleClick={() => startRenameNode(selectedNode)}>
-                    {selectedNode.title}
-                  </h2>
+                  <div className="node-title-row">
+                    <h2 onDoubleClick={() => startRenameNode(selectedNode)}>
+                      {selectedNode.title}
+                    </h2>
+                    <button
+                      type="button"
+                      className="node-title-edit-button"
+                      aria-label="编辑节点名称"
+                      title="编辑节点名称"
+                      onClick={() => startRenameNode(selectedNode)}
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  </div>
                 )}
                 <p>{selectedNode.modelId}</p>
               </header>
