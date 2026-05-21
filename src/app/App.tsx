@@ -1570,6 +1570,10 @@ export function App() {
   }
 
   function startRenameNode(node: CanvasNodeView) {
+    setAddMenu(null);
+    setEdgeDraft(null);
+    setDragState(null);
+    selectSingleNode(node.id);
     setEditingNodeTitleId(node.id);
     setDraftNodeTitle(node.title);
   }
@@ -3170,6 +3174,16 @@ export function App() {
                           className="node-title-row"
                           onPointerDown={(event) => {
                             event.stopPropagation();
+                          }}
+                          onMouseDown={(event) => {
+                            event.stopPropagation();
+
+                            if (event.detail >= 2) {
+                              event.preventDefault();
+                              startRenameNode(node);
+                              return;
+                            }
+
                             setAddMenu(null);
                             setEdgeDraft(null);
                             selectSingleNode(node.id);
@@ -3192,11 +3206,12 @@ export function App() {
                             className="node-title-edit-button"
                             aria-label="编辑节点名称"
                             title="编辑节点名称"
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onClick={(event) => {
+                            onPointerDown={(event) => {
+                              event.preventDefault();
                               event.stopPropagation();
                               startRenameNode(node);
                             }}
+                            onClick={(event) => event.stopPropagation()}
                           >
                             <Pencil size={13} />
                           </button>
@@ -3396,6 +3411,12 @@ export function App() {
                 ) : (
                   <div
                     className="node-title-row"
+                    onMouseDown={(event) => {
+                      if (event.detail >= 2) {
+                        event.preventDefault();
+                        startRenameNode(selectedNode);
+                      }
+                    }}
                     onDoubleClick={() => startRenameNode(selectedNode)}
                   >
                     <h2>
@@ -3406,11 +3427,12 @@ export function App() {
                       className="node-title-edit-button"
                       aria-label="编辑节点名称"
                       title="编辑节点名称"
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={(event) => {
+                      onPointerDown={(event) => {
+                        event.preventDefault();
                         event.stopPropagation();
                         startRenameNode(selectedNode);
                       }}
+                      onClick={(event) => event.stopPropagation()}
                     >
                       <Pencil size={13} />
                     </button>
