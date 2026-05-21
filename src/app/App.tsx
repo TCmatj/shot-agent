@@ -1092,6 +1092,9 @@ export function App() {
   const [draftListCanvasName, setDraftListCanvasName] = useState('');
   const [editingOutputNodeId, setEditingOutputNodeId] = useState<string | null>(null);
   const [editingNodeTitleId, setEditingNodeTitleId] = useState<string | null>(null);
+  const [editingNodeTitleSurface, setEditingNodeTitleSurface] = useState<
+    'canvas' | 'inspector' | null
+  >(null);
   const [draftNodeTitle, setDraftNodeTitle] = useState('');
   const [selectedOutputVersionId, setSelectedOutputVersionId] = useState<string | null>(null);
   const [outputVersionPage, setOutputVersionPage] = useState(1);
@@ -1569,12 +1572,13 @@ export function App() {
     return node.chatFormat ?? 'openai';
   }
 
-  function startRenameNode(node: CanvasNodeView) {
+  function startRenameNode(node: CanvasNodeView, surface: 'canvas' | 'inspector') {
     setAddMenu(null);
     setEdgeDraft(null);
     setDragState(null);
     selectSingleNode(node.id);
     setEditingNodeTitleId(node.id);
+    setEditingNodeTitleSurface(surface);
     setDraftNodeTitle(node.title);
   }
 
@@ -1589,6 +1593,7 @@ export function App() {
     }
 
     setEditingNodeTitleId(null);
+    setEditingNodeTitleSurface(null);
     setDraftNodeTitle('');
   }
 
@@ -3150,7 +3155,8 @@ export function App() {
                       <Icon size={18} />
                     </span>
                     <div>
-                      {editingNodeTitleId === node.id ? (
+                      {editingNodeTitleId === node.id &&
+                      editingNodeTitleSurface === 'canvas' ? (
                         <input
                           className="node-title-input"
                           value={draftNodeTitle}
@@ -3165,6 +3171,7 @@ export function App() {
 
                             if (event.key === 'Escape') {
                               setEditingNodeTitleId(null);
+                              setEditingNodeTitleSurface(null);
                               setDraftNodeTitle('');
                             }
                           }}
@@ -3180,7 +3187,7 @@ export function App() {
 
                             if (event.detail >= 2) {
                               event.preventDefault();
-                              startRenameNode(node);
+                              startRenameNode(node, 'canvas');
                               return;
                             }
 
@@ -3190,13 +3197,13 @@ export function App() {
                           }}
                           onDoubleClick={(event) => {
                             event.stopPropagation();
-                            startRenameNode(node);
+                            startRenameNode(node, 'canvas');
                           }}
                         >
                           <h2
                             onDoubleClick={(event) => {
                               event.stopPropagation();
-                              startRenameNode(node);
+                              startRenameNode(node, 'canvas');
                             }}
                           >
                             {node.title}
@@ -3209,7 +3216,7 @@ export function App() {
                             onPointerDown={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
-                              startRenameNode(node);
+                              startRenameNode(node, 'canvas');
                             }}
                             onClick={(event) => event.stopPropagation()}
                           >
@@ -3389,7 +3396,8 @@ export function App() {
           {selectedNode ? (
             <aside className="node-inspector">
               <header>
-                {editingNodeTitleId === selectedNode.id ? (
+                {editingNodeTitleId === selectedNode.id &&
+                editingNodeTitleSurface === 'inspector' ? (
                         <input
                           className="node-title-input"
                           value={draftNodeTitle}
@@ -3404,6 +3412,7 @@ export function App() {
 
                       if (event.key === 'Escape') {
                         setEditingNodeTitleId(null);
+                        setEditingNodeTitleSurface(null);
                         setDraftNodeTitle('');
                       }
                     }}
@@ -3414,10 +3423,10 @@ export function App() {
                     onMouseDown={(event) => {
                       if (event.detail >= 2) {
                         event.preventDefault();
-                        startRenameNode(selectedNode);
+                        startRenameNode(selectedNode, 'inspector');
                       }
                     }}
-                    onDoubleClick={() => startRenameNode(selectedNode)}
+                    onDoubleClick={() => startRenameNode(selectedNode, 'inspector')}
                   >
                     <h2>
                       {selectedNode.title}
@@ -3430,7 +3439,7 @@ export function App() {
                       onPointerDown={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
-                        startRenameNode(selectedNode);
+                        startRenameNode(selectedNode, 'inspector');
                       }}
                       onClick={(event) => event.stopPropagation()}
                     >
