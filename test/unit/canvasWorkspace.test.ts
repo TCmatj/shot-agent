@@ -49,9 +49,9 @@ describe('canvas workspace persistence', () => {
     expect(createWorkspaceState(canvases).activeCanvasId).toBe('canvas_first');
   });
 
-  it('uses browser local storage as the default canvas storage setting', () => {
+  it('uses custom folder storage as the default canvas storage setting', () => {
     expect(createWorkspaceState(canvases).storage).toEqual({
-      mode: 'browser-local',
+      mode: 'custom-folder',
     });
   });
 
@@ -72,6 +72,37 @@ describe('canvas workspace persistence', () => {
     );
   });
 
+  it('does not persist transient in-memory asset data when file paths exist', () => {
+    const state = createWorkspaceState([
+      {
+        id: 'canvas_assets',
+        name: '素材画布',
+        updatedAt: '刚刚',
+        nodes: [
+          {
+            id: 'asset_1',
+            title: '图片',
+            modelId: 'asset-image',
+            kind: 'imageAsset',
+            x: 0,
+            y: 0,
+            assetPath: 'assets/images/input.png',
+            assetDataUrl: 'data:image/png;base64,input',
+            outputPath: 'assets/images/output.png',
+            outputDataUrl: 'data:image/png;base64,output',
+          },
+        ],
+        edges: [],
+      },
+    ]);
+    const serialized = serializeWorkspaceState(state);
+
+    expect(serialized).not.toContain('data:image/png;base64,input');
+    expect(serialized).not.toContain('data:image/png;base64,output');
+    expect(serialized).toContain('assets/images/input.png');
+    expect(serialized).toContain('assets/images/output.png');
+  });
+
   it('falls back when storage payload is invalid', () => {
     const fallback = createWorkspaceState(canvases);
 
@@ -86,7 +117,7 @@ describe('canvas workspace persistence', () => {
       activeCanvasId: '',
       canvases: [],
       storage: {
-        mode: 'browser-local',
+        mode: 'custom-folder',
       },
       generationHistory: [],
     });
@@ -223,7 +254,7 @@ describe('canvas workspace persistence', () => {
       activeCanvasId: '',
       canvases: [],
       storage: {
-        mode: 'browser-local',
+        mode: 'custom-folder',
       },
       generationHistory: [],
     });

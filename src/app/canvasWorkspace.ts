@@ -21,9 +21,11 @@ export type CanvasNodeView = {
   outputText?: string;
   outputUrl?: string;
   outputDataUrl?: string;
+  outputPath?: string;
   generationId?: string;
   textContent?: string;
   assetName?: string;
+  assetPath?: string;
   assetDataUrl?: string;
   assetMimeType?: string;
 };
@@ -170,9 +172,15 @@ function isCanvasStorageConfig(value: unknown): value is CanvasStorageConfig {
 }
 
 function normalizeStorageConfig(storage?: CanvasStorageConfig): CanvasStorageConfig {
-  if (!storage || storage.mode === 'browser-local') {
+  if (!storage) {
     return {
-      mode: 'browser-local',
+      mode: 'custom-folder',
+    };
+  }
+
+  if (storage.mode === 'browser-local') {
+    return {
+      mode: 'custom-folder',
     };
   }
 
@@ -193,7 +201,7 @@ export function createWorkspaceState(canvases: CanvasView[]): CanvasWorkspaceSta
     activeCanvasId: firstCanvas?.id ?? '',
     canvases,
     storage: {
-      mode: 'browser-local',
+      mode: 'custom-folder',
     },
     generationHistory: [],
   };
@@ -203,10 +211,21 @@ export function serializeWorkspaceState(state: CanvasWorkspaceState): string {
   return JSON.stringify({
     version: storageVersion,
     activeCanvasId: state.activeCanvasId,
-    canvases: state.canvases,
+    canvases: stripTransientAssetData(state.canvases),
     storage: normalizeStorageConfig(state.storage),
     generationHistory: state.generationHistory,
   });
+}
+
+export function stripTransientAssetData(canvases: CanvasView[]): CanvasView[] {
+  return canvases.map((canvas) => ({
+    ...canvas,
+    nodes: canvas.nodes.map((node) => ({
+      ...node,
+      assetDataUrl: node.assetPath ? undefined : node.assetDataUrl,
+      outputDataUrl: node.outputPath ? undefined : node.outputDataUrl,
+    })),
+  }));
 }
 
 export function parseWorkspaceState(

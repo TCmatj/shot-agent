@@ -107,6 +107,16 @@ import {
   serializeStoredCanvasViewports,
   type StoredCanvasViewports,
 } from './canvasViewports';
+import {
+  ensureDirectoryPermission,
+  getStoredRootDirectoryHandle,
+  persistWorkspaceToFolder,
+  readWorkspaceFromFolder,
+  saveAssetFileToCanvasFolder,
+  saveDataUrlOutputToCanvasFolder,
+  storeRootDirectoryHandle,
+  type ShotAgentDirectoryHandle,
+} from '../storage/browserFolderStore';
 
 type NodeTemplate = {
   id: string;
@@ -132,7 +142,7 @@ type EdgeDraft = {
 } | null;
 
 type WindowWithDirectoryPicker = Window & {
-  showDirectoryPicker?: () => Promise<{ name: string }>;
+  showDirectoryPicker?: () => Promise<ShotAgentDirectoryHandle>;
 };
 
 type DragState =
@@ -432,8 +442,6 @@ const canvasViewportStorageKey = 'shot-agent:canvas-viewports';
 const canvasNodeSize = { width: 320, height: 220 };
 const minimapSize = { width: 220, height: 150 };
 const defaultViewport: CanvasViewport = { x: 80, y: 72, scale: 1 };
-const maxBrowserLocalAssetBytes = 2 * 1024 * 1024;
-const maxBrowserLocalAssetSizeLabel = '2MB';
 
 function summarizeOutputText(value: string, maxLength = 160): string {
   const summary = value
@@ -1097,14 +1105,6 @@ function getNodeIcon(kind: CanvasNodeKind) {
   return Image;
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024 * 1024) {
-    return `${Math.max(1, Math.round(bytes / 1024))}KB`;
-  }
-
-  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
-}
-
 function getLocalStorageErrorMessage(error: unknown): string {
   if (error instanceof DOMException && error.name === 'QuotaExceededError') {
     return '浏览器本地存储空间不足，当前更改可能刷新后丢失。请先删除较大的本地素材，或等待后续对象存储接入。';
@@ -1131,6 +1131,10 @@ export function App() {
       initialWorkspaceState,
     );
   });
+  const [rootDirectoryHandle, setRootDirectoryHandle] = useState<ShotAgentDirectoryHandle | null>(
+    null,
+  );
+  const [folderStorageReady, setFolderStorageReady] = useState(false);
   const [canvasViewports, setCanvasViewports] = useState<StoredCanvasViewports>(
     loadCanvasViewports,
   );
@@ -1264,12 +1268,51 @@ export function App() {
   }, [workspaceState]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(workspaceState));
-    } catch (error) {
-      setCanvasMessage(getLocalStorageErrorMessage(error));
+    let canceled = false;
+
+    async function restoreFolderWorkspace() {
+      try {
+        const handle = await getStoredRootDirectoryHandle();
+        if (!handle || !(await ensureDirectoryPermission(handle, 'readwrite'))) {
+          if (!canceled) {
+            setFolderStorageReady(false);
+            setCanvasMessage('请先选择画布存储文件夹，画布和素材将默认写入该文件夹。');
+          }
+          return;
+        }
+
+        const restoredState = await readWorkspaceFromFolder(handle, workspaceStateRef.current);
+        if (!canceled) {
+          setRootDirectoryHandle(handle);
+          workspaceStateRef.current = restoredState;
+          setWorkspaceState(restoredState);
+          setFolderStorageReady(true);
+          setCanvasMessage(`已连接画布存储文件夹：${handle.name}`);
+        }
+      } catch {
+        if (!canceled) {
+          setFolderStorageReady(false);
+          setCanvasMessage('读取画布存储文件夹失败，请重新选择文件夹。');
+        }
+      }
     }
-  }, [workspaceState]);
+
+    void restoreFolderWorkspace();
+
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!rootDirectoryHandle || !folderStorageReady) {
+      return;
+    }
+
+    void persistWorkspaceToFolder(rootDirectoryHandle, workspaceState).catch(() => {
+      setCanvasMessage('写入画布存储文件夹失败，当前更改可能刷新后丢失。');
+    });
+  }, [folderStorageReady, rootDirectoryHandle, workspaceState]);
 
   useEffect(() => {
     try {
@@ -1376,7 +1419,7 @@ export function App() {
         viewport,
       );
 
-      addAssetNodeFromFile(file, point);
+      void addAssetNodeFromFile(file, point);
     }
 
     window.addEventListener('paste', handlePaste);
@@ -1758,23 +1801,22 @@ export function App() {
     setDraftNodeTitle('');
   }
 
-  function addAssetNodeFromFile(file: File, point: Point) {
+  async function addAssetNodeFromFile(file: File, point: Point): Promise<string | null> {
     if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
-      return;
+      return null;
     }
 
-    if (file.size > maxBrowserLocalAssetBytes) {
-      setCanvasMessage(
-        `素材 ${file.name} 大小为 ${formatFileSize(file.size)}，超过当前浏览器本地存储安全上限 ${maxBrowserLocalAssetSizeLabel}，已取消导入以避免页面崩溃。`,
-      );
-      return;
+    if (!activeCanvas) {
+      return null;
     }
 
-    const reader = new FileReader();
-    reader.addEventListener('error', () => {
-      setCanvasMessage(`读取素材 ${file.name} 失败，请重新选择文件。`);
-    });
-    reader.addEventListener('load', () => {
+    if (!rootDirectoryHandle || !folderStorageReady) {
+      setCanvasMessage('请先选择画布存储文件夹，再导入图片或视频素材。');
+      return null;
+    }
+
+    try {
+      const savedAsset = await saveAssetFileToCanvasFolder(rootDirectoryHandle, activeCanvas, file);
       const isImage = file.type.startsWith('image/');
       const nodeId = `node_${isImage ? 'imageAsset' : 'videoAsset'}_${Date.now()}`;
 
@@ -1787,15 +1829,16 @@ export function App() {
           kind: isImage ? 'imageAsset' : 'videoAsset',
           x: point.x,
           y: point.y,
-          assetName: file.name,
-          assetDataUrl: typeof reader.result === 'string' ? reader.result : undefined,
-          assetMimeType: file.type,
+          ...savedAsset,
         },
       ]);
       selectSingleNode(nodeId);
       setCanvasMessage(null);
-    });
-    reader.readAsDataURL(file);
+      return nodeId;
+    } catch {
+      setCanvasMessage(`保存素材 ${file.name} 到画布文件夹失败，请检查文件夹权限后重试。`);
+      return null;
+    }
   }
 
   function createCanvas() {
@@ -1822,19 +1865,20 @@ export function App() {
     const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
 
     if (!picker) {
-      setWorkspaceStateWithHistory((current) =>
-        updateWorkspaceStorage(current, {
-          mode: 'custom-folder',
-          folderName: current.storage.mode === 'custom-folder' ? current.storage.folderName : undefined,
-          folderPath: current.storage.mode === 'custom-folder' ? current.storage.folderPath : undefined,
-        }),
-      );
-      setCanvasMessage('当前浏览器不支持直接选择文件夹，可手动填写存储路径或名称');
+      setCanvasMessage('当前浏览器不支持文件夹写入，请使用支持 File System Access API 的 Chromium 浏览器。');
       return;
     }
 
     try {
       const directory = await picker();
+      if (!(await ensureDirectoryPermission(directory, 'readwrite'))) {
+        setCanvasMessage('未获得文件夹写入权限，无法保存画布。');
+        return;
+      }
+
+      await storeRootDirectoryHandle(directory);
+      setRootDirectoryHandle(directory);
+      setFolderStorageReady(true);
       setWorkspaceStateWithHistory((current) =>
         updateWorkspaceStorage(current, {
           mode: 'custom-folder',
@@ -1842,6 +1886,14 @@ export function App() {
           folderPath: directory.name,
         }),
       );
+      await persistWorkspaceToFolder(directory, {
+        ...workspaceStateRef.current,
+        storage: {
+          mode: 'custom-folder',
+          folderName: directory.name,
+          folderPath: directory.name,
+        },
+      });
       setCanvasMessage(`画布存储文件夹已设置为：${directory.name}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -1856,17 +1908,10 @@ export function App() {
     const folderValue = value.trim();
 
     setWorkspaceStateWithHistory((current) =>
-      updateWorkspaceStorage(
-        current,
-        folderValue
-          ? {
-              mode: 'custom-folder',
-              folderPath: folderValue,
-            }
-          : {
-              mode: 'browser-local',
-            },
-      ),
+      updateWorkspaceStorage(current, {
+        mode: 'custom-folder',
+        folderPath: folderValue,
+      }),
     );
   }
 
@@ -2648,13 +2693,22 @@ export function App() {
       return;
     }
 
+    const savedImageOutput =
+      result.output.kind === 'image' && result.output.dataUrl && rootDirectoryHandle && folderStorageReady
+        ? await saveDataUrlOutputToCanvasFolder(rootDirectoryHandle, activeCanvas, result.output.dataUrl, {
+            kind: 'image',
+            nodeId: node.id,
+          }).catch(() => null)
+        : null;
+
     updateNode(node.id, (current) => {
       if (result.output.kind === 'image') {
         return {
           ...current,
           generationStatus: 'succeeded',
           generationError: undefined,
-          outputDataUrl: result.output.dataUrl,
+          outputDataUrl: savedImageOutput?.outputDataUrl ?? result.output.dataUrl,
+          outputPath: savedImageOutput?.outputPath ?? current.outputPath,
           outputUrl: result.output.url,
           outputText: undefined,
         };
@@ -2669,6 +2723,7 @@ export function App() {
           outputVersions: appendOutputVersion(getOutputVersionsForDisplay(current), result.output.text, 'model'),
           outputText: undefined,
           outputDataUrl: undefined,
+          outputPath: undefined,
           outputUrl: undefined,
         };
       }
@@ -2813,14 +2868,14 @@ export function App() {
             画布存储文件夹
             <input
               value={storage.mode === 'custom-folder' ? storage.folderPath ?? storage.folderName ?? '' : ''}
-              placeholder="默认使用浏览器本地存储"
+              placeholder="请选择或填写存储文件夹名称"
               onChange={(event) => updateCanvasStorageFolder(event.target.value)}
             />
           </label>
           <p>
-            {storage.mode === 'custom-folder'
-              ? `当前：${storage.folderName ?? storage.folderPath ?? '自定义文件夹'}`
-              : '当前：浏览器本地存储'}
+            {folderStorageReady && rootDirectoryHandle
+              ? `当前：${rootDirectoryHandle.name} / 每个画布独立文件夹`
+              : '当前：未连接存储文件夹，无法保存素材'}
           </p>
         </section>
         <section className="panel">
@@ -3187,7 +3242,7 @@ export function App() {
             const file = event.dataTransfer.files[0];
 
             if (file) {
-              addAssetNodeFromFile(file, getCanvasPointFromClient(event.clientX, event.clientY));
+              void addAssetNodeFromFile(file, getCanvasPointFromClient(event.clientX, event.clientY));
             }
           }}
         >
@@ -3429,8 +3484,11 @@ export function App() {
                             onChange={(event) => {
                               const file = event.target.files?.[0];
                               if (file) {
-                                addAssetNodeFromFile(file, { x: node.x, y: node.y });
-                                updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== node.id));
+                                void addAssetNodeFromFile(file, { x: node.x, y: node.y }).then((nodeId) => {
+                                  if (nodeId) {
+                                    updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== node.id));
+                                  }
+                                });
                               }
                             }}
                           />
@@ -3450,8 +3508,11 @@ export function App() {
                             onChange={(event) => {
                               const file = event.target.files?.[0];
                               if (file) {
-                                addAssetNodeFromFile(file, { x: node.x, y: node.y });
-                                updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== node.id));
+                                void addAssetNodeFromFile(file, { x: node.x, y: node.y }).then((nodeId) => {
+                                  if (nodeId) {
+                                    updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== node.id));
+                                  }
+                                });
                               }
                             }}
                           />
