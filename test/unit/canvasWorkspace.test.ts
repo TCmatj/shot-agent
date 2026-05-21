@@ -131,6 +131,7 @@ describe('canvas workspace persistence', () => {
         fallback,
       ).canvases[0].nodes[0],
     ).toMatchObject({
+      modelId: 'gpt-5.4-mini',
       generationStatus: 'failed',
       generationError: '页面刷新后生成请求已中断，请重新提交。',
     });
@@ -298,13 +299,13 @@ describe('canvas workspace persistence', () => {
     expect(
       canConnectCanvasNodes(
         { id: 'video_1', title: 'Video', modelId: 'seedance2.0', kind: 'video', x: 0, y: 0 },
-        { id: 'chat_1', title: 'Chat', modelId: 'chat-openai', kind: 'chat', x: 0, y: 0 },
+        { id: 'chat_1', title: 'Chat', modelId: 'gpt-5.4-mini', kind: 'chat', x: 0, y: 0 },
       ),
     ).toBe(false);
     expect(
       canConnectCanvasNodes(
         { id: 'image_1', title: 'Image', modelId: 'gpt-image-2', kind: 'image', x: 0, y: 0 },
-        { id: 'chat_1', title: 'Chat', modelId: 'chat-openai', kind: 'chat', x: 0, y: 0 },
+        { id: 'chat_1', title: 'Chat', modelId: 'gpt-5.4-mini', kind: 'chat', x: 0, y: 0 },
       ),
     ).toBe(true);
   });

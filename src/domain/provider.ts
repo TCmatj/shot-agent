@@ -150,16 +150,11 @@ export function findProviderModelsForNodeModel(
   provider: ProviderConfig,
   nodeModelId: string,
   format: ChatFormat = 'openai',
+  nodeKind?: 'chat',
 ): ProviderModelConfig[] {
-  if (nodeModelId === 'chat-openai') {
-    const canonicalModelId = getChatCanonicalModelId(format);
-
+  if (nodeKind === 'chat' || isLegacyChatNodeModelId(nodeModelId)) {
     return provider.models.filter(
-      (model) =>
-        model.enabled &&
-        (model.canonicalModelId === canonicalModelId ||
-          (format === 'openai' && /^gpt-\d/.test(model.providerModelId)) ||
-          (format === 'anthropic' && /^claude-/.test(model.providerModelId))),
+      (model) => model.enabled && isChatProviderModel(model, format),
     );
   }
 
@@ -172,14 +167,25 @@ export function mapCanonicalModelToProviderModel(
   provider: ProviderConfig,
   canonicalModelId: string,
   format: ChatFormat = 'openai',
+  nodeKind?: 'chat',
 ): string | undefined {
+  if (nodeKind === 'chat') {
+    return provider.models.find(
+      (model) =>
+        model.enabled &&
+        isChatProviderModel(model, format) &&
+        (model.providerModelId === canonicalModelId ||
+          model.canonicalModelId === canonicalModelId),
+    )?.providerModelId;
+  }
+
   const effectiveCanonicalModelId =
-    canonicalModelId === 'chat-openai' ? getChatCanonicalModelId(format) : canonicalModelId;
+    isLegacyChatNodeModelId(canonicalModelId) ? getChatCanonicalModelId(format) : canonicalModelId;
   const canonicalMatch = provider.models.find(
     (model) => model.enabled && model.canonicalModelId === effectiveCanonicalModelId,
   )?.providerModelId;
 
-  if (canonicalMatch || canonicalModelId !== 'chat-openai') {
+  if (canonicalMatch || !isLegacyChatNodeModelId(canonicalModelId)) {
     return canonicalMatch;
   }
 
@@ -198,4 +204,35 @@ function getChatCanonicalModelId(format: ChatFormat): string {
 
 function getChatProviderProtocol(format: ChatFormat): ProviderProtocol {
   return format === 'anthropic' ? 'anthropic-compatible' : 'openai-compatible';
+}
+
+function isLegacyChatNodeModelId(modelId: string): boolean {
+  return modelId === 'chat' || modelId === 'chat-openai' || modelId === 'chat-anthropic';
+}
+
+function isChatProviderModel(model: ProviderModelConfig, format: ChatFormat): boolean {
+  if (model.canonicalModelId === getChatCanonicalModelId(format)) {
+    return true;
+  }
+
+  if (format === 'openai' && /^gpt-\d/.test(model.providerModelId)) {
+    return true;
+  }
+
+  if (format === 'anthropic' && /^claude-/.test(model.providerModelId)) {
+    return true;
+  }
+
+  return !isKnownNonChatModel(model.canonicalModelId) && !isKnownNonChatModel(model.providerModelId);
+}
+
+function isKnownNonChatModel(modelId: string): boolean {
+  return (
+    modelId.startsWith('gpt-image') ||
+    modelId.startsWith('seedance') ||
+    modelId.startsWith('doubao-seedance') ||
+    modelId.startsWith('asset-') ||
+    modelId.includes('image') ||
+    modelId.includes('video')
+  );
 }

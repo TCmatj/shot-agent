@@ -31,7 +31,7 @@ const openaiProvider: ProviderConfig = {
       enabled: true,
     },
     {
-      canonicalModelId: 'chat-openai',
+      canonicalModelId: 'gpt-5.4-mini',
       providerModelId: 'gpt-5.4-mini',
       enabled: true,
     },
@@ -63,7 +63,7 @@ const anthropicProvider: ProviderConfig = {
   enabled: true,
   models: [
     {
-      canonicalModelId: 'chat-anthropic',
+      canonicalModelId: 'claude-sonnet-4-5',
       providerModelId: 'claude-sonnet-4-5',
       enabled: true,
     },
@@ -117,7 +117,7 @@ const canvas: CanvasView = {
     {
       id: 'chat_1',
       title: 'Chat',
-      modelId: 'chat-openai',
+      modelId: 'gpt-5.4-mini',
       kind: 'chat',
       x: 0,
       y: 0,
@@ -288,7 +288,9 @@ describe('generation client request building', () => {
       canvas: {
         ...canvas,
         nodes: canvas.nodes.map((node) =>
-          node.id === 'chat_1' ? { ...node, chatFormat: 'anthropic' } : node,
+          node.id === 'chat_1'
+            ? { ...node, chatFormat: 'anthropic', modelId: 'claude-sonnet-4-5' }
+            : node,
         ),
       },
       nodeId: 'chat_1',
@@ -460,7 +462,7 @@ describe('generation client request building', () => {
       getEffectiveNodeOutputText({
         id: 'chat_1',
         title: 'Chat',
-        modelId: 'chat-openai',
+        modelId: 'gpt-5.4-mini',
         kind: 'chat',
         x: 0,
         y: 0,

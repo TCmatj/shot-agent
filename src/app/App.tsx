@@ -303,10 +303,10 @@ const nodeTemplates: NodeTemplate[] = [
     icon: Video,
   },
   {
-    id: 'chat-openai',
+    id: 'chat',
     label: '对话节点',
     title: '提示词整理',
-    modelId: 'chat-openai',
+    modelId: 'gpt-5.4-mini',
     kind: 'chat',
     icon: MessageSquare,
   },
@@ -364,7 +364,7 @@ const initialCanvases: CanvasView[] = [
       {
         id: 'node_chat_1',
         title: '提示词整理',
-        modelId: 'chat-openai',
+        modelId: 'gpt-5.4-mini',
         kind: 'chat',
         x: 320,
         y: -40,
@@ -2084,7 +2084,7 @@ export function App() {
   }
 
   function findProvidersForNode(node: CanvasNodeView): ProviderConfig[] {
-    if (node.kind === 'chat' || node.modelId === 'chat-openai') {
+    if (node.kind === 'chat' || node.modelId === 'chat') {
       return findChatProviders(providers, getChatFormat(node));
     }
 
@@ -2103,8 +2103,22 @@ export function App() {
     const provider = findSelectedProviderForNode(node);
 
     return provider
-      ? findProviderModelsForNodeModel(provider, node.modelId, getChatFormat(node))
+      ? findProviderModelsForNodeModel(
+          provider,
+          node.modelId,
+          getChatFormat(node),
+          node.kind === 'chat' ? 'chat' : undefined,
+        )
       : [];
+  }
+
+  function findProviderModelsForNodeWithProvider(node: CanvasNodeView, provider: ProviderConfig) {
+    return findProviderModelsForNodeModel(
+      provider,
+      node.modelId,
+      getChatFormat(node),
+      node.kind === 'chat' ? 'chat' : undefined,
+    );
   }
 
   function markNodeGenerationFailed(nodeId: string, error: string) {
@@ -2766,7 +2780,15 @@ export function App() {
                                 ...current,
                                 models: current.models.map((currentModel, currentIndex) =>
                                   currentIndex === modelIndex
-                                    ? { ...currentModel, providerModelId: event.target.value }
+                                    ? {
+                                        ...currentModel,
+                                        providerModelId: event.target.value,
+                                        canonicalModelId:
+                                          currentModel.canonicalModelId ===
+                                          currentModel.providerModelId
+                                            ? event.target.value
+                                            : currentModel.canonicalModelId,
+                                      }
                                     : currentModel,
                                 ),
                               }))
@@ -3256,14 +3278,23 @@ export function App() {
                   调用格式
                   <select
                     value={getChatFormat(selectedNode)}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const nextFormat = event.target.value as ChatFormat;
+                      const nextProviders = findChatProviders(providers, nextFormat);
+                      const nextProvider = nextProviders[0];
+                      const nodeForFormat = { ...selectedNode, chatFormat: nextFormat };
+                      const nextModel = nextProvider
+                        ? findProviderModelsForNodeWithProvider(nodeForFormat, nextProvider)[0]
+                        : undefined;
+
                       updateNode(selectedNode.id, (current) => ({
                         ...current,
-                        chatFormat: event.target.value as ChatFormat,
+                        chatFormat: nextFormat,
                         providerId: undefined,
                         providerModelId: undefined,
-                      }))
-                    }
+                        modelId: nextModel?.providerModelId ?? current.modelId,
+                      }));
+                    }}
                   >
                     <option value="openai">OpenAI Chat Completions</option>
                     <option value="anthropic">Anthropic Messages</option>
@@ -3274,13 +3305,27 @@ export function App() {
                 供应商
                 <select
                   value={selectedNode.providerId ?? ''}
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    const nextProviderId = event.target.value || undefined;
+                    const nextProvider = nextProviderId
+                      ? findProvidersForNode(selectedNode).find(
+                          (provider) => provider.id === nextProviderId,
+                        )
+                      : findProvidersForNode(selectedNode)[0];
+                    const nextModel = nextProvider
+                      ? findProviderModelsForNodeWithProvider(selectedNode, nextProvider)[0]
+                      : undefined;
+
                     updateNode(selectedNode.id, (current) => ({
                       ...current,
-                      providerId: event.target.value || undefined,
-                      providerModelId: undefined,
-                    }))
-                  }
+                      providerId: nextProviderId,
+                      providerModelId: nextProviderId ? nextModel?.providerModelId : undefined,
+                      modelId:
+                        selectedNode.kind === 'chat' && nextModel
+                          ? nextModel.providerModelId
+                          : current.modelId,
+                    }));
+                  }}
                 >
                   <option value="">
                     自动选择供应商
@@ -3300,6 +3345,10 @@ export function App() {
                     updateNode(selectedNode.id, (current) => ({
                       ...current,
                       providerModelId: event.target.value || undefined,
+                      modelId:
+                        selectedNode.kind === 'chat' && event.target.value
+                          ? event.target.value
+                          : current.modelId,
                     }))
                   }
                 >

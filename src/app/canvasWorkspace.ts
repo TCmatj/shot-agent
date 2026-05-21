@@ -249,15 +249,41 @@ function normalizeGenerationRecord(record: GenerationRecord): GenerationRecord {
 }
 
 function normalizeNode(node: CanvasNodeView): CanvasNodeView {
-  if (node.generationStatus !== 'running') {
-    return node;
+  const normalizedNode = normalizeChatNodeModelId(node);
+
+  if (normalizedNode.generationStatus !== 'running') {
+    return normalizedNode;
   }
 
   return {
-    ...node,
+    ...normalizedNode,
     generationStatus: 'failed',
     generationError: '页面刷新后生成请求已中断，请重新提交。',
   };
+}
+
+function normalizeChatNodeModelId(node: CanvasNodeView): CanvasNodeView {
+  if (node.kind !== 'chat') {
+    return node;
+  }
+
+  if (node.modelId === 'chat-openai') {
+    return {
+      ...node,
+      modelId: 'gpt-5.4-mini',
+      chatFormat: node.chatFormat ?? 'openai',
+    };
+  }
+
+  if (node.modelId === 'chat-anthropic') {
+    return {
+      ...node,
+      modelId: 'claude-sonnet-4-5',
+      chatFormat: node.chatFormat ?? 'anthropic',
+    };
+  }
+
+  return node;
 }
 
 function isGenerationRecord(value: unknown): value is GenerationRecord {

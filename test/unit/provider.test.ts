@@ -73,7 +73,7 @@ describe('provider model mapping', () => {
         enabled: true,
       },
     ]);
-    expect(findProviderModelsForNodeModel(provider, 'chat-openai')).toEqual([
+    expect(findProviderModelsForNodeModel(provider, 'gpt-5.4-mini', 'openai', 'chat')).toEqual([
       {
         providerModelId: 'gpt-5.4-mini',
         canonicalModelId: 'chat-openai',
@@ -173,15 +173,32 @@ describe('provider model mapping', () => {
       ],
     };
 
-    expect(findProviderModelsForNodeModel(provider, 'chat-openai', 'anthropic')).toEqual([
+    expect(findProviderModelsForNodeModel(provider, 'claude-sonnet-4-5', 'anthropic', 'chat')).toEqual([
       {
         providerModelId: 'claude-sonnet-4-5',
         canonicalModelId: 'chat-anthropic',
         enabled: true,
       },
     ]);
-    expect(mapCanonicalModelToProviderModel(provider, 'chat-openai', 'anthropic')).toBe(
+    expect(mapCanonicalModelToProviderModel(provider, 'claude-sonnet-4-5', 'anthropic', 'chat')).toBe(
       'claude-sonnet-4-5',
+    );
+  });
+
+  it('maps chat model ids directly from provider model ids', () => {
+    const provider = {
+      ...providers[0],
+      models: [
+        {
+          providerModelId: 'gpt-5.4-mini',
+          canonicalModelId: 'gpt-5.4-mini',
+          enabled: true,
+        },
+      ],
+    };
+
+    expect(mapCanonicalModelToProviderModel(provider, 'gpt-5.4-mini', 'openai', 'chat')).toBe(
+      'gpt-5.4-mini',
     );
   });
 

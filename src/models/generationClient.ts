@@ -157,7 +157,12 @@ export function buildGenerationRequest(
 
   const providerModelId =
     node.providerModelId ??
-    mapCanonicalModelToProviderModel(input.provider, node.modelId, getNodeChatFormat(node));
+    mapCanonicalModelToProviderModel(
+      input.provider,
+      node.modelId,
+      getNodeChatFormat(node),
+      node.kind === 'chat' ? 'chat' : undefined,
+    );
   if (!providerModelId) {
     return { ok: false, error: `供应商未配置模型映射：${node.modelId}` };
   }
