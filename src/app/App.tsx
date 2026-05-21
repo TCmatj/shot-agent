@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent, type WheelEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
   BoxSelect,
@@ -118,6 +118,10 @@ type EdgeDraft = {
 
 type WindowWithDirectoryPicker = Window & {
   showDirectoryPicker?: () => Promise<{ name: string }>;
+};
+
+type AppShellStyle = CSSProperties & {
+  '--app-ui-scale': number;
 };
 
 type DragState =
@@ -368,6 +372,9 @@ const canvasViewportStorageKey = 'shot-agent:canvas-viewports';
 const canvasNodeSize = { width: 320, height: 220 };
 const minimapSize = { width: 220, height: 150 };
 const defaultViewport: CanvasViewport = { x: 80, y: 72, scale: 1 };
+const defaultAppUiScale = 0.75;
+const minAppUiScale = 0.5;
+const maxAppUiScale = 1.5;
 
 function summarizeOutputText(value: string, maxLength = 160): string {
   const summary = value
@@ -763,6 +770,7 @@ export function App() {
   const [editingProviderIds, setEditingProviderIds] = useState<string[]>([]);
   const [showProviderManager, setShowProviderManager] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [appUiScale, setAppUiScale] = useState(defaultAppUiScale);
   const [workspaceState, setWorkspaceState] = useState(() => {
     if (typeof window === 'undefined') {
       return initialWorkspaceState;
@@ -1660,6 +1668,20 @@ export function App() {
     event.currentTarget.scrollLeft += event.deltaX;
   }
 
+  function handleAppWheelCapture(event: WheelEvent<HTMLElement>) {
+    if (!event.metaKey && !event.ctrlKey) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const zoomFactor = event.deltaY > 0 ? 0.92 : 1.08;
+    setAppUiScale((current) =>
+      Math.min(maxAppUiScale, Math.max(minAppUiScale, Number((current * zoomFactor).toFixed(3)))),
+    );
+  }
+
   function zoomBy(factor: number) {
     const rect = canvasRef.current?.getBoundingClientRect();
     const center = rect
@@ -2159,7 +2181,11 @@ export function App() {
       : null;
 
   return (
-    <main className={`app-shell ${isSidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}>
+    <main
+      className={`app-shell ${isSidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}
+      style={{ '--app-ui-scale': appUiScale } as AppShellStyle}
+      onWheelCapture={handleAppWheelCapture}
+    >
       <aside className="sidebar">
         <input
           ref={importInputRef}
