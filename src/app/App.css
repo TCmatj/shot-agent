@@ -164,6 +164,12 @@ button:disabled {
   white-space: nowrap;
 }
 
+.storage-migrate-button {
+  justify-content: center;
+  min-height: 34px;
+  width: 100%;
+}
+
 .canvas-list {
   display: grid;
   gap: 8px;

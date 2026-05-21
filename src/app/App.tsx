@@ -1904,6 +1904,22 @@ export function App() {
     }
   }
 
+  async function migrateCurrentWorkspaceToFolder() {
+    if (!rootDirectoryHandle || !folderStorageReady) {
+      setCanvasMessage('请先选择画布存储文件夹，再执行迁移。');
+      return;
+    }
+
+    try {
+      await persistWorkspaceToFolder(rootDirectoryHandle, workspaceStateRef.current);
+      setCanvasMessage(
+        `已迁移 ${workspaceStateRef.current.canvases.length} 个画布到文件夹：${rootDirectoryHandle.name}`,
+      );
+    } catch {
+      setCanvasMessage('迁移到画布存储文件夹失败，请检查文件夹权限后重试。');
+    }
+  }
+
   function updateCanvasStorageFolder(value: string) {
     const folderValue = value.trim();
 
@@ -2877,6 +2893,14 @@ export function App() {
               ? `当前：${rootDirectoryHandle.name} / 每个画布独立文件夹`
               : '当前：未连接存储文件夹，无法保存素材'}
           </p>
+          <button
+            type="button"
+            className="storage-migrate-button"
+            disabled={!folderStorageReady || !rootDirectoryHandle}
+            onClick={() => void migrateCurrentWorkspaceToFolder()}
+          >
+            迁移当前画布到文件夹
+          </button>
         </section>
         <section className="panel">
           <div className="panel-title-row">
