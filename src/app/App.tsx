@@ -697,7 +697,7 @@ function PromptTextarea({
 function loadProviders(): ProviderConfig[] {
   const normalizeProviderDisplayText = (providers: ProviderConfig[]): ProviderConfig[] =>
     providers.map((provider) => {
-      if (provider.id === 'provider_openai' && provider.name === 'OpenAI 瀹樻柟') {
+      if (provider.id === 'provider_openai' && provider.name !== 'OpenAI 官方') {
         return { ...provider, name: 'OpenAI 官方' };
       }
 
@@ -2309,7 +2309,7 @@ export function App() {
               />
             ) : (
               <>
-                <span>{activeCanvas?.name ?? '鏆傛棤画布'}</span>
+                <span>{activeCanvas?.name ?? '暂无画布'}</span>
                 {activeCanvas ? (
                   <button
                     type="button"
@@ -2835,7 +2835,7 @@ export function App() {
                   <button
                     type="button"
                     className="edge-handle edge-handle-output"
-                    aria-label="浠庢节点连线"
+                    aria-label="从此节点连线"
                     onPointerDown={(event) => startEdgeDraft(event, node)}
                   />
                 </article>
@@ -2843,7 +2843,7 @@ export function App() {
             })}
             {!activeCanvas ? (
               <div className="empty-canvas-state">
-                <h2>鏆傛棤画布</h2>
+                <h2>暂无画布</h2>
                 <p>新建或导入一个画布后即可开始组织节点。</p>
                 <div>
                   <button type="button" onClick={createCanvas}>

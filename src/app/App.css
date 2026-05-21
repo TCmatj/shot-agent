@@ -1119,7 +1119,8 @@ button:disabled {
   gap: 84px;
   left: 18px;
   position: absolute;
-  top: calc(50% - 154px);
+  top: 50%;
+  transform: translateY(-50%);
   z-index: 1;
 }
 
