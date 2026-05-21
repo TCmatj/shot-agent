@@ -456,6 +456,24 @@ export function findNodesInSelectionRect(
     .map((node) => node.id);
 }
 
+export function moveCanvasNodes(
+  nodes: CanvasNodeView[],
+  nodeIds: string[],
+  delta: { dx: number; dy: number },
+): CanvasNodeView[] {
+  const selectedIds = new Set(nodeIds);
+
+  return nodes.map((node) =>
+    selectedIds.has(node.id)
+      ? {
+          ...node,
+          x: node.x + delta.dx,
+          y: node.y + delta.dy,
+        }
+      : node,
+  );
+}
+
 function rectanglesIntersect(first: CanvasSelectionRect, second: CanvasSelectionRect): boolean {
   return (
     first.x <= second.x + second.width &&

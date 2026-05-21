@@ -69,6 +69,7 @@ import {
   getNodeInputPoint,
   getNodeOutputPoint,
   importCanvas,
+  moveCanvasNodes,
   normalizeCanvasSelectionRect,
   parseWorkspaceState,
   renameCanvas,
@@ -81,7 +82,6 @@ import {
   type CanvasView,
 } from './canvasWorkspace';
 import {
-  moveCanvasNode,
   getCanvasContentBounds,
   getViewportForCanvasCenter,
   panViewport,
@@ -142,6 +142,7 @@ type DragState =
       mode: 'node';
       pointerId: number;
       nodeId: string;
+      nodeIds: string[];
       lastX: number;
       lastY: number;
     }
@@ -1811,13 +1812,21 @@ export function App() {
     event.stopPropagation();
     setAddMenu(null);
     setEdgeDraft(null);
-    selectSingleNode(nodeId);
+    const nodeIdsToDrag = selectedNodeIds.includes(nodeId) ? selectedNodeIds : [nodeId];
+
+    if (!selectedNodeIds.includes(nodeId)) {
+      selectSingleNode(nodeId);
+    } else {
+      setSelectedEdgeId(null);
+    }
+
     setWorkspaceHistory((history) => pushWorkspaceHistory(history, workspaceState));
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       mode: 'node',
       pointerId: event.pointerId,
       nodeId,
+      nodeIds: nodeIdsToDrag,
       lastX: event.clientX,
       lastY: event.clientY,
     });
@@ -1853,12 +1862,13 @@ export function App() {
     if (dragState.mode === 'pan') {
       setViewport((current) => panViewport(current, delta));
     } else {
+      const canvasDelta = {
+        dx: delta.dx / viewport.scale,
+        dy: delta.dy / viewport.scale,
+      };
+
       updateActiveCanvasNodes((nodes) =>
-        nodes.map((node) =>
-          node.id === dragState.nodeId
-            ? { ...node, ...moveCanvasNode(node, delta, viewport.scale) }
-            : node,
-        ),
+        moveCanvasNodes(nodes, dragState.nodeIds, canvasDelta),
         { history: false },
       );
     }

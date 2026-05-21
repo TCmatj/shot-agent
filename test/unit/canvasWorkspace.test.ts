@@ -14,6 +14,7 @@ import {
   getNodeOutputPoint,
   normalizeCanvasSelectionRect,
   importCanvas,
+  moveCanvasNodes,
   parseWorkspaceState,
   renameCanvas,
   removeCanvasEdge,
@@ -275,6 +276,20 @@ describe('canvas workspace persistence', () => {
     expect(findNodesInSelectionRect(nodes, rect, { width: 320, height: 220 })).toEqual([
       'node_1',
       'node_2',
+    ]);
+  });
+
+  it('moves selected nodes together', () => {
+    const nodes = [
+      { id: 'node_1', title: 'One', modelId: 'gpt-image-2', kind: 'image' as const, x: 0, y: 0 },
+      { id: 'node_2', title: 'Two', modelId: 'gpt-image-2', kind: 'image' as const, x: 360, y: 0 },
+      { id: 'node_3', title: 'Three', modelId: 'gpt-image-2', kind: 'image' as const, x: 720, y: 0 },
+    ];
+
+    expect(moveCanvasNodes(nodes, ['node_1', 'node_2'], { dx: 12, dy: -8 })).toEqual([
+      { ...nodes[0], x: 12, y: -8 },
+      { ...nodes[1], x: 372, y: -8 },
+      nodes[2],
     ]);
   });
 
