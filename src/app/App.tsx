@@ -107,6 +107,7 @@ import {
   serializeStoredCanvasViewports,
   type StoredCanvasViewports,
 } from './canvasViewports';
+import { shouldApplyPersistedWorkspaceState } from './workspacePersistence';
 import {
   ensureDirectoryPermission,
   getStoredRootDirectoryHandle,
@@ -1305,15 +1306,20 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!rootDirectoryHandle || !folderStorageReady) {
+    if (!rootDirectoryHandle || !folderStorageReady || dragState) {
       return;
     }
 
-    void persistWorkspaceToFolder(rootDirectoryHandle, workspaceState)
+    const snapshot = workspaceState;
+
+    void persistWorkspaceToFolder(rootDirectoryHandle, snapshot)
       .then((persistedState) => {
         if (
-          serializeWorkspaceState(persistedState) ===
-          serializeWorkspaceState(workspaceStateRef.current)
+          !shouldApplyPersistedWorkspaceState(
+            snapshot,
+            workspaceStateRef.current,
+            persistedState,
+          )
         ) {
           return;
         }
@@ -1324,7 +1330,7 @@ export function App() {
       .catch(() => {
         setCanvasMessage('写入画布存储文件夹失败，当前更改可能刷新后丢失。');
       });
-  }, [folderStorageReady, rootDirectoryHandle, workspaceState]);
+  }, [dragState, folderStorageReady, rootDirectoryHandle, workspaceState]);
 
   useEffect(() => {
     try {
