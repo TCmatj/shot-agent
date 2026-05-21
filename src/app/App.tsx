@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent,
+  type WheelEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import {
   BoxSelect,
@@ -41,6 +48,7 @@ import {
   getOutputVersionsForDisplay,
   paginateOutputVersions,
 } from '../domain/outputVersions';
+import { removePromptReferenceAtCaret } from '../domain/promptReferences';
 import { createGenerationRecord, type GenerationRecord } from '../domain/generationHistory';
 import {
   getEffectiveNodeOutputText,
@@ -562,6 +570,182 @@ function filterPromptReferenceSuggestions(
   });
 }
 
+function serializePromptEditor(root: HTMLElement): string {
+  let value = '';
+
+  root.childNodes.forEach((child) => {
+    if (child instanceof HTMLElement && child.dataset.token) {
+      value += child.dataset.token;
+      return;
+    }
+
+    value += child.textContent ?? '';
+  });
+
+  return value;
+}
+
+function createPromptReferenceTokenElement(
+  reference: PromptReferencePreview,
+  onPreviewImage: (reference: PromptReferencePreview) => void,
+): HTMLElement {
+  const token = document.createElement('span');
+  token.className = `prompt-reference-token is-${reference.kind}`;
+  token.contentEditable = 'false';
+  token.dataset.token = reference.token;
+  token.title = `${reference.title} ${reference.token}`;
+
+  const prefix = document.createElement('span');
+  prefix.textContent = '@';
+  token.append(prefix);
+
+  if (reference.kind === 'image' && reference.imageUrl) {
+    const image = document.createElement('img');
+    image.src = reference.imageUrl;
+    image.alt = reference.title;
+    token.append(image);
+    token.addEventListener('click', () => onPreviewImage(reference));
+  } else {
+    const label = document.createElement('strong');
+    label.textContent = reference.textPreview ?? reference.title;
+    token.append(label);
+  }
+
+  return token;
+}
+
+function renderPromptEditorContent(
+  root: HTMLElement,
+  value: string,
+  references: PromptReferencePreview[],
+  onPreviewImage: (reference: PromptReferencePreview) => void,
+) {
+  const referenceByToken = new Map(references.map((reference) => [reference.token, reference]));
+  const fragment = document.createDocumentFragment();
+  let cursor = 0;
+
+  for (const match of value.matchAll(/@(text|image):([a-zA-Z0-9_-]+)/g)) {
+    const token = match[0];
+    const start = match.index ?? 0;
+    const reference = referenceByToken.get(token);
+
+    if (start > cursor) {
+      fragment.append(document.createTextNode(value.slice(cursor, start)));
+    }
+
+    fragment.append(
+      reference
+        ? createPromptReferenceTokenElement(reference, onPreviewImage)
+        : document.createTextNode(token),
+    );
+    cursor = start + token.length;
+  }
+
+  if (cursor < value.length) {
+    fragment.append(document.createTextNode(value.slice(cursor)));
+  }
+
+  root.replaceChildren(fragment);
+}
+
+function getPromptEditorCaretOffset(root: HTMLElement): number {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    return serializePromptEditor(root).length;
+  }
+
+  const range = selection.getRangeAt(0);
+  const anchorNode = range.startContainer;
+  const anchorOffset = range.startOffset;
+  let offset = 0;
+  let found = false;
+
+  function visit(node: Node): void {
+    if (found) {
+      return;
+    }
+
+    if (node === anchorNode) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        offset += anchorOffset;
+      } else {
+        const children = Array.from(node.childNodes).slice(0, anchorOffset);
+        children.forEach((child) => {
+          offset += child instanceof HTMLElement && child.dataset.token
+            ? child.dataset.token.length
+            : (child.textContent ?? '').length;
+        });
+      }
+      found = true;
+      return;
+    }
+
+    if (node instanceof HTMLElement && node.dataset.token) {
+      offset += node.dataset.token.length;
+      return;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      offset += node.textContent?.length ?? 0;
+      return;
+    }
+
+    node.childNodes.forEach(visit);
+  }
+
+  visit(root);
+  return offset;
+}
+
+function setPromptEditorCaretOffset(root: HTMLElement, nextOffset: number) {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const range = document.createRange();
+  let offset = 0;
+  let placed = false;
+
+  function place(node: Node): void {
+    if (placed) {
+      return;
+    }
+
+    if (node instanceof HTMLElement && node.dataset.token) {
+      const tokenLength = node.dataset.token.length;
+      if (nextOffset <= offset + tokenLength) {
+        range.setStartAfter(node);
+        placed = true;
+      }
+      offset += tokenLength;
+      return;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      const textLength = node.textContent?.length ?? 0;
+      if (nextOffset <= offset + textLength) {
+        range.setStart(node, Math.max(0, nextOffset - offset));
+        placed = true;
+      }
+      offset += textLength;
+      return;
+    }
+
+    node.childNodes.forEach(place);
+  }
+
+  place(root);
+  if (!placed) {
+    range.selectNodeContents(root);
+    range.collapse(false);
+  }
+
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 function PromptTextarea({
   canvas,
   node,
@@ -575,7 +759,7 @@ function PromptTextarea({
   stopPointerDown?: boolean;
   onChange(value: string): void;
 }) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
   const [trigger, setTrigger] = useState<ReturnType<typeof getPromptReferenceTrigger>>(null);
   const [previewImage, setPreviewImage] = useState<PromptReferencePreview | null>(null);
   const suggestions = getPromptReferenceSuggestions(canvas, node.id);
@@ -584,8 +768,38 @@ function PromptTextarea({
     ? filterPromptReferenceSuggestions(suggestions, trigger.query).slice(0, 8)
     : [];
 
-  function refreshTrigger(target: HTMLTextAreaElement) {
-    setTrigger(getPromptReferenceTrigger(target.value, target.selectionStart));
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || document.activeElement === editor) {
+      return;
+    }
+
+    renderPromptEditorContent(editor, node.prompt ?? '', referencePreviews, setPreviewImage);
+  }, [node.prompt, referencePreviews]);
+
+  function syncEditorValue(nextValue: string, nextCaret?: number) {
+    const editor = editorRef.current;
+    if (!editor) {
+      onChange(nextValue);
+      return;
+    }
+
+    renderPromptEditorContent(editor, nextValue, getPromptReferencePreviews(canvas, node.id, nextValue), setPreviewImage);
+    onChange(nextValue);
+    window.requestAnimationFrame(() => {
+      editor.focus();
+      setPromptEditorCaretOffset(editor, nextCaret ?? nextValue.length);
+    });
+  }
+
+  function refreshTrigger(target: HTMLElement) {
+    const value = serializePromptEditor(target);
+    setTrigger(getPromptReferenceTrigger(value, getPromptEditorCaretOffset(target)));
+  }
+
+  function handleEditorInput(target: HTMLElement) {
+    onChange(serializePromptEditor(target));
+    refreshTrigger(target);
   }
 
   function insertSuggestion(suggestion: PromptReferenceSuggestion) {
@@ -597,56 +811,55 @@ function PromptTextarea({
     const nextValue = `${value.slice(0, trigger.start)}${suggestion.token} ${value.slice(trigger.end)}`;
     const nextCaret = trigger.start + suggestion.token.length + 1;
 
-    onChange(nextValue);
     setTrigger(null);
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextCaret, nextCaret);
-    });
+    syncEditorValue(nextValue, nextCaret);
+  }
+
+  function handleEditorKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== 'Backspace' && event.key !== 'Delete') {
+      return;
+    }
+
+    const editor = event.currentTarget;
+    const selection = window.getSelection();
+    if (!selection || !selection.isCollapsed) {
+      return;
+    }
+
+    const value = serializePromptEditor(editor);
+    const caret = getPromptEditorCaretOffset(editor);
+    const result = removePromptReferenceAtCaret(
+      value,
+      caret,
+      event.key === 'Backspace' ? 'backward' : 'forward',
+    );
+
+    if (!result) {
+      return;
+    }
+
+    event.preventDefault();
+    setTrigger(null);
+    syncEditorValue(result.prompt, result.caret);
   }
 
   return (
     <div className="prompt-reference-field">
-      <textarea
-        ref={textareaRef}
-        value={node.prompt ?? ''}
-        placeholder={placeholder}
+      <div
+        ref={editorRef}
+        className="prompt-reference-editor"
+        contentEditable
+        data-placeholder={placeholder}
+        role="textbox"
+        aria-multiline="true"
+        suppressContentEditableWarning
         onPointerDown={stopPointerDown ? (event) => event.stopPropagation() : undefined}
         onBlur={() => window.setTimeout(() => setTrigger(null), 120)}
         onClick={(event) => refreshTrigger(event.currentTarget)}
         onKeyUp={(event) => refreshTrigger(event.currentTarget)}
-        onChange={(event) => {
-          onChange(event.target.value);
-          refreshTrigger(event.target);
-        }}
+        onKeyDown={handleEditorKeyDown}
+        onInput={(event) => handleEditorInput(event.currentTarget)}
       />
-      {referencePreviews.length > 0 ? (
-        <div className="prompt-reference-chips" aria-label="已引用资产">
-          {referencePreviews.map((reference) =>
-            reference.kind === 'image' ? (
-              <button
-                key={reference.token}
-                type="button"
-                className="prompt-reference-chip is-image"
-                title={`${reference.title} ${reference.token}`}
-                onClick={() => setPreviewImage(reference)}
-              >
-                <span>@</span>
-                <img src={reference.imageUrl} alt={reference.title} />
-              </button>
-            ) : (
-              <span
-                key={reference.token}
-                className="prompt-reference-chip is-text"
-                title={`${reference.title} ${reference.token}`}
-              >
-                <span>@</span>
-                <strong>{reference.textPreview}</strong>
-              </span>
-            ),
-          )}
-        </div>
-      ) : null}
       {visibleSuggestions.length > 0 ? (
         <div className="prompt-reference-menu">
           {visibleSuggestions.map((suggestion) => (

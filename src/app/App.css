@@ -778,6 +778,75 @@ button:disabled {
   position: relative;
 }
 
+.prompt-reference-editor {
+  background: #080a0d;
+  border: 1px solid #303640;
+  border-radius: 6px;
+  color: #eef2f5;
+  font: inherit;
+  line-height: 1.5;
+  min-height: 88px;
+  outline: none;
+  padding: 10px;
+  user-select: text;
+  white-space: pre-wrap;
+  width: 100%;
+  word-break: break-word;
+}
+
+.prompt-reference-editor:focus {
+  border-color: #607086;
+}
+
+.prompt-reference-editor:empty::before {
+  color: #6f7a86;
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.prompt-reference-token {
+  align-items: center;
+  background: #11151a;
+  border: 1px solid #303640;
+  border-radius: 6px;
+  color: #dce7f2;
+  cursor: default;
+  display: inline-flex;
+  gap: 5px;
+  margin: 0 2px;
+  max-width: 100%;
+  min-height: 28px;
+  overflow: hidden;
+  padding: 3px 7px;
+  user-select: none;
+  vertical-align: middle;
+}
+
+.prompt-reference-token > span {
+  color: #85c7ff;
+  font-weight: 800;
+}
+
+.prompt-reference-token strong {
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-reference-token.is-image {
+  cursor: zoom-in;
+}
+
+.prompt-reference-token img {
+  border-radius: 4px;
+  display: block;
+  height: 30px;
+  object-fit: cover;
+  width: 46px;
+}
+
 .prompt-reference-field textarea {
   width: 100%;
 }
