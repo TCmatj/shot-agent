@@ -1309,9 +1309,21 @@ export function App() {
       return;
     }
 
-    void persistWorkspaceToFolder(rootDirectoryHandle, workspaceState).catch(() => {
-      setCanvasMessage('写入画布存储文件夹失败，当前更改可能刷新后丢失。');
-    });
+    void persistWorkspaceToFolder(rootDirectoryHandle, workspaceState)
+      .then((persistedState) => {
+        if (
+          serializeWorkspaceState(persistedState) ===
+          serializeWorkspaceState(workspaceStateRef.current)
+        ) {
+          return;
+        }
+
+        workspaceStateRef.current = persistedState;
+        setWorkspaceState(persistedState);
+      })
+      .catch(() => {
+        setCanvasMessage('写入画布存储文件夹失败，当前更改可能刷新后丢失。');
+      });
   }, [folderStorageReady, rootDirectoryHandle, workspaceState]);
 
   useEffect(() => {
@@ -1879,21 +1891,16 @@ export function App() {
       await storeRootDirectoryHandle(directory);
       setRootDirectoryHandle(directory);
       setFolderStorageReady(true);
-      setWorkspaceStateWithHistory((current) =>
-        updateWorkspaceStorage(current, {
-          mode: 'custom-folder',
-          folderName: directory.name,
-          folderPath: directory.name,
-        }),
-      );
-      await persistWorkspaceToFolder(directory, {
-        ...workspaceStateRef.current,
-        storage: {
-          mode: 'custom-folder',
-          folderName: directory.name,
-          folderPath: directory.name,
-        },
+      const nextState = updateWorkspaceStorage(workspaceStateRef.current, {
+        mode: 'custom-folder',
+        folderName: directory.name,
+        folderPath: directory.name,
       });
+
+      setWorkspaceStateWithHistory(() => nextState);
+      const persistedState = await persistWorkspaceToFolder(directory, nextState);
+      workspaceStateRef.current = persistedState;
+      setWorkspaceState(persistedState);
       setCanvasMessage(`画布存储文件夹已设置为：${directory.name}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -1911,9 +1918,14 @@ export function App() {
     }
 
     try {
-      await persistWorkspaceToFolder(rootDirectoryHandle, workspaceStateRef.current);
+      const persistedState = await persistWorkspaceToFolder(
+        rootDirectoryHandle,
+        workspaceStateRef.current,
+      );
+      workspaceStateRef.current = persistedState;
+      setWorkspaceState(persistedState);
       setCanvasMessage(
-        `已迁移 ${workspaceStateRef.current.canvases.length} 个画布到文件夹：${rootDirectoryHandle.name}`,
+        `已迁移 ${persistedState.canvases.length} 个画布和浏览器资产到文件夹：${rootDirectoryHandle.name}`,
       );
     } catch {
       setCanvasMessage('迁移到画布存储文件夹失败，请检查文件夹权限后重试。');
@@ -2870,15 +2882,6 @@ export function App() {
         <section className="panel storage-panel">
           <div className="panel-title-row">
             <h2>存储</h2>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="选择画布存储文件夹"
-              title="选择画布存储文件夹"
-              onClick={() => void chooseCanvasStorageFolder()}
-            >
-              <FolderOpen size={15} />
-            </button>
           </div>
           <label>
             画布存储文件夹
@@ -2893,20 +2896,31 @@ export function App() {
               ? `当前：${rootDirectoryHandle.name} / 每个画布独立文件夹`
               : '当前：未连接存储文件夹，无法保存素材'}
           </p>
-          <button
-            type="button"
-            className="storage-migrate-button"
-            disabled={!folderStorageReady || !rootDirectoryHandle}
-            title={
-              folderStorageReady && rootDirectoryHandle
-                ? '将当前浏览器中的画布数据写入已选择的文件夹'
-                : '请先选择画布存储文件夹'
-            }
-            onClick={() => void migrateCurrentWorkspaceToFolder()}
-          >
-            <Save size={15} />
-            <span>迁移到文件夹</span>
-          </button>
+          <div className="storage-actions">
+            <button
+              type="button"
+              className="storage-action-button storage-migrate-button"
+              disabled={!folderStorageReady || !rootDirectoryHandle}
+              title={
+                folderStorageReady && rootDirectoryHandle
+                  ? '将当前浏览器中的画布和资产写入已选择的文件夹'
+                  : '请先打开画布存储文件夹'
+              }
+              onClick={() => void migrateCurrentWorkspaceToFolder()}
+            >
+              <Save size={15} />
+              <span>迁移到文件夹</span>
+            </button>
+            <button
+              type="button"
+              className="storage-action-button storage-folder-button"
+              title="选择或重新授权画布存储文件夹"
+              onClick={() => void chooseCanvasStorageFolder()}
+            >
+              <FolderOpen size={15} />
+              <span>打开文件夹</span>
+            </button>
+          </div>
         </section>
         <section className="panel">
           <div className="panel-title-row">

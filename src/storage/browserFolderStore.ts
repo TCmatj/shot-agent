@@ -70,10 +70,13 @@ export async function ensureDirectoryPermission(
 export async function persistWorkspaceToFolder(
   rootHandle: ShotAgentDirectoryHandle,
   state: CanvasWorkspaceState,
-): Promise<void> {
+): Promise<CanvasWorkspaceState> {
+  const canvasesWithPersistedAssets = await Promise.all(
+    state.canvases.map((canvas) => persistCanvasAssets(rootHandle, canvas)),
+  );
   const persistableState: CanvasWorkspaceState = {
     ...state,
-    canvases: stripTransientAssetData(state.canvases),
+    canvases: stripTransientAssetData(canvasesWithPersistedAssets),
   };
 
   await writeTextFile(rootHandle, 'workspace.json', serializeWorkspaceState(persistableState));
@@ -99,6 +102,8 @@ export async function persistWorkspaceToFolder(
       );
     }),
   );
+
+  return persistableState;
 }
 
 export async function readWorkspaceFromFolder(
@@ -196,6 +201,134 @@ async function hydrateWorkspaceAssetUrls(
     ...state,
     canvases,
   };
+}
+
+async function persistCanvasAssets(
+  rootHandle: ShotAgentDirectoryHandle,
+  canvas: CanvasView,
+): Promise<CanvasView> {
+  const canvasDir = await getCanvasDirectory(rootHandle, canvas, true);
+  await ensureProjectDirectories(canvasDir);
+
+  return {
+    ...canvas,
+    nodes: await Promise.all(
+      canvas.nodes.map(async (node) => {
+        let nextNode = { ...node };
+
+        if (nextNode.assetDataUrl && !nextNode.assetPath) {
+          const savedAsset = await saveDataUrlAssetToCanvasDirectory(
+            canvasDir,
+            nextNode.assetDataUrl,
+            {
+              kind: getNodeAssetKind(nextNode),
+              fileName: nextNode.assetName ?? nextNode.id,
+            },
+          );
+          nextNode = {
+            ...nextNode,
+            assetName: savedAsset.assetName,
+            assetPath: savedAsset.assetPath,
+            assetMimeType: nextNode.assetMimeType ?? savedAsset.mimeType,
+          };
+        }
+
+        if (nextNode.outputDataUrl && !nextNode.outputPath) {
+          const savedOutput = await saveDataUrlAssetToCanvasDirectory(
+            canvasDir,
+            nextNode.outputDataUrl,
+            {
+              kind: getNodeOutputKind(nextNode),
+              fileName: `${nextNode.id}-${Date.now()}`,
+            },
+          );
+          nextNode = {
+            ...nextNode,
+            outputPath: savedOutput.assetPath,
+          };
+        }
+
+        return nextNode;
+      }),
+    ),
+  };
+}
+
+async function saveDataUrlAssetToCanvasDirectory(
+  canvasDir: FileSystemDirectoryHandle,
+  dataUrl: string,
+  input: {
+    kind: 'image' | 'video' | 'file';
+    fileName: string;
+  },
+): Promise<{ assetName: string; assetPath: string; mimeType: string }> {
+  const blob = dataUrlToBlob(dataUrl);
+  const assetsDir = await canvasDir.getDirectoryHandle('assets', { create: true });
+  const mediaDirName = getMediaDirectoryName(input.kind);
+  const mediaDir = await assetsDir.getDirectoryHandle(mediaDirName, { create: true });
+  const extension = getExtensionFromMimeType(
+    blob.type,
+    input.kind === 'video' ? 'video' : 'image',
+  );
+  const assetName = await makeUniqueFileName(
+    mediaDir,
+    ensureFileExtension(input.fileName, extension),
+  );
+  const fileHandle = await mediaDir.getFileHandle(assetName, { create: true });
+  const writable = await fileHandle.createWritable();
+
+  await writable.write(blob);
+  await writable.close();
+
+  return {
+    assetName,
+    assetPath: `assets/${mediaDirName}/${assetName}`,
+    mimeType: blob.type,
+  };
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/);
+
+  if (!match) {
+    throw new Error('Invalid data URL');
+  }
+
+  const [, mimeType, base64] = match;
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new Blob([bytes], { type: mimeType });
+}
+
+function getNodeAssetKind(node: CanvasNodeView): 'image' | 'video' | 'file' {
+  if (node.kind === 'videoAsset' || node.assetMimeType?.startsWith('video/')) {
+    return 'video';
+  }
+
+  return node.assetMimeType?.startsWith('image/') || node.kind === 'imageAsset'
+    ? 'image'
+    : 'file';
+}
+
+function getNodeOutputKind(node: CanvasNodeView): 'image' | 'video' {
+  return node.kind === 'video' ? 'video' : 'image';
+}
+
+function getMediaDirectoryName(kind: 'image' | 'video' | 'file'): 'images' | 'videos' | 'files' {
+  if (kind === 'video') {
+    return 'videos';
+  }
+
+  return kind === 'file' ? 'files' : 'images';
+}
+
+function ensureFileExtension(fileName: string, extension: string): string {
+  return /\.[a-z0-9]+$/i.test(fileName) ? fileName : `${fileName}${extension}`;
 }
 
 async function readAssetObjectUrl(

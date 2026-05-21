@@ -164,25 +164,43 @@ button:disabled {
   white-space: nowrap;
 }
 
-.storage-migrate-button {
+.storage-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.storage-action-button {
   background: #10151b;
   border-color: #3c4652;
   color: #eef2f5;
   justify-content: center;
   min-height: 36px;
+  min-width: 0;
+  padding: 0 10px;
   width: 100%;
+}
+
+.storage-action-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .storage-migrate-button svg {
   color: #8dffbc;
 }
 
-.storage-migrate-button:not(:disabled):hover {
+.storage-folder-button svg {
+  color: #9dbbff;
+}
+
+.storage-action-button:not(:disabled):hover {
   background: #18212a;
   border-color: #6b7d90;
 }
 
-.storage-migrate-button:disabled svg {
+.storage-action-button:disabled svg {
   color: #66717f;
 }
 
