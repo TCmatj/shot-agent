@@ -1019,7 +1019,6 @@ button:disabled {
   display: none;
 }
 
-.canvas-hud,
 .canvas-tip,
 .add-node-menu {
   align-items: center;
@@ -1030,27 +1029,6 @@ button:disabled {
   gap: 8px;
   position: absolute;
   z-index: 1;
-}
-
-.canvas-hud {
-  bottom: 174px;
-  left: 18px;
-  padding: 6px;
-}
-
-.canvas-hud button {
-  height: 30px;
-  justify-content: center;
-  min-height: 30px;
-  padding: 0;
-  width: 30px;
-}
-
-.canvas-hud span {
-  color: #cdd6df;
-  font-size: 13px;
-  min-width: 46px;
-  text-align: center;
 }
 
 .canvas-tip {
@@ -1186,7 +1164,7 @@ button:disabled {
   --canvas-bottom-ui-space: 140px;
 
   display: grid;
-  gap: 84px;
+  gap: 72px;
   left: 18px;
   position: absolute;
   top: calc((100% - var(--canvas-bottom-ui-space)) / 2);
@@ -1207,6 +1185,13 @@ button:disabled {
   padding: 0;
   position: relative;
   width: 42px;
+}
+
+.canvas-scale-indicator {
+  color: #cdd6df;
+  font-size: 12px;
+  min-width: 42px;
+  text-align: center;
 }
 
 .add-node-menu {

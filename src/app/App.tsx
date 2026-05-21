@@ -153,23 +153,31 @@ type ModalDragState = {
 type CanvasActionRailProps = {
   canUndo: boolean;
   canRedo: boolean;
+  scale: number;
   onAddNode: (clientX: number, clientY: number) => void;
   onCreateCanvas: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onExportCanvas: () => void;
   onImportCanvas: () => void;
+  onZoomOut: () => void;
+  onZoomIn: () => void;
+  onResetViewport: () => void;
 };
 
 function CanvasActionRail({
   canUndo,
   canRedo,
+  scale,
   onAddNode,
   onCreateCanvas,
   onUndo,
   onRedo,
   onExportCanvas,
   onImportCanvas,
+  onZoomOut,
+  onZoomIn,
+  onResetViewport,
 }: CanvasActionRailProps) {
   return (
     <div className="canvas-action-rail">
@@ -216,6 +224,23 @@ function CanvasActionRail({
         </button>
         <button type="button" aria-label="导入画布" title="导入画布" onClick={onImportCanvas}>
           <Import size={18} />
+        </button>
+      </div>
+      <div className="canvas-action-group">
+        <button type="button" aria-label="缩小" title="缩小" onClick={onZoomOut}>
+          <Minus size={18} />
+        </button>
+        <span className="canvas-scale-indicator">{Math.round(scale * 100)}%</span>
+        <button type="button" aria-label="放大" title="放大" onClick={onZoomIn}>
+          <Plus size={18} />
+        </button>
+        <button
+          type="button"
+          aria-label="重置视图"
+          title="重置视图"
+          onClick={onResetViewport}
+        >
+          <RotateCcw size={18} />
         </button>
       </div>
     </div>
@@ -2900,12 +2925,16 @@ export function App() {
           <CanvasActionRail
             canUndo={canUndoWorkspace}
             canRedo={canRedoWorkspace}
+            scale={viewport.scale}
             onAddNode={(clientX, clientY) => openAddMenu(clientX, clientY)}
             onCreateCanvas={createCanvas}
             onUndo={undoWorkspace}
             onRedo={redoWorkspace}
             onExportCanvas={downloadActiveCanvas}
             onImportCanvas={() => importInputRef.current?.click()}
+            onZoomOut={() => zoomBy(0.88)}
+            onZoomIn={() => zoomBy(1.12)}
+            onResetViewport={resetViewport}
           />
           {addMenu ? (
             <div
@@ -2926,18 +2955,6 @@ export function App() {
               })}
             </div>
           ) : null}
-          <div className="canvas-hud">
-            <button type="button" aria-label="缩小" onClick={() => zoomBy(0.88)}>
-              <Minus size={16} />
-            </button>
-            <span>{Math.round(viewport.scale * 100)}%</span>
-            <button type="button" aria-label="放大" onClick={() => zoomBy(1.12)}>
-              <Plus size={16} />
-            </button>
-            <button type="button" aria-label="重置视图" onClick={resetViewport}>
-              <RotateCcw size={16} />
-            </button>
-          </div>
           <div className="canvas-tip">
             <Move size={15} />
             <span>拖节点右侧圆点到另一个节点左侧圆点连线</span>
