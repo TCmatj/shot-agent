@@ -7,6 +7,7 @@ export type CanvasNodeView = {
   id: string;
   title: string;
   modelId: string;
+  chatFormat?: 'openai' | 'anthropic';
   providerId?: string;
   providerModelId?: string;
   kind: CanvasNodeKind;

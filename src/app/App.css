@@ -1274,6 +1274,7 @@ button:disabled {
   gap: 8px;
 }
 
+.node-inspector input,
 .node-inspector select,
 .node-inspector textarea {
   background: #080a0d;
@@ -1282,6 +1283,18 @@ button:disabled {
   color: #eef2f5;
   font: inherit;
   padding: 10px;
+}
+
+.node-title-input {
+  background: #080a0d;
+  border: 1px solid #46515f;
+  border-radius: 6px;
+  color: #eef2f5;
+  font: inherit;
+  font-weight: 650;
+  min-width: 0;
+  padding: 6px 8px;
+  width: 100%;
 }
 
 .node-inspector textarea {

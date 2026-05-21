@@ -4,6 +4,7 @@ import type { ProviderConfig } from '../../src/domain/provider';
 import {
   buildGenerationRequest,
   getEffectiveNodeOutputText,
+  parseAnthropicStreamTextDelta,
   parseOpenAIStreamTextDelta,
   resolveProviderToken,
   streamChatGenerationNode,
@@ -48,6 +49,22 @@ const seedanceProvider: ProviderConfig = {
     {
       canonicalModelId: 'seedance2.0',
       providerModelId: 'doubao-seedance-2-0-260128',
+      enabled: true,
+    },
+  ],
+};
+
+const anthropicProvider: ProviderConfig = {
+  id: 'provider_anthropic',
+  name: 'Anthropic',
+  protocol: 'anthropic-compatible',
+  baseURL: 'https://api.anthropic.com/v1',
+  apiTokenRef: 'secret_anthropic',
+  enabled: true,
+  models: [
+    {
+      canonicalModelId: 'chat-anthropic',
+      providerModelId: 'claude-sonnet-4-5',
       enabled: true,
     },
   ],
@@ -266,6 +283,62 @@ describe('generation client request building', () => {
     });
   });
 
+  it('builds Anthropic messages requests when the chat node selects Anthropic format', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'chat_1' ? { ...node, chatFormat: 'anthropic' } : node,
+        ),
+      },
+      nodeId: 'chat_1',
+      provider: anthropicProvider,
+      token: 'anthropic-token',
+      stream: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      request: {
+        url: 'https://api.anthropic.com/v1/messages',
+        responseKind: 'text',
+        streamProtocol: 'anthropic',
+        headers: {
+          'x-api-key': 'anthropic-token',
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+      },
+    });
+    expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 4096,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text:
+                'Rewrite this prompt @text:text_1 @image:image_asset_1\n\n' +
+                '引用文本：\n' +
+                '1. @text:text_1\nuse a clean studio background',
+            },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'aW1hZ2U=',
+              },
+            },
+          ],
+        },
+      ],
+      stream: true,
+    });
+  });
+
   it('rejects synchronous text generation submissions', async () => {
     const fetcher = vi.fn<GenerationFetch>();
 
@@ -318,6 +391,17 @@ describe('generation client request building', () => {
         'data: {"choices":[{"delta":{"content":"你"}}]}\n\n' +
           'data: {"choices":[{"delta":{"content":"好"}}]}\n\n' +
           'data: [DONE]\n\n',
+      ),
+    ).toEqual(['你', '好']);
+  });
+
+  it('parses Anthropic messages stream text deltas', () => {
+    expect(
+      parseAnthropicStreamTextDelta(
+        'event: content_block_delta\n' +
+          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"你"}}\n\n' +
+          'event: content_block_delta\n' +
+          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"好"}}\n\n',
       ),
     ).toEqual(['你', '好']);
   });

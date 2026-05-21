@@ -21,6 +21,7 @@ export type GenerationRequest = {
   headers: Record<string, string>;
   body: BodyInit;
   responseKind: 'image' | 'video-task' | 'text';
+  streamProtocol?: 'openai' | 'anthropic';
 };
 
 export type BuildGenerationRequestInput = {
@@ -115,7 +116,11 @@ export function resolveProviderToken(
     .replace(/[^a-zA-Z0-9]+/g, '_')
     .toUpperCase();
   const protocolKey =
-    provider.protocol === 'volcengine' ? 'VITE_SEEDANCE_API_KEY' : 'VITE_OPENAI_API_KEY';
+    provider.protocol === 'volcengine'
+      ? 'VITE_SEEDANCE_API_KEY'
+      : provider.protocol === 'anthropic-compatible'
+        ? 'VITE_ANTHROPIC_API_KEY'
+        : 'VITE_OPENAI_API_KEY';
 
   return env[`VITE_${normalizedRef}_API_KEY`] ?? env[protocolKey];
 }
@@ -152,7 +157,7 @@ export function buildGenerationRequest(
 
   const providerModelId =
     node.providerModelId ??
-    mapCanonicalModelToProviderModel(input.provider, node.modelId);
+    mapCanonicalModelToProviderModel(input.provider, node.modelId, getNodeChatFormat(node));
   if (!providerModelId) {
     return { ok: false, error: `供应商未配置模型映射：${node.modelId}` };
   }
@@ -173,15 +178,26 @@ export function buildGenerationRequest(
     };
   }
 
-  if (input.provider.protocol !== 'openai-compatible') {
-    return { ok: false, error: `暂不支持的供应商协议：${input.provider.protocol}` };
-  }
-
-  if (node.kind === 'video') {
-    return { ok: false, error: 'OpenAI-compatible 供应商当前不处理视频节点' };
-  }
-
   if (node.kind === 'chat') {
+    if (input.provider.protocol === 'anthropic-compatible') {
+      return {
+        ok: true,
+        request: buildAnthropicMessagesRequest(
+          input.provider,
+          input.token,
+          providerModelId,
+          prompt,
+          node,
+          input.canvas,
+          input.stream ?? false,
+        ),
+      };
+    }
+
+    if (input.provider.protocol !== 'openai-compatible') {
+      return { ok: false, error: `暂不支持的供应商协议：${input.provider.protocol}` };
+    }
+
     return {
       ok: true,
       request: buildOpenAIChatRequest(
@@ -194,6 +210,14 @@ export function buildGenerationRequest(
         input.stream ?? false,
       ),
     };
+  }
+
+  if (input.provider.protocol !== 'openai-compatible') {
+    return { ok: false, error: `暂不支持的供应商协议：${input.provider.protocol}` };
+  }
+
+  if (node.kind === 'video') {
+    return { ok: false, error: 'OpenAI-compatible 供应商当前不处理视频节点' };
   }
 
   return {
@@ -302,13 +326,13 @@ export async function streamChatGenerationNode(
     const events = pendingChunk.split(/\r?\n\r?\n/);
     pendingChunk = events.pop() ?? '';
 
-    for (const delta of parseOpenAIStreamTextDelta(events.join('\n\n'))) {
+    for (const delta of parseStreamTextDelta(events.join('\n\n'), built.request.streamProtocol)) {
       fullText += delta;
       input.onDelta(delta, fullText);
     }
   }
 
-  for (const delta of parseOpenAIStreamTextDelta(pendingChunk)) {
+  for (const delta of parseStreamTextDelta(pendingChunk, built.request.streamProtocol)) {
     fullText += delta;
     input.onDelta(delta, fullText);
   }
@@ -345,6 +369,44 @@ export function parseOpenAIStreamTextDelta(chunk: string): string[] {
         return [];
       }
     });
+}
+
+export function parseAnthropicStreamTextDelta(chunk: string): string[] {
+  return chunk
+    .split(/\r?\n\r?\n/)
+    .flatMap((event) =>
+      event
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('data: '))
+        .flatMap((line) => {
+          const payload = line.slice('data: '.length);
+
+          try {
+            const parsed = JSON.parse(payload) as {
+              type?: string;
+              delta?: { type?: string; text?: string };
+            };
+
+            return parsed.type === 'content_block_delta' &&
+              parsed.delta?.type === 'text_delta' &&
+              parsed.delta.text
+              ? [parsed.delta.text]
+              : [];
+          } catch {
+            return [];
+          }
+        }),
+    );
+}
+
+function parseStreamTextDelta(
+  chunk: string,
+  streamProtocol: GenerationRequest['streamProtocol'] = 'openai',
+): string[] {
+  return streamProtocol === 'anthropic'
+    ? parseAnthropicStreamTextDelta(chunk)
+    : parseOpenAIStreamTextDelta(chunk);
 }
 
 function buildOpenAIImageRequest(
@@ -406,6 +468,64 @@ function buildOpenAIChatRequest(
       ...(stream ? { stream: true } : {}),
     }),
     responseKind: 'text',
+    streamProtocol: 'openai',
+  };
+}
+
+function buildAnthropicMessagesRequest(
+  provider: ProviderConfig,
+  token: string,
+  model: string,
+  prompt: string,
+  node: CanvasNodeView,
+  canvas: CanvasView,
+  stream: boolean,
+): GenerationRequest {
+  const imageInputs = collectInputAssets(node, canvas).filter(
+    (asset) => asset.role === 'reference_image',
+  );
+  const content = [
+    { type: 'text', text: prompt },
+    ...imageInputs.flatMap((asset) => {
+      const source = toAnthropicImageSource(asset.content, asset.mimeType);
+
+      return source ? [{ type: 'image', source }] : [];
+    }),
+  ];
+
+  return {
+    url: `${normalizeBaseURL(provider.baseURL)}/messages`,
+    method: 'POST',
+    headers: {
+      'x-api-key': token,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 4096,
+      messages: [{ role: 'user', content }],
+      ...(stream ? { stream: true } : {}),
+    }),
+    responseKind: 'text',
+    streamProtocol: 'anthropic',
+  };
+}
+
+function toAnthropicImageSource(
+  content: string,
+  mimeType?: string,
+): { type: 'base64'; media_type: string; data: string } | null {
+  const dataUrlMatch = content.match(/^data:([^;,]+);base64,(.+)$/);
+
+  if (!dataUrlMatch) {
+    return null;
+  }
+
+  return {
+    type: 'base64',
+    media_type: mimeType ?? dataUrlMatch[1],
+    data: dataUrlMatch[2],
   };
 }
 
@@ -740,6 +860,10 @@ function stringField(record: Record<string, unknown>, fields: string[]): string 
 
 function isModelNodeKind(kind: CanvasNodeView['kind']): kind is ModelNodeKind {
   return kind === 'image' || kind === 'video' || kind === 'chat';
+}
+
+function getNodeChatFormat(node: CanvasNodeView): 'openai' | 'anthropic' {
+  return node.chatFormat ?? 'openai';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

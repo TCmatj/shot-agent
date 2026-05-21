@@ -42,6 +42,7 @@ import {
   saveProviderDraft,
 } from '../domain/provider';
 import type { ProviderConfig } from '../domain/provider';
+import type { ChatFormat } from '../domain/provider';
 import {
   appendOutputVersion,
   getLatestOutputVersion,
@@ -266,6 +267,22 @@ const initialProviders: ProviderConfig[] = [
       },
     ],
   },
+  {
+    id: 'provider_anthropic',
+    name: 'Anthropic 官方',
+    protocol: 'anthropic-compatible',
+    baseURL: 'https://api.anthropic.com/v1',
+    apiTokenRef: 'secret_anthropic',
+    enabled: true,
+    models: [
+      {
+        id: 'model_anthropic_chat',
+        providerModelId: 'claude-sonnet-4-5',
+        canonicalModelId: 'chat-anthropic',
+        enabled: true,
+      },
+    ],
+  },
 ];
 
 const nodeTemplates: NodeTemplate[] = [
@@ -372,6 +389,7 @@ const initialCanvases: CanvasView[] = [
 const initialWorkspaceState = createWorkspaceState(initialCanvases);
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
 const providerStorageKey = 'shot-agent:providers';
+const deletedProviderStorageKey = 'shot-agent:deleted-providers';
 const canvasViewportStorageKey = 'shot-agent:canvas-viewports';
 const canvasNodeSize = { width: 320, height: 220 };
 const minimapSize = { width: 220, height: 150 };
@@ -927,16 +945,43 @@ function loadProviders(): ProviderConfig[] {
 
   try {
     const parsed = JSON.parse(window.localStorage.getItem(providerStorageKey) ?? '');
+    const deletedProviderIds = parseDeletedProviderIds(
+      window.localStorage.getItem(deletedProviderStorageKey),
+    );
 
     if (!Array.isArray(parsed)) {
       return initialProviders;
     }
 
-    return normalizeProviderDisplayText(
-      mergeProviderDefaults(parsed as ProviderConfig[], initialProviders),
+    const mergedProviders = mergeProviderDefaults(parsed as ProviderConfig[], initialProviders);
+    const missingDefaultProviders = initialProviders.filter(
+      (defaultProvider) =>
+        !deletedProviderIds.has(defaultProvider.id) &&
+        !mergedProviders.some((provider) => provider.id === defaultProvider.id),
     );
+
+    return normalizeProviderDisplayText([
+      ...mergedProviders,
+      ...missingDefaultProviders.map(createProviderDraft),
+    ]);
   } catch {
     return initialProviders;
+  }
+}
+
+function parseDeletedProviderIds(value: string | null): Set<string> {
+  if (!value) {
+    return new Set();
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+
+    return Array.isArray(parsed)
+      ? new Set(parsed.filter((providerId): providerId is string => typeof providerId === 'string'))
+      : new Set();
+  } catch {
+    return new Set();
   }
 }
 
@@ -1011,6 +1056,8 @@ export function App() {
   const [editingCanvasId, setEditingCanvasId] = useState<string | null>(null);
   const [draftListCanvasName, setDraftListCanvasName] = useState('');
   const [editingOutputNodeId, setEditingOutputNodeId] = useState<string | null>(null);
+  const [editingNodeTitleId, setEditingNodeTitleId] = useState<string | null>(null);
+  const [draftNodeTitle, setDraftNodeTitle] = useState('');
   const [selectedOutputVersionId, setSelectedOutputVersionId] = useState<string | null>(null);
   const [outputVersionPage, setOutputVersionPage] = useState(1);
   const [draftOutputText, setDraftOutputText] = useState('');
@@ -1469,6 +1516,29 @@ export function App() {
       (nodes) => nodes.map((node) => (node.id === nodeId ? updater(node) : node)),
       options,
     );
+  }
+
+  function getChatFormat(node: CanvasNodeView): ChatFormat {
+    return node.chatFormat ?? 'openai';
+  }
+
+  function startRenameNode(node: CanvasNodeView) {
+    setEditingNodeTitleId(node.id);
+    setDraftNodeTitle(node.title);
+  }
+
+  function commitRenameNode(nodeId: string) {
+    const nextTitle = draftNodeTitle.trim();
+
+    if (nextTitle) {
+      updateNode(nodeId, (current) => ({
+        ...current,
+        title: nextTitle,
+      }));
+    }
+
+    setEditingNodeTitleId(null);
+    setDraftNodeTitle('');
   }
 
   function addAssetNodeFromFile(file: File, point: Point) {
@@ -1949,6 +2019,14 @@ export function App() {
       return;
     }
 
+    const deletedProviderIds = parseDeletedProviderIds(
+      window.localStorage.getItem(deletedProviderStorageKey),
+    );
+    deletedProviderIds.add(providerId);
+    window.localStorage.setItem(
+      deletedProviderStorageKey,
+      JSON.stringify([...deletedProviderIds]),
+    );
     setProviders((current) => current.filter((provider) => provider.id !== providerId));
     setProviderDrafts((current) => {
       const { [providerId]: _deleted, ...rest } = current;
@@ -2007,7 +2085,7 @@ export function App() {
 
   function findProvidersForNode(node: CanvasNodeView): ProviderConfig[] {
     if (node.kind === 'chat' || node.modelId === 'chat-openai') {
-      return findChatProviders(providers);
+      return findChatProviders(providers, getChatFormat(node));
     }
 
     return findProvidersForCanonicalModel(providers, node.modelId);
@@ -2024,7 +2102,9 @@ export function App() {
   function findProviderModelsForNode(node: CanvasNodeView) {
     const provider = findSelectedProviderForNode(node);
 
-    return provider ? findProviderModelsForNodeModel(provider, node.modelId) : [];
+    return provider
+      ? findProviderModelsForNodeModel(provider, node.modelId, getChatFormat(node))
+      : [];
   }
 
   function markNodeGenerationFailed(nodeId: string, error: string) {
@@ -2929,7 +3009,35 @@ export function App() {
                       <Icon size={18} />
                     </span>
                     <div>
-                      <h2>{node.title}</h2>
+                      {editingNodeTitleId === node.id ? (
+                        <input
+                          className="node-title-input"
+                          value={draftNodeTitle}
+                          autoFocus
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onBlur={() => commitRenameNode(node.id)}
+                          onChange={(event) => setDraftNodeTitle(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              commitRenameNode(node.id);
+                            }
+
+                            if (event.key === 'Escape') {
+                              setEditingNodeTitleId(null);
+                              setDraftNodeTitle('');
+                            }
+                          }}
+                        />
+                      ) : (
+                        <h2
+                          onDoubleClick={(event) => {
+                            event.stopPropagation();
+                            startRenameNode(node);
+                          }}
+                        >
+                          {node.title}
+                        </h2>
+                      )}
                       <p>{node.modelId}</p>
                     </div>
                   </header>
@@ -3102,13 +3210,66 @@ export function App() {
           {selectedNode ? (
             <aside className="node-inspector">
               <header>
-                <h2>{selectedNode.title}</h2>
+                {editingNodeTitleId === selectedNode.id ? (
+                  <input
+                    className="node-title-input"
+                    value={draftNodeTitle}
+                    autoFocus
+                    onBlur={() => commitRenameNode(selectedNode.id)}
+                    onChange={(event) => setDraftNodeTitle(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        commitRenameNode(selectedNode.id);
+                      }
+
+                      if (event.key === 'Escape') {
+                        setEditingNodeTitleId(null);
+                        setDraftNodeTitle('');
+                      }
+                    }}
+                  />
+                ) : (
+                  <h2 onDoubleClick={() => startRenameNode(selectedNode)}>
+                    {selectedNode.title}
+                  </h2>
+                )}
                 <p>{selectedNode.modelId}</p>
               </header>
               <button type="button" className="danger-button" onClick={deleteSelectedNode}>
                 <Trash2 size={16} />
                 删除节点
               </button>
+              <label>
+                节点名称
+                <input
+                  value={selectedNode.title}
+                  onChange={(event) =>
+                    updateNode(selectedNode.id, (current) => ({
+                      ...current,
+                      title: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              {selectedNode.kind === 'chat' ? (
+                <label>
+                  调用格式
+                  <select
+                    value={getChatFormat(selectedNode)}
+                    onChange={(event) =>
+                      updateNode(selectedNode.id, (current) => ({
+                        ...current,
+                        chatFormat: event.target.value as ChatFormat,
+                        providerId: undefined,
+                        providerModelId: undefined,
+                      }))
+                    }
+                  >
+                    <option value="openai">OpenAI Chat Completions</option>
+                    <option value="anthropic">Anthropic Messages</option>
+                  </select>
+                </label>
+              ) : null}
               <label>
                 供应商
                 <select
@@ -3183,7 +3344,7 @@ export function App() {
               >
                 <header className="output-modal-header" onPointerDown={startOutputModalDrag}>
                   <div>
-                    <h2>{editingOutputNode.title} 输出鐗堟湰</h2>
+                    <h2>{editingOutputNode.title} 输出版本</h2>
                     <p>拖拽标题栏移动窗口</p>
                   </div>
                   <button

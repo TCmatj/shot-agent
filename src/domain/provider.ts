@@ -6,6 +6,8 @@ export type ProviderProtocol =
   | 'volcengine'
   | 'custom';
 
+export type ChatFormat = 'openai' | 'anthropic';
+
 export type BillingConfig =
   | {
       mode: 'official-token';
@@ -107,6 +109,7 @@ export function mergeProviderDefaults(
       ],
     };
   });
+
 }
 
 export function findProvidersForCanonicalModel(
@@ -122,13 +125,23 @@ export function findProvidersForCanonicalModel(
   );
 }
 
-export function findChatProviders(providers: ProviderConfig[]): ProviderConfig[] {
+export function findChatProviders(
+  providers: ProviderConfig[],
+  format: ChatFormat = 'openai',
+): ProviderConfig[] {
+  const canonicalModelId = getChatCanonicalModelId(format);
+  const protocol = getChatProviderProtocol(format);
+
   return providers.filter(
     (provider) =>
       provider.enabled &&
-      provider.protocol === 'openai-compatible' &&
+      provider.protocol === protocol &&
       provider.models.some(
-        (model) => model.enabled && /^gpt-\d/.test(model.providerModelId),
+        (model) =>
+          model.enabled &&
+          (model.canonicalModelId === canonicalModelId ||
+            (format === 'openai' && /^gpt-\d/.test(model.providerModelId)) ||
+            (format === 'anthropic' && /^claude-/.test(model.providerModelId))),
       ),
   );
 }
@@ -136,10 +149,17 @@ export function findChatProviders(providers: ProviderConfig[]): ProviderConfig[]
 export function findProviderModelsForNodeModel(
   provider: ProviderConfig,
   nodeModelId: string,
+  format: ChatFormat = 'openai',
 ): ProviderModelConfig[] {
   if (nodeModelId === 'chat-openai') {
+    const canonicalModelId = getChatCanonicalModelId(format);
+
     return provider.models.filter(
-      (model) => model.enabled && /^gpt-\d/.test(model.providerModelId),
+      (model) =>
+        model.enabled &&
+        (model.canonicalModelId === canonicalModelId ||
+          (format === 'openai' && /^gpt-\d/.test(model.providerModelId)) ||
+          (format === 'anthropic' && /^claude-/.test(model.providerModelId))),
     );
   }
 
@@ -151,9 +171,12 @@ export function findProviderModelsForNodeModel(
 export function mapCanonicalModelToProviderModel(
   provider: ProviderConfig,
   canonicalModelId: string,
+  format: ChatFormat = 'openai',
 ): string | undefined {
+  const effectiveCanonicalModelId =
+    canonicalModelId === 'chat-openai' ? getChatCanonicalModelId(format) : canonicalModelId;
   const canonicalMatch = provider.models.find(
-    (model) => model.enabled && model.canonicalModelId === canonicalModelId,
+    (model) => model.enabled && model.canonicalModelId === effectiveCanonicalModelId,
   )?.providerModelId;
 
   if (canonicalMatch || canonicalModelId !== 'chat-openai') {
@@ -161,6 +184,18 @@ export function mapCanonicalModelToProviderModel(
   }
 
   return provider.models.find(
-    (model) => model.enabled && /^gpt-\d/.test(model.providerModelId),
+    (model) =>
+      model.enabled &&
+      (format === 'anthropic'
+        ? /^claude-/.test(model.providerModelId)
+        : /^gpt-\d/.test(model.providerModelId)),
   )?.providerModelId;
+}
+
+function getChatCanonicalModelId(format: ChatFormat): string {
+  return format === 'anthropic' ? 'chat-anthropic' : 'chat-openai';
+}
+
+function getChatProviderProtocol(format: ChatFormat): ProviderProtocol {
+  return format === 'anthropic' ? 'anthropic-compatible' : 'openai-compatible';
 }

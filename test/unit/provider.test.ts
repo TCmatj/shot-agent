@@ -82,7 +82,7 @@ describe('provider model mapping', () => {
     ]);
   });
 
-  it('matches chat providers by OpenAI-compatible gpt-number provider model ids', () => {
+  it('matches chat providers by selected chat format', () => {
     expect(
       findChatProviders([
         ...providers,
@@ -102,6 +102,21 @@ describe('provider model mapping', () => {
           ],
         },
         {
+          id: 'provider_anthropic',
+          name: 'Anthropic',
+          protocol: 'anthropic-compatible',
+          baseURL: 'https://api.anthropic.com/v1',
+          apiTokenRef: 'secret_anthropic',
+          enabled: true,
+          models: [
+            {
+              providerModelId: 'claude-sonnet-4-5',
+              canonicalModelId: 'chat-anthropic',
+              enabled: true,
+            },
+          ],
+        },
+        {
           id: 'provider_non_gpt',
           name: 'Non GPT',
           protocol: 'openai-compatible',
@@ -116,8 +131,58 @@ describe('provider model mapping', () => {
             },
           ],
         },
-      ]).map((provider) => provider.id),
-    ).toEqual(['provider_chat']);
+      ], 'openai').map((provider) => provider.id),
+    ).toEqual(['provider_chat', 'provider_non_gpt']);
+
+    expect(
+      findChatProviders([
+        ...providers,
+        {
+          id: 'provider_anthropic',
+          name: 'Anthropic',
+          protocol: 'anthropic-compatible',
+          baseURL: 'https://api.anthropic.com/v1',
+          apiTokenRef: 'secret_anthropic',
+          enabled: true,
+          models: [
+            {
+              providerModelId: 'claude-sonnet-4-5',
+              canonicalModelId: 'chat-anthropic',
+              enabled: true,
+            },
+          ],
+        },
+      ], 'anthropic').map((provider) => provider.id),
+    ).toEqual(['provider_anthropic']);
+  });
+
+  it('lists selectable Anthropic chat models for chat nodes', () => {
+    const provider = {
+      id: 'provider_anthropic',
+      name: 'Anthropic',
+      protocol: 'anthropic-compatible' as const,
+      baseURL: 'https://api.anthropic.com/v1',
+      apiTokenRef: 'secret_anthropic',
+      enabled: true,
+      models: [
+        {
+          providerModelId: 'claude-sonnet-4-5',
+          canonicalModelId: 'chat-anthropic',
+          enabled: true,
+        },
+      ],
+    };
+
+    expect(findProviderModelsForNodeModel(provider, 'chat-openai', 'anthropic')).toEqual([
+      {
+        providerModelId: 'claude-sonnet-4-5',
+        canonicalModelId: 'chat-anthropic',
+        enabled: true,
+      },
+    ]);
+    expect(mapCanonicalModelToProviderModel(provider, 'chat-openai', 'anthropic')).toBe(
+      'claude-sonnet-4-5',
+    );
   });
 
   it('merges missing default provider model mappings into saved providers', () => {
