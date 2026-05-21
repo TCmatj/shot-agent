@@ -3166,7 +3166,19 @@ export function App() {
                           }}
                         />
                       ) : (
-                        <div className="node-title-row">
+                        <div
+                          className="node-title-row"
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            setAddMenu(null);
+                            setEdgeDraft(null);
+                            selectSingleNode(node.id);
+                          }}
+                          onDoubleClick={(event) => {
+                            event.stopPropagation();
+                            startRenameNode(node);
+                          }}
+                        >
                           <h2
                             onDoubleClick={(event) => {
                               event.stopPropagation();
@@ -3363,11 +3375,12 @@ export function App() {
             <aside className="node-inspector">
               <header>
                 {editingNodeTitleId === selectedNode.id ? (
-                  <input
-                    className="node-title-input"
-                    value={draftNodeTitle}
-                    autoFocus
-                    onBlur={() => commitRenameNode(selectedNode.id)}
+                        <input
+                          className="node-title-input"
+                          value={draftNodeTitle}
+                          autoFocus
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onBlur={() => commitRenameNode(selectedNode.id)}
                     onChange={(event) => setDraftNodeTitle(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') {
@@ -3381,8 +3394,11 @@ export function App() {
                     }}
                   />
                 ) : (
-                  <div className="node-title-row">
-                    <h2 onDoubleClick={() => startRenameNode(selectedNode)}>
+                  <div
+                    className="node-title-row"
+                    onDoubleClick={() => startRenameNode(selectedNode)}
+                  >
+                    <h2>
                       {selectedNode.title}
                     </h2>
                     <button
@@ -3390,7 +3406,11 @@ export function App() {
                       className="node-title-edit-button"
                       aria-label="编辑节点名称"
                       title="编辑节点名称"
-                      onClick={() => startRenameNode(selectedNode)}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startRenameNode(selectedNode);
+                      }}
                     >
                       <Pencil size={13} />
                     </button>
