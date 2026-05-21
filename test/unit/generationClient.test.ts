@@ -206,10 +206,60 @@ describe('generation client request building', () => {
       prompt: 'A ceramic cup',
       n: 1,
       size: '1024x1024',
+      quality: 'high',
     });
   });
 
-  it('builds an OpenAI image request with upstream text prompt references appended', () => {
+  it('builds image requests with selected resolution, ratio, and quality', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'image_1'
+            ? {
+                ...node,
+                imageResolutionTier: '4k',
+                imageAspectRatio: '16:9',
+                imageQuality: 'medium',
+              }
+            : node,
+        ),
+      },
+      nodeId: 'image_1',
+      provider: openaiProvider,
+      token: 'token',
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
+      prompt: 'A ceramic cup',
+      size: '3840x2160',
+      quality: 'medium',
+    });
+  });
+
+  it('supports automatic image size selection', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'image_1'
+            ? { ...node, imageResolutionTier: '2k', imageAspectRatio: 'auto' }
+            : node,
+        ),
+      },
+      nodeId: 'image_1',
+      provider: openaiProvider,
+      token: 'token',
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
+      size: 'auto',
+      quality: 'high',
+    });
+  });
+
+
+  it('replaces upstream text prompt references inline', () => {
     const result = buildGenerationRequest({
       canvas: {
         ...canvas,
@@ -226,7 +276,7 @@ describe('generation client request building', () => {
 
     expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
       model: 'custom-image-model',
-      prompt: 'A ceramic cup @text:text_1\n\n参考文本：\n- use a clean studio background',
+      prompt: 'A ceramic cup use a clean studio background',
     });
   });
 
@@ -277,6 +327,8 @@ describe('generation client request building', () => {
       },
     });
     expect(result.ok && result.request.body).toBeInstanceOf(FormData);
+    expect(result.ok && (result.request.body as FormData).get('size')).toBe('1024x1024');
+    expect(result.ok && (result.request.body as FormData).get('quality')).toBe('high');
   });
 
   it('rejects OpenAI image references that cannot be uploaded as local data', () => {
@@ -330,7 +382,7 @@ describe('generation client request building', () => {
     expect(result.ok && JSON.parse(result.request.body as string)).toEqual({
       model: 'doubao-seedance-2-0-260128',
       content: [
-        { type: 'text', text: 'Slow camera orbit @image:image_asset_1' },
+        { type: 'text', text: 'Slow camera orbit 图片一' },
         {
           type: 'image_url',
           image_url: {
@@ -373,7 +425,7 @@ describe('generation client request building', () => {
     });
 
     expect(result.ok && JSON.parse(result.request.body as string).content).toEqual([
-      { type: 'text', text: '@图片 是主体，@图片 做背景参考' },
+      { type: 'text', text: '图片一 是主体，图片二 做背景参考' },
       {
         type: 'image_url',
         image_url: {
@@ -389,6 +441,46 @@ describe('generation client request building', () => {
         },
       },
     ]);
+  });
+
+  it('renders explicit image references as ordered readable labels before provider calls', () => {
+    const secondImage = {
+      id: 'image_asset_2',
+      title: 'Second Reference',
+      modelId: 'asset-image',
+      kind: 'imageAsset' as const,
+      x: 0,
+      y: 180,
+      assetName: 'second.png',
+      assetDataUrl: 'data:image/png;base64,c2Vjb25k',
+      assetMimeType: 'image/png',
+    };
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'video_1'
+            ? {
+                ...node,
+                prompt:
+                  '@image:image_asset_2 是人，@image:image_asset_1 场景换到室内，人吃菠萝蜜的场景描述。',
+              }
+            : node,
+        ).concat(secondImage),
+        edges: [
+          ...canvas.edges,
+          { id: 'edge_image_second_video', fromNodeId: 'image_asset_2', toNodeId: 'video_1' },
+        ],
+      },
+      nodeId: 'video_1',
+      provider: seedanceProvider,
+      token: 'seedance-token',
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string).content[0]).toEqual({
+      type: 'text',
+      text: '图片一 是人，图片二 场景换到室内，人吃菠萝蜜的场景描述。',
+    });
   });
 
   it('builds text generation requests with stream enabled when requested', () => {
@@ -416,9 +508,7 @@ describe('generation client request building', () => {
             {
               type: 'text',
               text:
-                'Rewrite this prompt @text:text_1 @image:image_asset_1\n\n' +
-                '引用文本：\n' +
-                '1. @text:text_1\nuse a clean studio background',
+                'Rewrite this prompt use a clean studio background 图片一',
             },
             {
               type: 'image_url',
@@ -470,9 +560,7 @@ describe('generation client request building', () => {
             {
               type: 'text',
               text:
-                'Rewrite this prompt @text:text_1 @image:image_asset_1\n\n' +
-                '引用文本：\n' +
-                '1. @text:text_1\nuse a clean studio background',
+                'Rewrite this prompt use a clean studio background 图片一',
             },
             {
               type: 'image',

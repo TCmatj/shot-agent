@@ -4,46 +4,44 @@ type ProviderSeed = Omit<ProviderConfig, 'models'> & {
   models: Array<Omit<ProviderModelConfig, 'canonicalModelId'> & { canonicalModelId?: string }>;
 };
 
-const chatCanonicalModelId = 'chat-openai';
-
 const defaultChatModels: Record<string, ProviderSeed['models']> = {
   openai: [
-    { id: 'model_openai_chat_gpt_5_4_mini', providerModelId: 'gpt-5.4-mini', canonicalModelId: chatCanonicalModelId, enabled: true },
-    { id: 'model_openai_chat_gpt_5_4', providerModelId: 'gpt-5.4', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_openai_chat_gpt_5_4_mini', providerModelId: 'gpt-5.4-mini', enabled: true },
+    { id: 'model_openai_chat_gpt_5_4', providerModelId: 'gpt-5.4', enabled: true },
   ],
   deepseek: [
-    { id: 'model_deepseek_chat', providerModelId: 'deepseek-chat', canonicalModelId: chatCanonicalModelId, enabled: true },
-    { id: 'model_deepseek_reasoner', providerModelId: 'deepseek-reasoner', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_deepseek_chat', providerModelId: 'deepseek-chat', enabled: true },
+    { id: 'model_deepseek_reasoner', providerModelId: 'deepseek-reasoner', enabled: true },
   ],
   google: [
-    { id: 'model_google_gemini_flash', providerModelId: 'gemini-2.5-flash', canonicalModelId: chatCanonicalModelId, enabled: true },
-    { id: 'model_google_gemini_pro', providerModelId: 'gemini-2.5-pro', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_google_gemini_flash', providerModelId: 'gemini-2.5-flash', enabled: true },
+    { id: 'model_google_gemini_pro', providerModelId: 'gemini-2.5-pro', enabled: true },
   ],
   mistral: [
-    { id: 'model_mistral_medium', providerModelId: 'mistral-medium-latest', canonicalModelId: chatCanonicalModelId, enabled: true },
-    { id: 'model_mistral_large', providerModelId: 'mistral-large-latest', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_mistral_medium', providerModelId: 'mistral-medium-latest', enabled: true },
+    { id: 'model_mistral_large', providerModelId: 'mistral-large-latest', enabled: true },
   ],
   groq: [
-    { id: 'model_groq_llama', providerModelId: 'llama-3.3-70b-versatile', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_groq_llama', providerModelId: 'llama-3.3-70b-versatile', enabled: true },
   ],
   openrouter: [
-    { id: 'model_openrouter_auto', providerModelId: 'openrouter/auto', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_openrouter_auto', providerModelId: 'openrouter/auto', enabled: true },
   ],
   together: [
-    { id: 'model_together_kimi', providerModelId: 'moonshotai/Kimi-K2.5', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_together_kimi', providerModelId: 'moonshotai/Kimi-K2.5', enabled: true },
   ],
   qwen: [
-    { id: 'model_qwen_plus', providerModelId: 'qwen-plus', canonicalModelId: chatCanonicalModelId, enabled: true },
-    { id: 'model_qwen_max', providerModelId: 'qwen-max', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_qwen_plus', providerModelId: 'qwen-plus', enabled: true },
+    { id: 'model_qwen_max', providerModelId: 'qwen-max', enabled: true },
   ],
   xai: [
-    { id: 'model_xai_grok', providerModelId: 'grok-4', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_xai_grok', providerModelId: 'grok-4', enabled: true },
   ],
   azureOpenai: [
-    { id: 'model_azure_gpt_5_4_mini', providerModelId: 'gpt-5.4-mini', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_azure_gpt_5_4_mini', providerModelId: 'gpt-5.4-mini', enabled: true },
   ],
   ollama: [
-    { id: 'model_ollama_llama', providerModelId: 'llama3.3', canonicalModelId: chatCanonicalModelId, enabled: true },
+    { id: 'model_ollama_llama', providerModelId: 'llama3.3', enabled: true },
   ],
 };
 
@@ -80,8 +78,8 @@ const providerSeeds: ProviderSeed[] = [
     apiTokenRef: 'secret_anthropic',
     enabled: true,
     models: [
-      { id: 'model_anthropic_chat', providerModelId: 'claude-sonnet-4-5', canonicalModelId: 'chat-anthropic', enabled: true },
-      { id: 'model_anthropic_opus', providerModelId: 'claude-opus-4-1', canonicalModelId: 'chat-anthropic', enabled: true },
+      { id: 'model_anthropic_chat', providerModelId: 'claude-sonnet-4-5', enabled: true },
+      { id: 'model_anthropic_opus', providerModelId: 'claude-opus-4-1', enabled: true },
     ],
   },
   {

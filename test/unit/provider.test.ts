@@ -60,7 +60,7 @@ describe('provider model mapping', () => {
         ...providers[0].models,
         {
           providerModelId: 'gpt-5.4-mini',
-          canonicalModelId: 'chat-openai',
+          canonicalModelId: 'gpt-5.4-mini',
           enabled: true,
         },
       ],
@@ -76,7 +76,7 @@ describe('provider model mapping', () => {
     expect(findProviderModelsForNodeModel(provider, 'gpt-5.4-mini', 'openai', 'chat')).toEqual([
       {
         providerModelId: 'gpt-5.4-mini',
-        canonicalModelId: 'chat-openai',
+        canonicalModelId: 'gpt-5.4-mini',
         enabled: true,
       },
     ]);
@@ -167,7 +167,7 @@ describe('provider model mapping', () => {
       models: [
         {
           providerModelId: 'claude-sonnet-4-5',
-          canonicalModelId: 'chat-anthropic',
+          canonicalModelId: 'claude-sonnet-4-5',
           enabled: true,
         },
       ],
@@ -176,7 +176,7 @@ describe('provider model mapping', () => {
     expect(findProviderModelsForNodeModel(provider, 'claude-sonnet-4-5', 'anthropic', 'chat')).toEqual([
       {
         providerModelId: 'claude-sonnet-4-5',
-        canonicalModelId: 'chat-anthropic',
+        canonicalModelId: 'claude-sonnet-4-5',
         enabled: true,
       },
     ]);
@@ -223,7 +223,7 @@ describe('provider model mapping', () => {
           {
             id: 'model_openai_chat',
             providerModelId: 'gpt-5.4-mini',
-            canonicalModelId: 'chat-openai',
+            canonicalModelId: 'gpt-5.4-mini',
             enabled: true,
           },
         ],
@@ -231,6 +231,42 @@ describe('provider model mapping', () => {
     ];
 
     expect(mergeProviderDefaults(savedProviders, defaults)[0].models).toHaveLength(2);
+  });
+
+  it('migrates old default chat mappings without duplicating provider models', () => {
+    const savedProviders = [
+      {
+        ...providers[0],
+        models: [
+          {
+            providerModelId: 'gpt-5.4-mini',
+            canonicalModelId: 'chat-openai',
+            enabled: true,
+          },
+        ],
+      },
+    ];
+    const defaults = [
+      {
+        ...providers[0],
+        models: [
+          {
+            id: 'model_openai_chat',
+            providerModelId: 'gpt-5.4-mini',
+            canonicalModelId: 'gpt-5.4-mini',
+            enabled: true,
+          },
+        ],
+      },
+    ];
+
+    expect(mergeProviderDefaults(savedProviders, defaults)[0].models).toEqual([
+      {
+        providerModelId: 'gpt-5.4-mini',
+        canonicalModelId: 'gpt-5.4-mini',
+        enabled: true,
+      },
+    ]);
   });
 
   it('edits provider drafts without mutating the saved provider list', () => {

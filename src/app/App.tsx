@@ -2,16 +2,30 @@ import {
   useEffect,
   useRef,
   useState,
+  type CompositionEvent as ReactCompositionEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent,
   type WheelEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import AlibabaCloudIcon from '@lobehub/icons/es/AlibabaCloud/components/Mono';
+import AnthropicIcon from '@lobehub/icons/es/Anthropic/components/Mono';
+import AzureAIIcon from '@lobehub/icons/es/AzureAI/components/Mono';
+import DeepSeekIcon from '@lobehub/icons/es/DeepSeek/components/Mono';
+import GeminiIcon from '@lobehub/icons/es/Gemini/components/Mono';
+import GroqIcon from '@lobehub/icons/es/Groq/components/Mono';
+import MistralIcon from '@lobehub/icons/es/Mistral/components/Mono';
+import OllamaIcon from '@lobehub/icons/es/Ollama/components/Mono';
+import OpenAIIcon from '@lobehub/icons/es/OpenAI/components/Mono';
+import OpenRouterIcon from '@lobehub/icons/es/OpenRouter/components/Mono';
+import QwenIcon from '@lobehub/icons/es/Qwen/components/Mono';
+import TogetherIcon from '@lobehub/icons/es/Together/components/Mono';
+import VolcengineIcon from '@lobehub/icons/es/Volcengine/components/Mono';
+import XAIIcon from '@lobehub/icons/es/XAI/components/Mono';
 import {
   BoxSelect,
   FilePlus2,
   FileText,
-  FolderOpen,
   FolderPlus,
   PanelLeftClose,
   PanelLeftOpen,
@@ -26,6 +40,7 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Search,
   Settings,
   SquareArrowUpRight,
   Trash2,
@@ -34,6 +49,18 @@ import {
   Video,
   X,
 } from 'lucide-react';
+import {
+  defaultImageAspectRatio,
+  defaultImageQuality,
+  defaultImageResolutionTier,
+  getImageAspectOptionLabel,
+  getImageAspectOptions,
+  getImageGenerationSize,
+  imageQualityOptions,
+  imageResolutionOptions,
+  type ImageQuality,
+  type ImageResolutionTier,
+} from '../domain/imageGenerationOptions';
 import {
   createProviderDraft,
   findChatProviders,
@@ -345,6 +372,9 @@ const initialCanvases: CanvasView[] = [
         kind: 'image',
         x: 120,
         y: 120,
+        imageResolutionTier: defaultImageResolutionTier,
+        imageAspectRatio: defaultImageAspectRatio,
+        imageQuality: defaultImageQuality,
       },
       {
         id: 'node_video_1',
@@ -429,6 +459,22 @@ type PromptReferenceSuggestion = {
 type PromptReferencePreview = PromptReferenceSuggestion & {
   kind: 'text' | 'image' | 'video';
 };
+
+function getPromptReferenceTokenForSuggestion(suggestion: PromptReferenceSuggestion): string {
+  if (suggestion.token === '@图片') {
+    return `@image:${suggestion.subtitle}`;
+  }
+
+  if (suggestion.token === '@视频') {
+    return `@video:${suggestion.subtitle}`;
+  }
+
+  if (suggestion.token === '@文本') {
+    return `@text:${suggestion.subtitle}`;
+  }
+
+  return suggestion.token;
+}
 
 function getNodeTextReferencePreview(node: CanvasNodeView): string | undefined {
   const text = node.kind === 'textAsset' ? node.textContent : getEffectiveNodeOutputText(node);
@@ -842,6 +888,7 @@ function PromptTextarea({
   onChange(value: string): void;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
+  const isComposingRef = useRef(false);
   const [trigger, setTrigger] = useState<ReturnType<typeof getPromptReferenceTrigger>>(null);
   const [previewImage, setPreviewImage] = useState<PromptReferencePreview | null>(null);
   const suggestions = getPromptReferenceSuggestions(canvas, node.id);
@@ -875,6 +922,10 @@ function PromptTextarea({
   }
 
   function refreshTrigger(target: HTMLElement) {
+    if (isComposingRef.current) {
+      return;
+    }
+
     const value = serializePromptEditor(target);
     setTrigger(getPromptReferenceTrigger(value, getPromptEditorCaretOffset(target)));
   }
@@ -885,6 +936,10 @@ function PromptTextarea({
     const previews = getPromptReferencePreviews(canvas, node.id, value);
 
     onChange(value);
+    if (isComposingRef.current) {
+      return;
+    }
+
     if (previews.length > 0 && /@(图片|视频|文本|image|video|text):?/.test(value)) {
       renderPromptEditorContent(target, value, previews, setPreviewImage);
       window.requestAnimationFrame(() => {
@@ -899,15 +954,20 @@ function PromptTextarea({
       return;
     }
 
-    const value = node.prompt ?? '';
-    const nextValue = `${value.slice(0, trigger.start)}${suggestion.token} ${value.slice(trigger.end)}`;
-    const nextCaret = trigger.start + suggestion.token.length + 1;
+    const value = editorRef.current ? serializePromptEditor(editorRef.current) : node.prompt ?? '';
+    const insertedToken = getPromptReferenceTokenForSuggestion(suggestion);
+    const nextValue = `${value.slice(0, trigger.start)}${insertedToken} ${value.slice(trigger.end)}`;
+    const nextCaret = trigger.start + insertedToken.length + 1;
 
     setTrigger(null);
     syncEditorValue(nextValue, nextCaret);
   }
 
   function handleEditorKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.nativeEvent.isComposing || isComposingRef.current) {
+      return;
+    }
+
     if (event.key !== 'Backspace' && event.key !== 'Delete') {
       return;
     }
@@ -935,6 +995,16 @@ function PromptTextarea({
     syncEditorValue(result.prompt, result.caret);
   }
 
+  function handleCompositionStart() {
+    isComposingRef.current = true;
+    setTrigger(null);
+  }
+
+  function handleCompositionEnd(event: ReactCompositionEvent<HTMLDivElement>) {
+    isComposingRef.current = false;
+    handleEditorInput(event.currentTarget);
+  }
+
   return (
     <div className="prompt-reference-field">
       <div
@@ -950,6 +1020,8 @@ function PromptTextarea({
         onClick={(event) => refreshTrigger(event.currentTarget)}
         onKeyUp={(event) => refreshTrigger(event.currentTarget)}
         onKeyDown={handleEditorKeyDown}
+        onCompositionStart={handleCompositionStart}
+        onCompositionEnd={handleCompositionEnd}
         onInput={(event) => handleEditorInput(event.currentTarget)}
       />
       {visibleSuggestions.length > 0 ? (
@@ -1095,6 +1167,165 @@ function getLocalStorageErrorMessage(error: unknown): string {
   return '画布保存到浏览器本地存储失败，当前更改可能刷新后丢失。';
 }
 
+function getProviderProtocolLabel(protocol: ProviderConfig['protocol']): string {
+  switch (protocol) {
+    case 'openai-compatible':
+      return 'OpenAI 格式';
+    case 'anthropic-compatible':
+      return 'Anthropic 格式';
+    case 'volcengine':
+      return '火山方舟';
+    case 'custom':
+      return '自定义';
+    default:
+      return '未知格式';
+  }
+}
+
+function getImageNodeSettingBadges(node: CanvasNodeView): string[] {
+  const resolutionTier = node.imageResolutionTier ?? defaultImageResolutionTier;
+  const aspectRatio = node.imageAspectRatio ?? defaultImageAspectRatio;
+  const quality = node.imageQuality ?? defaultImageQuality;
+  const resolutionLabel =
+    imageResolutionOptions.find((option) => option.value === resolutionTier)?.label ??
+    resolutionTier.toUpperCase();
+  const qualityLabel =
+    imageQualityOptions.find((option) => option.value === quality)?.label ?? quality;
+  const size = getImageGenerationSize(resolutionTier, aspectRatio);
+  const aspectLabel = size === 'auto' ? 'Auto' : `${aspectRatio} ${size}`;
+
+  return [resolutionLabel, aspectLabel, qualityLabel];
+}
+
+function getProviderInitial(providerName: string): string {
+  const compactName = providerName.trim();
+
+  if (!compactName) {
+    return 'AI';
+  }
+
+  const latinInitials = compactName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('');
+
+  return latinInitials || compactName.slice(0, 2).toUpperCase();
+}
+
+type ProviderBrandIconConfig = {
+  Icon: typeof OpenAIIcon;
+  background: string;
+  color: string;
+};
+
+const providerBrandIcons: Record<string, ProviderBrandIconConfig> = {
+  provider_anthropic: {
+    Icon: AnthropicIcon,
+    background: '#f1f0e8',
+    color: '#141413',
+  },
+  provider_azure_openai: {
+    Icon: AzureAIIcon,
+    background: '#0078d4',
+    color: '#ffffff',
+  },
+  provider_deepseek: {
+    Icon: DeepSeekIcon,
+    background: '#4d6bfe',
+    color: '#ffffff',
+  },
+  provider_google: {
+    Icon: GeminiIcon,
+    background: 'linear-gradient(135deg, #4285f4 0%, #a855f7 54%, #ea4335 100%)',
+    color: '#ffffff',
+  },
+  provider_groq: {
+    Icon: GroqIcon,
+    background: '#f55036',
+    color: '#ffffff',
+  },
+  provider_mistral: {
+    Icon: MistralIcon,
+    background: '#ffaf00',
+    color: '#171717',
+  },
+  provider_ollama: {
+    Icon: OllamaIcon,
+    background: '#ffffff',
+    color: '#111111',
+  },
+  provider_openai: {
+    Icon: OpenAIIcon,
+    background: '#111111',
+    color: '#ffffff',
+  },
+  provider_openrouter: {
+    Icon: OpenRouterIcon,
+    background: '#ffffff',
+    color: '#111111',
+  },
+  provider_qwen: {
+    Icon: QwenIcon,
+    background: '#615ced',
+    color: '#ffffff',
+  },
+  provider_seedance: {
+    Icon: VolcengineIcon,
+    background: '#1664ff',
+    color: '#ffffff',
+  },
+  provider_together: {
+    Icon: TogetherIcon,
+    background: '#fff7eb',
+    color: '#ff4d00',
+  },
+  provider_xai: {
+    Icon: XAIIcon,
+    background: '#101010',
+    color: '#ffffff',
+  },
+};
+
+function ProviderAvatar({
+  provider,
+  large = false,
+}: {
+  provider: ProviderConfig;
+  large?: boolean;
+}) {
+  const brandIcon = providerBrandIcons[provider.id] ?? (
+    provider.name.includes('阿里') || provider.name.includes('通义')
+      ? {
+          Icon: AlibabaCloudIcon,
+          background: '#ff6a00',
+          color: '#ffffff',
+        }
+      : undefined
+  );
+
+  if (brandIcon) {
+    const Icon = brandIcon.Icon;
+
+    return (
+      <span
+        className={`provider-avatar provider-avatar-brand ${large ? 'provider-avatar-large' : ''}`}
+        style={{ background: brandIcon.background, color: brandIcon.color }}
+        aria-hidden="true"
+      >
+        <Icon size={large ? 26 : 20} />
+      </span>
+    );
+  }
+
+  return (
+    <span className={`provider-avatar ${large ? 'provider-avatar-large' : ''}`} aria-hidden="true">
+      {getProviderInitial(provider.name)}
+    </span>
+  );
+}
+
 export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -1103,6 +1334,8 @@ export function App() {
   const [editingProviderIds, setEditingProviderIds] = useState<string[]>([]);
   const [fetchingProviderModelIds, setFetchingProviderModelIds] = useState<string[]>([]);
   const [showProviderManager, setShowProviderManager] = useState(false);
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
+  const [providerSearchQuery, setProviderSearchQuery] = useState('');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [workspaceState, setWorkspaceState] = useState(() => {
     if (typeof window === 'undefined') {
@@ -1185,6 +1418,39 @@ export function App() {
       (draft) => !providers.some((provider) => provider.id === draft.id),
     ),
   ];
+  const normalizedProviderSearchQuery = providerSearchQuery.trim().toLowerCase();
+  const filteredProviderRows = providerRows.filter((provider) => {
+    if (!normalizedProviderSearchQuery) {
+      return true;
+    }
+
+    const searchableText = [
+      provider.name,
+      provider.protocol,
+      provider.baseURL,
+      ...provider.models.flatMap((model) => [
+        model.providerModelId,
+        model.canonicalModelId,
+        model.displayName ?? '',
+      ]),
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    return searchableText.includes(normalizedProviderSearchQuery);
+  });
+  const selectedProvider =
+    providerRows.find((provider) => provider.id === selectedProviderId) ??
+    filteredProviderRows[0] ??
+    providerRows[0] ??
+    null;
+  const selectedProviderView =
+    selectedProvider ? providerDrafts[selectedProvider.id] ?? selectedProvider : null;
+  const selectedProviderIsFetching =
+    selectedProvider ? fetchingProviderModelIds.includes(selectedProvider.id) : false;
+  const selectedProviderHasDraft = selectedProvider
+    ? Boolean(providerDrafts[selectedProvider.id])
+    : false;
   const minimapBounds = getCanvasContentBounds(activeCanvas?.nodes ?? [], canvasNodeSize);
   const minimapScale = Math.min(
     minimapSize.width / minimapBounds.width,
@@ -1332,6 +1598,21 @@ export function App() {
       setCanvasMessage(getLocalStorageErrorMessage(error));
     }
   }, [providers]);
+
+  useEffect(() => {
+    if (!showProviderManager) {
+      return;
+    }
+
+    if (providerRows.length === 0) {
+      setSelectedProviderId(null);
+      return;
+    }
+
+    if (!selectedProviderId || !providerRows.some((provider) => provider.id === selectedProviderId)) {
+      setSelectedProviderId(providerRows[0].id);
+    }
+  }, [providerRows, selectedProviderId, showProviderManager]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1746,6 +2027,10 @@ export function App() {
         kind: template.kind,
         x: point.x,
         y: point.y,
+        imageResolutionTier:
+          template.kind === 'image' ? defaultImageResolutionTier : undefined,
+        imageAspectRatio: template.kind === 'image' ? defaultImageAspectRatio : undefined,
+        imageQuality: template.kind === 'image' ? defaultImageQuality : undefined,
         textContent: template.kind === 'textAsset' ? '在这里输入文本' : undefined,
       },
     ]);
@@ -2333,6 +2618,8 @@ export function App() {
 
     setProviderDrafts((current) => ({ ...current, [id]: draft }));
     setEditingProviderIds((current) => [...current, id]);
+    setSelectedProviderId(id);
+    setShowProviderManager(true);
   }
 
   function addProviderModel(providerId: string) {
@@ -2347,6 +2634,13 @@ export function App() {
           enabled: true,
         },
       ],
+    }));
+  }
+
+  function removeProviderModel(providerId: string, modelIndex: number) {
+    updateProviderDraft(providerId, (provider) => ({
+      ...provider,
+      models: provider.models.filter((_model, currentIndex) => currentIndex !== modelIndex),
     }));
   }
 
@@ -2369,6 +2663,7 @@ export function App() {
       return rest;
     });
     setEditingProviderIds((current) => current.filter((id) => id !== providerId));
+    setSelectedProviderId((current) => (current === providerId ? null : current));
   }
 
   function startEditProvider(provider: ProviderConfig) {
@@ -2421,7 +2716,7 @@ export function App() {
 
       const providerWithModels = mergeFetchedProviderModels(provider, result.models);
 
-      if (editingProviderIds.includes(providerId)) {
+      if (providerDrafts[providerId] || editingProviderIds.includes(providerId)) {
         setProviderDrafts((current) => ({
           ...current,
           [providerId]: providerWithModels,
@@ -2910,6 +3205,31 @@ export function App() {
         <section className="panel storage-panel">
           <div className="panel-title-row">
             <h2>存储</h2>
+            <div className="storage-title-actions">
+              <button
+                type="button"
+                className="icon-button storage-select-icon-button"
+                aria-label="选择画布存储文件夹"
+                title="选择或重新授权画布存储文件夹"
+                onClick={() => void chooseCanvasStorageFolder()}
+              >
+                <FolderPlus size={15} />
+              </button>
+              <button
+                type="button"
+                className="icon-button storage-migrate-icon-button"
+                disabled={!folderStorageReady || !rootDirectoryHandle}
+                aria-label="迁移到文件夹"
+                title={
+                  folderStorageReady && rootDirectoryHandle
+                    ? '将当前浏览器中的画布和资产写入已选择的文件夹'
+                    : '请先选择画布存储文件夹'
+                }
+                onClick={() => void migrateCurrentWorkspaceToFolder()}
+              >
+                <Save size={15} />
+              </button>
+            </div>
           </div>
           <label>
             画布存储文件夹
@@ -2924,31 +3244,6 @@ export function App() {
               ? `当前：${rootDirectoryHandle.name} / 每个画布独立文件夹`
               : '当前：未连接存储文件夹，无法保存素材'}
           </p>
-          <div className="storage-actions">
-            <button
-              type="button"
-              className="storage-action-button storage-migrate-button"
-              disabled={!folderStorageReady || !rootDirectoryHandle}
-              title={
-                folderStorageReady && rootDirectoryHandle
-                  ? '将当前浏览器中的画布和资产写入已选择的文件夹'
-                  : '请先打开画布存储文件夹'
-              }
-              onClick={() => void migrateCurrentWorkspaceToFolder()}
-            >
-              <Save size={15} />
-              <span>迁移到文件夹</span>
-            </button>
-            <button
-              type="button"
-              className="storage-action-button storage-folder-button"
-              title="选择或重新授权画布存储文件夹"
-              onClick={() => void chooseCanvasStorageFolder()}
-            >
-              <FolderOpen size={15} />
-              <span>打开文件夹</span>
-            </button>
-          </div>
         </section>
         <section className="panel">
           <div className="panel-title-row">
@@ -3070,12 +3365,15 @@ export function App() {
           </div>
           <div className="toolbar-actions">
             {showProviderManager ? (
-              <div className="toolbar-provider-actions">
-                <button type="button" onClick={addProvider}>
-                  <Plus size={18} />
-                  新增供应商
-                </button>
-              </div>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="关闭供应商管理"
+                title="关闭供应商管理"
+                onClick={returnToCanvas}
+              >
+                <X size={18} />
+              </button>
             ) : (
               <button type="button">
                 <Play size={18} />
@@ -3086,222 +3384,305 @@ export function App() {
         </div>
         {showProviderManager ? (
           <div className="provider-manager-view">
-            <div className="provider-manager-header">
-              <span>供应商管理</span>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="关闭供应商管理"
-                title="关闭供应商管理"
-                onClick={returnToCanvas}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div className="provider-table provider-table-header">
-              <span>供应商名称</span>
-              <span>Base URL</span>
-              <span>API Key / 引用</span>
-              <span>协议</span>
-              <span>状态</span>
-              <span>模型映射</span>
-              <span>操作</span>
-            </div>
-            <div className="provider-list">
-              {providerRows.map((provider) => {
-                const isEditingProvider = editingProviderIds.includes(provider.id);
-                const isFetchingProviderModels = fetchingProviderModelIds.includes(provider.id);
-                const providerView = providerDrafts[provider.id] ?? provider;
+            <div className="provider-settings-shell">
+              <aside className="provider-settings-sidebar" aria-label="供应商列表">
+                <label className="provider-search">
+                  <Search size={16} />
+                  <input
+                    value={providerSearchQuery}
+                    placeholder="搜索供应商或模型"
+                    onChange={(event) => setProviderSearchQuery(event.target.value)}
+                  />
+                </label>
+                <div className="provider-nav-list">
+                  {filteredProviderRows.map((provider) => {
+                    const isActive = provider.id === selectedProvider?.id;
+                    const draftProvider = providerDrafts[provider.id] ?? provider;
+                    const enabledModels = draftProvider.models.filter((model) => model.enabled);
 
-                return (
-                <section
-                  key={provider.id}
-                  className={`provider-row ${isEditingProvider ? 'is-editing' : ''}`}
-                >
-                  <label>
-                    供应商名称
-                    <input
-                      value={providerView.name}
-                      disabled={!isEditingProvider}
-                      onChange={(event) =>
-                        updateProviderDraft(provider.id, (current) => ({
-                          ...current,
-                          name: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Base URL
-                    <input
-                      value={providerView.baseURL}
-                      disabled={!isEditingProvider}
-                      onChange={(event) =>
-                        updateProviderDraft(provider.id, (current) => ({
-                          ...current,
-                          baseURL: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    API Key / 引用
-                    <input
-                      value={providerView.apiTokenRef}
-                      disabled={!isEditingProvider}
-                      onChange={(event) =>
-                        updateProviderDraft(provider.id, (current) => ({
-                          ...current,
-                          apiTokenRef: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    协议
-                    <select
-                      value={providerView.protocol}
-                      disabled={!isEditingProvider}
-                      onChange={(event) =>
-                        updateProviderDraft(provider.id, (current) => ({
-                          ...current,
-                          protocol: event.target.value as ProviderConfig['protocol'],
-                        }))
-                      }
-                    >
-                      <option value="openai-compatible">OpenAI Compatible</option>
-                      <option value="anthropic-compatible">Anthropic Compatible</option>
-                      <option value="volcengine">火山方舟</option>
-                      <option value="custom">自定义</option>
-                    </select>
-                  </label>
-                  <label className="inline-toggle">
-                    <input
-                      type="checkbox"
-                      checked={providerView.enabled}
-                      disabled={!isEditingProvider}
-                      onChange={(event) =>
-                        updateProviderDraft(provider.id, (current) => ({
-                          ...current,
-                          enabled: event.target.checked,
-                        }))
-                      }
-                    />
-                    启用
-                  </label>
-                  <div className="provider-models">
-                    {providerView.models.map((model, modelIndex) => (
-                      <div key={model.id ?? `model_${modelIndex}`}>
-                        <label>
-                          供应商模型 ID
-                          <input
-                            value={model.providerModelId}
-                            disabled={!isEditingProvider}
-                            onChange={(event) =>
-                              updateProviderDraft(provider.id, (current) => ({
-                                ...current,
-                                models: current.models.map((currentModel, currentIndex) =>
-                                  currentIndex === modelIndex
-                                    ? {
-                                        ...currentModel,
-                                        providerModelId: event.target.value,
-                                        canonicalModelId:
-                                          currentModel.canonicalModelId ===
-                                          currentModel.providerModelId
-                                            ? event.target.value
-                                            : currentModel.canonicalModelId,
-                                      }
-                                    : currentModel,
-                                ),
-                              }))
-                            }
-                          />
-                        </label>
-                        <label>
-                          映射后标准模型 ID
-                          <input
-                            value={model.canonicalModelId}
-                            disabled={!isEditingProvider}
-                            onChange={(event) =>
-                              updateProviderDraft(provider.id, (current) => ({
-                                ...current,
-                                models: current.models.map((currentModel, currentIndex) =>
-                                  currentIndex === modelIndex
-                                    ? { ...currentModel, canonicalModelId: event.target.value }
-                                    : currentModel,
-                                ),
-                              }))
-                            }
-                          />
-                        </label>
-                        <label className="inline-toggle">
+                    return (
+                      <button
+                        key={provider.id}
+                        type="button"
+                        className={`provider-nav-item ${isActive ? 'is-active' : ''}`}
+                        onClick={() => {
+                          setSelectedProviderId(provider.id);
+                          if (!providerDrafts[provider.id]) {
+                            startEditProvider(provider);
+                          }
+                        }}
+                      >
+                        <ProviderAvatar provider={draftProvider} />
+                        <span className="provider-nav-copy">
+                          <strong>{draftProvider.name}</strong>
+                          <small>
+                            {getProviderProtocolLabel(draftProvider.protocol)} ·{' '}
+                            {enabledModels.length} 个模型
+                          </small>
+                        </span>
+                        <span
+                          className={`provider-status-dot ${draftProvider.enabled ? 'is-on' : ''}`}
+                          aria-label={draftProvider.enabled ? '已启用' : '未启用'}
+                        />
+                      </button>
+                    );
+                  })}
+                  {filteredProviderRows.length === 0 ? (
+                    <div className="provider-empty-state">没有匹配的供应商</div>
+                  ) : null}
+                </div>
+                <button type="button" className="provider-add-button" onClick={addProvider}>
+                  <Plus size={17} />
+                  添加服务商
+                </button>
+              </aside>
+              <section className="provider-settings-detail">
+                {selectedProvider && selectedProviderView ? (
+                  <>
+                    <header className="provider-detail-header">
+                      <div className="provider-detail-title">
+                        <ProviderAvatar provider={selectedProviderView} large />
+                        <div>
+                          <h2>{selectedProviderView.name}</h2>
+                          <p>{getProviderProtocolLabel(selectedProviderView.protocol)}</p>
+                        </div>
+                      </div>
+                      <div className="provider-detail-actions">
+                        <span
+                          className={`provider-config-chip ${
+                            selectedProviderView.apiTokenRef ? 'is-configured' : ''
+                          }`}
+                        >
+                          {selectedProviderView.apiTokenRef ? '已配置' : '未配置'}
+                        </span>
+                        <label className="provider-switch">
                           <input
                             type="checkbox"
-                            checked={model.enabled}
-                            disabled={!isEditingProvider}
+                            checked={selectedProviderView.enabled}
                             onChange={(event) =>
-                              updateProviderDraft(provider.id, (current) => ({
+                              updateProviderDraft(selectedProvider.id, (current) => ({
                                 ...current,
-                                models: current.models.map((currentModel, currentIndex) =>
-                                  currentIndex === modelIndex
-                                    ? { ...currentModel, enabled: event.target.checked }
-                                    : currentModel,
-                                ),
+                                enabled: event.target.checked,
                               }))
                             }
                           />
-                          启用
+                          <span />
                         </label>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label="删除供应商"
+                          title="删除供应商"
+                          onClick={() => deleteProvider(selectedProvider.id)}
+                        >
+                          <Trash2 size={17} />
+                        </button>
                       </div>
-                    ))}
-                    <button
-                      type="button"
-                      disabled={!isEditingProvider}
-                      onClick={() => addProviderModel(provider.id)}
-                    >
-                      <Plus size={16} />
-                      添加模型映射
-                    </button>
-                  </div>
-                  <div className="provider-row-actions">
-                    {isEditingProvider ? (
-                      <>
-                        <button type="button" onClick={() => saveEditedProvider(provider.id)}>
-                          <Save size={16} />
-                          保存
+                    </header>
+                    <div className="provider-detail-body">
+                      <section className="provider-form-section">
+                        <div className="provider-section-heading">
+                          <h3>服务商</h3>
+                          <p>配置请求协议、地址和密钥引用。</p>
+                        </div>
+                        <div className="provider-form-grid">
+                          <label>
+                            服务商名称
+                            <input
+                              value={selectedProviderView.name}
+                              onChange={(event) =>
+                                updateProviderDraft(selectedProvider.id, (current) => ({
+                                  ...current,
+                                  name: event.target.value,
+                                }))
+                              }
+                            />
+                          </label>
+                          <label>
+                            API 风格
+                            <select
+                              value={selectedProviderView.protocol}
+                              onChange={(event) =>
+                                updateProviderDraft(selectedProvider.id, (current) => ({
+                                  ...current,
+                                  protocol: event.target.value as ProviderConfig['protocol'],
+                                }))
+                              }
+                            >
+                              <option value="openai-compatible">OpenAI Compatible</option>
+                              <option value="anthropic-compatible">Anthropic Compatible</option>
+                              <option value="volcengine">火山方舟</option>
+                              <option value="custom">自定义</option>
+                            </select>
+                          </label>
+                          <label>
+                            API Key / 密钥引用
+                            <input
+                              value={selectedProviderView.apiTokenRef}
+                              placeholder="secret_openai 或 sk-..."
+                              onChange={(event) =>
+                                updateProviderDraft(selectedProvider.id, (current) => ({
+                                  ...current,
+                                  apiTokenRef: event.target.value,
+                                }))
+                              }
+                            />
+                          </label>
+                          <label className="provider-url-field">
+                            API URL
+                            <span>
+                              <input
+                                value={selectedProviderView.baseURL}
+                                onChange={(event) =>
+                                  updateProviderDraft(selectedProvider.id, (current) => ({
+                                    ...current,
+                                    baseURL: event.target.value,
+                                  }))
+                                }
+                              />
+                              <button
+                                type="button"
+                                disabled={selectedProviderIsFetching}
+                                onClick={() => void refreshProviderModels(selectedProvider.id)}
+                              >
+                                <RefreshCw size={15} />
+                                {selectedProviderIsFetching ? '测试中' : '测试 API'}
+                              </button>
+                            </span>
+                          </label>
+                        </div>
+                        <button type="button" className="provider-secondary-button">
+                          添加自定义请求头
                         </button>
-                        <button type="button" onClick={() => cancelEditProvider(provider.id)}>
-                          <X size={16} />
-                          取消
-                        </button>
-                      </>
-                    ) : (
-                      <button type="button" onClick={() => startEditProvider(provider)}>
-                        <Pencil size={16} />
-                        编辑
+                      </section>
+                      <section className="provider-form-section">
+                        <div className="provider-section-heading">
+                          <h3>模型</h3>
+                          <p>左侧为供应商真实模型 ID，右侧为节点使用的标准模型 ID。</p>
+                        </div>
+                        <div className="provider-model-toolbar">
+                          <button
+                            type="button"
+                            onClick={() => addProviderModel(selectedProvider.id)}
+                          >
+                            <Plus size={16} />
+                            添加模型
+                          </button>
+                          <button
+                            type="button"
+                            disabled={selectedProviderIsFetching}
+                            onClick={() => void refreshProviderModels(selectedProvider.id)}
+                          >
+                            <RefreshCw size={16} />
+                            {selectedProviderIsFetching ? '获取中' : '获取模型列表'}
+                          </button>
+                        </div>
+                        <div className="provider-model-list">
+                          {selectedProviderView.models.map((model, modelIndex) => (
+                            <div className="provider-model-item" key={model.id ?? modelIndex}>
+                              <label className="provider-model-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={model.enabled}
+                                  onChange={(event) =>
+                                    updateProviderDraft(selectedProvider.id, (current) => ({
+                                      ...current,
+                                      models: current.models.map((currentModel, currentIndex) =>
+                                        currentIndex === modelIndex
+                                          ? { ...currentModel, enabled: event.target.checked }
+                                          : currentModel,
+                                      ),
+                                    }))
+                                  }
+                                />
+                                <span />
+                              </label>
+                              <label>
+                                供应商模型 ID
+                                <input
+                                  value={model.providerModelId}
+                                  onChange={(event) =>
+                                    updateProviderDraft(selectedProvider.id, (current) => ({
+                                      ...current,
+                                      models: current.models.map((currentModel, currentIndex) =>
+                                        currentIndex === modelIndex
+                                          ? {
+                                              ...currentModel,
+                                              providerModelId: event.target.value,
+                                              canonicalModelId:
+                                                currentModel.canonicalModelId ===
+                                                currentModel.providerModelId
+                                                  ? event.target.value
+                                                  : currentModel.canonicalModelId,
+                                            }
+                                          : currentModel,
+                                      ),
+                                    }))
+                                  }
+                                />
+                              </label>
+                              <label>
+                                映射后标准模型 ID
+                                <input
+                                  value={model.canonicalModelId}
+                                  onChange={(event) =>
+                                    updateProviderDraft(selectedProvider.id, (current) => ({
+                                      ...current,
+                                      models: current.models.map((currentModel, currentIndex) =>
+                                        currentIndex === modelIndex
+                                          ? {
+                                              ...currentModel,
+                                              canonicalModelId: event.target.value,
+                                            }
+                                          : currentModel,
+                                      ),
+                                    }))
+                                  }
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                className="icon-button"
+                                aria-label="删除模型映射"
+                                title="删除模型映射"
+                                onClick={() => removeProviderModel(selectedProvider.id, modelIndex)}
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </div>
+                          ))}
+                          {selectedProviderView.models.length === 0 ? (
+                            <div className="provider-empty-state">
+                              还没有模型映射，添加模型后节点才能选择这个供应商。
+                            </div>
+                          ) : null}
+                        </div>
+                      </section>
+                    </div>
+                    <footer className="provider-detail-footer">
+                      <button
+                        type="button"
+                        className="provider-secondary-button"
+                        disabled={!selectedProviderHasDraft}
+                        onClick={() => cancelEditProvider(selectedProvider.id)}
+                      >
+                        取消更改
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      disabled={isFetchingProviderModels}
-                      onClick={() => void refreshProviderModels(provider.id)}
-                    >
-                      <RefreshCw size={16} />
-                      {isFetchingProviderModels ? '获取中' : '获取模型列表'}
-                    </button>
-                    <button
-                      type="button"
-                      className="danger-button"
-                      disabled={isEditingProvider}
-                      onClick={() => deleteProvider(provider.id)}
-                    >
-                      <Trash2 size={16} />
-                      删除
-                    </button>
-                  </div>
-                </section>
-                );
-              })}
+                      <button
+                        type="button"
+                        className="provider-save-button"
+                        disabled={!selectedProviderHasDraft}
+                        onClick={() => saveEditedProvider(selectedProvider.id)}
+                      >
+                        <Save size={17} />
+                        保存 AI 服务商
+                      </button>
+                    </footer>
+                  </>
+                ) : (
+                  <div className="provider-detail-empty">请选择或添加一个服务商。</div>
+                )}
+              </section>
             </div>
           </div>
         ) : (
@@ -3536,6 +3917,13 @@ export function App() {
                         </div>
                       )}
                       <p>{node.modelId}</p>
+                      {node.kind === 'image' ? (
+                        <div className="node-image-settings-meta" aria-label="图片生成参数">
+                          {getImageNodeSettingBadges(node).map((badge) => (
+                            <span key={badge}>{badge}</span>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </header>
                   <div className="node-body">
@@ -3872,6 +4260,76 @@ export function App() {
                   ))}
                 </select>
               </label>
+              {selectedNode.kind === 'image' ? (
+                <div className="image-generation-settings">
+                  <label>
+                    分辨率
+                    <select
+                      value={selectedNode.imageResolutionTier ?? defaultImageResolutionTier}
+                      onChange={(event) => {
+                        const nextTier = event.target.value as ImageResolutionTier;
+                        const currentRatio =
+                          selectedNode.imageAspectRatio ?? defaultImageAspectRatio;
+                        const nextRatio = getImageAspectOptions(nextTier).some(
+                          (option) => option.ratio === currentRatio,
+                        )
+                          ? currentRatio
+                          : defaultImageAspectRatio;
+
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          imageResolutionTier: nextTier,
+                          imageAspectRatio: nextRatio,
+                        }));
+                      }}
+                    >
+                      {imageResolutionOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    比例
+                    <select
+                      value={selectedNode.imageAspectRatio ?? defaultImageAspectRatio}
+                      onChange={(event) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          imageAspectRatio: event.target.value,
+                        }))
+                      }
+                    >
+                      {getImageAspectOptions(
+                        selectedNode.imageResolutionTier ?? defaultImageResolutionTier,
+                      ).map((option) => (
+                        <option key={option.ratio} value={option.ratio}>
+                          {getImageAspectOptionLabel(option)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    质量
+                    <select
+                      value={selectedNode.imageQuality ?? defaultImageQuality}
+                      onChange={(event) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          imageQuality: event.target.value as ImageQuality,
+                        }))
+                      }
+                    >
+                      {imageQualityOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label} - {option.description}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              ) : null}
               <label>
                 提示词
                 <PromptTextarea

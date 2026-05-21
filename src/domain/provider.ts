@@ -95,21 +95,42 @@ export function mergeProviderDefaults(
     const missingModels = defaultProvider.models.filter(
       (defaultModel) =>
         !provider.models.some(
-          (model) =>
-            model.providerModelId === defaultModel.providerModelId &&
-            model.canonicalModelId === defaultModel.canonicalModelId,
+          (model) => model.providerModelId === defaultModel.providerModelId,
         ),
     );
 
     return {
       ...provider,
       models: [
-        ...provider.models.map((model) => ({ ...model })),
+        ...provider.models.map((model) => {
+          const defaultModel = defaultProvider.models.find(
+            (current) => current.providerModelId === model.providerModelId,
+          );
+
+          if (defaultModel && isLegacyChatModelMapping(model, defaultModel)) {
+            return {
+              ...model,
+              canonicalModelId: defaultModel.canonicalModelId,
+            };
+          }
+
+          return { ...model };
+        }),
         ...missingModels.map((model) => ({ ...model })),
       ],
     };
   });
 
+}
+
+function isLegacyChatModelMapping(
+  model: ProviderModelConfig,
+  defaultModel: ProviderModelConfig,
+): boolean {
+  return (
+    defaultModel.canonicalModelId === defaultModel.providerModelId &&
+    (model.canonicalModelId === 'chat-openai' || model.canonicalModelId === 'chat-anthropic')
+  );
 }
 
 export function findProvidersForCanonicalModel(

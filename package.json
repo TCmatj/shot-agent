@@ -11,6 +11,7 @@
     "lint": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@lobehub/icons": "^5.8.0",
     "@vitejs/plugin-react": "^5.0.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",

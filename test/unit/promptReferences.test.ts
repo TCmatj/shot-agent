@@ -34,6 +34,17 @@ describe('parsePromptReferences', () => {
     ]);
   });
 
+  it('keeps explicit image references from consuming Chinese placeholder order', () => {
+    const refs = parsePromptReferences('@image:selected 是主体，@图片 是参考背景', {
+      image: ['image_1'],
+    });
+
+    expect(refs).toEqual([
+      { token: '@image:selected', assetId: 'selected', kind: 'image' },
+      { token: '@图片', assetId: 'image_1', kind: 'image' },
+    ]);
+  });
+
   it('ignores unsupported reference kinds', () => {
     const refs = parsePromptReferences('忽略 @unknown:asset_1');
 

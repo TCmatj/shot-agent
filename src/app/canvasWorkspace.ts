@@ -1,5 +1,9 @@
 import type { OutputVersion } from '../domain/outputVersions';
 import type { GenerationRecord } from '../domain/generationHistory';
+import type {
+  ImageQuality,
+  ImageResolutionTier,
+} from '../domain/imageGenerationOptions';
 
 export type CanvasNodeKind = 'image' | 'video' | 'chat' | 'textAsset' | 'imageAsset' | 'videoAsset';
 
@@ -10,6 +14,9 @@ export type CanvasNodeView = {
   chatFormat?: 'openai' | 'anthropic';
   providerId?: string;
   providerModelId?: string;
+  imageResolutionTier?: ImageResolutionTier;
+  imageAspectRatio?: string;
+  imageQuality?: ImageQuality;
   kind: CanvasNodeKind;
   x: number;
   y: number;

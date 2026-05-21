@@ -27,14 +27,17 @@ export function parsePromptReferences(
   };
 
   for (const match of prompt.matchAll(referencePattern)) {
-    const kind = (match[1] as AssetKind | undefined) ?? naturalReferenceKindByLabel[match[3]];
+    const explicitKind = match[1] as AssetKind | undefined;
+    const kind = explicitKind ?? naturalReferenceKindByLabel[match[3]];
 
     if (!kind || !supportedKinds.has(kind)) {
       continue;
     }
 
     const assetId = match[2] ?? resolution[kind]?.[occurrenceIndexes[kind]];
-    occurrenceIndexes[kind] += 1;
+    if (!explicitKind) {
+      occurrenceIndexes[kind] += 1;
+    }
 
     if (!assetId) {
       continue;
@@ -48,6 +51,44 @@ export function parsePromptReferences(
   }
 
   return references;
+}
+
+export function replacePromptReferences(
+  prompt: string,
+  resolution: PromptReferenceResolution,
+  replacer: (reference: PromptReference) => string | undefined,
+): string {
+  const occurrenceIndexes: Record<AssetKind, number> = {
+    image: 0,
+    video: 0,
+    audio: 0,
+    file: 0,
+    text: 0,
+  };
+
+  return prompt.replace(referencePattern, (token, explicitKind, assetId, naturalLabel) => {
+    const kind =
+      (explicitKind as AssetKind | undefined) ?? naturalReferenceKindByLabel[naturalLabel];
+
+    if (!kind || !supportedKinds.has(kind)) {
+      return token;
+    }
+
+    const resolvedAssetId = assetId ?? resolution[kind]?.[occurrenceIndexes[kind]];
+    if (!explicitKind) {
+      occurrenceIndexes[kind] += 1;
+    }
+
+    if (!resolvedAssetId) {
+      return token;
+    }
+
+    return replacer({
+      token,
+      assetId: resolvedAssetId,
+      kind,
+    }) ?? token;
+  });
 }
 
 export function removePromptReferenceAtCaret(

@@ -1,6 +1,14 @@
 import { getUpstreamNodeIds, type CanvasNodeView, type CanvasView } from '../app/canvasWorkspace';
+import {
+  defaultImageQuality,
+  getImageGenerationSize,
+} from '../domain/imageGenerationOptions';
 import { getEffectiveOutputText } from '../domain/outputVersions';
-import { parsePromptReferences, type PromptReferenceResolution } from '../domain/promptReferences';
+import {
+  parsePromptReferences,
+  replacePromptReferences,
+  type PromptReferenceResolution,
+} from '../domain/promptReferences';
 import {
   mapCanonicalModelToProviderModel,
   type ProviderConfig,
@@ -448,13 +456,16 @@ function buildOpenAIImageRequest(
   const imageInputs = collectInputAssets(node, canvas).filter(
     (asset) => asset.role === 'reference_image',
   );
+  const size = getImageGenerationSize(node.imageResolutionTier, node.imageAspectRatio);
+  const quality = node.imageQuality ?? defaultImageQuality;
 
   if (imageInputs.length > 0) {
     const body = new FormData();
     body.set('model', model);
     body.set('prompt', prompt);
     body.set('n', '1');
-    body.set('size', '1024x1024');
+    body.set('size', size);
+    body.set('quality', quality);
     imageInputs.forEach((asset, index) => {
       const blob = dataUrlToBlob(asset.content, asset.mimeType);
       if (blob) {
@@ -484,7 +495,8 @@ function buildOpenAIImageRequest(
       model,
       prompt,
       n: 1,
-      size: '1024x1024',
+      size,
+      quality,
     }),
     responseKind: 'image',
   };
@@ -631,24 +643,104 @@ function buildSeedanceVideoTaskRequest(
 }
 
 function buildPrompt(node: CanvasNodeView, canvas: CanvasView): string {
-  const ownPrompt = node.prompt?.trim() ?? '';
-  const textInputs = collectInputAssets(node, canvas).filter(
-    (asset) => asset.role === 'text' && asset.content.trim(),
+  const inputAssets = collectInputAssets(node, canvas);
+  return renderPromptForModel(node.prompt?.trim() ?? '', node, canvas, inputAssets);
+}
+
+function renderPromptForModel(
+  prompt: string,
+  node: CanvasNodeView,
+  canvas: CanvasView,
+  inputAssets: InputAsset[],
+): string {
+  const labelQueues = buildPromptReferenceLabelQueues(inputAssets);
+
+  return replacePromptReferences(
+    prompt,
+    getPromptReferenceResolution(node, canvas),
+    (reference) => {
+      if (reference.kind === 'text') {
+        return inputAssets.find(
+          (asset) =>
+            asset.role === 'text' &&
+            asset.node.id === reference.assetId &&
+            asset.token === reference.token,
+        )?.content.trim();
+      }
+
+      const queue = labelQueues.get(getPromptReferenceKey(reference.kind, reference.assetId, reference.token));
+
+      return queue?.shift();
+    },
   );
+}
 
-  if (textInputs.length === 0) {
-    return ownPrompt;
+function buildPromptReferenceLabelQueues(inputAssets: InputAsset[]): Map<string, string[]> {
+  const kindCounts: Record<'image' | 'video', number> = {
+    image: 0,
+    video: 0,
+  };
+  const queues = new Map<string, string[]>();
+
+  inputAssets.forEach((asset) => {
+    const kind = getInputAssetKind(asset);
+    if (kind === 'text') {
+      return;
+    }
+
+    kindCounts[kind] += 1;
+    const label = getReferenceLabel(kind, kindCounts[kind]);
+    const key = getPromptReferenceKey(kind, asset.node.id, asset.token);
+    const queue = queues.get(key) ?? [];
+
+    queue.push(label);
+    queues.set(key, queue);
+  });
+
+  return queues;
+}
+
+function getInputAssetKind(asset: InputAsset): 'image' | 'video' | 'text' {
+  if (asset.role === 'reference_image') {
+    return 'image';
   }
 
-  if (node.kind !== 'chat') {
-    return `${ownPrompt}\n\n参考文本：\n${textInputs
-      .map((asset) => `- ${asset.content.trim()}`)
-      .join('\n')}`;
+  if (asset.role === 'reference_video') {
+    return 'video';
   }
 
-  return `${ownPrompt}\n\n引用文本：\n${textInputs
-    .map((asset, index) => `${index + 1}. ${asset.token ?? asset.node.id}\n${asset.content.trim()}`)
-    .join('\n\n')}`;
+  return 'text';
+}
+
+function getPromptReferenceKey(kind: string, assetId: string, token?: string): string {
+  return `${kind}:${assetId}:${token ?? ''}`;
+}
+
+function getReferenceLabel(kind: 'image' | 'video' | 'text', index: number): string {
+  const prefix = kind === 'image' ? '图片' : kind === 'video' ? '视频' : '文本';
+
+  return `${prefix}${formatChineseIndex(index)}`;
+}
+
+function formatChineseIndex(index: number): string {
+  const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+
+  if (index <= 10) {
+    return index === 10 ? '十' : digits[index];
+  }
+
+  if (index < 20) {
+    return `十${digits[index - 10]}`;
+  }
+
+  if (index < 100) {
+    const tens = Math.floor(index / 10);
+    const ones = index % 10;
+
+    return `${digits[tens]}十${ones === 0 ? '' : digits[ones]}`;
+  }
+
+  return String(index);
 }
 
 function collectInputAssets(node: CanvasNodeView, canvas: CanvasView): InputAsset[] {

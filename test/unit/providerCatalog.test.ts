@@ -27,7 +27,7 @@ describe('provider catalog', () => {
           providerModelId: 'gpt-image-2',
         }),
         expect.objectContaining({
-          canonicalModelId: 'chat-openai',
+          canonicalModelId: 'gpt-5.4-mini',
           providerModelId: 'gpt-5.4-mini',
         }),
       ]),
@@ -36,7 +36,7 @@ describe('provider catalog', () => {
       protocol: 'anthropic-compatible',
       models: expect.arrayContaining([
         expect.objectContaining({
-          canonicalModelId: 'chat-anthropic',
+          canonicalModelId: 'claude-sonnet-4-5',
           providerModelId: 'claude-sonnet-4-5',
         }),
       ]),

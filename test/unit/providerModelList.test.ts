@@ -63,7 +63,7 @@ describe('provider model list', () => {
       {
         id: 'model_provider_openai_gpt-5_4-mini',
         providerModelId: 'gpt-5.4-mini',
-        canonicalModelId: 'chat-openai',
+        canonicalModelId: 'gpt-5.4-mini',
         displayName: 'gpt-5.4-mini',
         enabled: true,
       },
@@ -91,7 +91,7 @@ describe('provider model list', () => {
       {
         id: 'model_provider_google_gemini-2_5-flash',
         providerModelId: 'gemini-2.5-flash',
-        canonicalModelId: 'chat-openai',
+        canonicalModelId: 'gemini-2.5-flash',
         displayName: 'Gemini Flash',
         enabled: true,
       },
@@ -112,7 +112,7 @@ describe('provider model list', () => {
         {
           id: 'model_provider_openai_gpt-5_4-mini',
           providerModelId: 'gpt-5.4-mini',
-          canonicalModelId: 'chat-openai',
+          canonicalModelId: 'gpt-5.4-mini',
           displayName: 'gpt-5.4-mini',
           enabled: true,
         },

@@ -83,7 +83,7 @@ export function parseProviderModelList(
       {
         id: `model_${provider.id}_${sanitizeModelId(providerModelId)}`,
         providerModelId,
-        canonicalModelId: inferCanonicalModelId(provider, providerModelId),
+        canonicalModelId: providerModelId,
         displayName: readModelDisplayName(protocol, record, providerModelId),
         enabled: true,
       },
@@ -220,20 +220,6 @@ function readModelDisplayName(
   }
 
   return providerModelId;
-}
-
-function inferCanonicalModelId(provider: ProviderConfig, providerModelId: string): string {
-  const normalizedModelId = providerModelId.toLowerCase();
-
-  if (normalizedModelId.includes('image')) {
-    return normalizedModelId.includes('gpt-image-2') ? 'gpt-image-2' : providerModelId;
-  }
-
-  if (provider.protocol === 'anthropic-compatible' || normalizedModelId.startsWith('claude-')) {
-    return 'chat-anthropic';
-  }
-
-  return 'chat-openai';
 }
 
 function isUnsupportedModelId(providerModelId: string): boolean {
