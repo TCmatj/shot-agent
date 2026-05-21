@@ -1,5 +1,6 @@
-import type { CanvasNodeView, CanvasView } from '../app/canvasWorkspace';
+import { getUpstreamNodeIds, type CanvasNodeView, type CanvasView } from '../app/canvasWorkspace';
 import { getEffectiveOutputText } from '../domain/outputVersions';
+import { parsePromptReferences } from '../domain/promptReferences';
 import {
   mapCanonicalModelToProviderModel,
   type ProviderConfig,
@@ -225,9 +226,19 @@ export function buildGenerationRequest(
     return { ok: false, error: 'OpenAI-compatible 供应商当前不处理视频节点' };
   }
 
+  const imageInputs = collectInputAssets(node, input.canvas).filter(
+    (asset) => asset.role === 'reference_image',
+  );
+  if (imageInputs.some((asset) => !isDataUrl(asset.content))) {
+    return {
+      ok: false,
+      error: '图片生成的 @image 引用当前需要本地图片数据，暂不支持直接引用远程 URL',
+    };
+  }
+
   return {
     ok: true,
-    request: buildOpenAIImageRequest(input.provider, input.token, providerModelId, prompt),
+    request: buildOpenAIImageRequest(input.provider, input.token, providerModelId, prompt, node, input.canvas),
   };
 }
 
@@ -419,7 +430,37 @@ function buildOpenAIImageRequest(
   token: string,
   model: string,
   prompt: string,
+  node: CanvasNodeView,
+  canvas: CanvasView,
 ): GenerationRequest {
+  const imageInputs = collectInputAssets(node, canvas).filter(
+    (asset) => asset.role === 'reference_image',
+  );
+
+  if (imageInputs.length > 0) {
+    const body = new FormData();
+    body.set('model', model);
+    body.set('prompt', prompt);
+    body.set('n', '1');
+    body.set('size', '1024x1024');
+    imageInputs.forEach((asset, index) => {
+      const blob = dataUrlToBlob(asset.content, asset.mimeType);
+      if (blob) {
+        body.append('image[]', blob, `${asset.node.id || `image_${index}`}.png`);
+      }
+    });
+
+    return {
+      url: `${normalizeBaseURL(provider.baseURL)}/images/edits`,
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body,
+      responseKind: 'image',
+    };
+  }
+
   return {
     url: `${normalizeBaseURL(provider.baseURL)}/images/generations`,
     method: 'POST',
@@ -599,81 +640,21 @@ function buildPrompt(node: CanvasNodeView, canvas: CanvasView): string {
 }
 
 function collectInputAssets(node: CanvasNodeView, canvas: CanvasView): InputAsset[] {
-  if (node.kind === 'chat') {
-    return collectPromptReferencedInputs(node, canvas);
-  }
-
-  const upstreamNodeIds = canvas.edges
-    .filter((edge) => edge.toNodeId === node.id)
-    .map((edge) => edge.fromNodeId);
-  const upstreamNodes = upstreamNodeIds
-    .map((nodeId) => canvas.nodes.find((current) => current.id === nodeId))
-    .filter((current): current is CanvasNodeView => Boolean(current));
-
-  return upstreamNodes.flatMap<InputAsset>((inputNode) => {
-    if (inputNode.kind === 'textAsset') {
-      return inputNode.textContent
-        ? [{ node: inputNode, role: 'text', content: inputNode.textContent }]
-        : [];
-    }
-
-    if (inputNode.kind === 'imageAsset' && inputNode.assetDataUrl) {
-      return [
-        {
-          node: inputNode,
-          role: 'reference_image',
-          content: inputNode.assetDataUrl,
-          mimeType: inputNode.assetMimeType,
-        },
-      ];
-    }
-
-    if (inputNode.kind === 'videoAsset' && inputNode.assetDataUrl) {
-      return [
-        {
-          node: inputNode,
-          role: 'reference_video',
-          content: inputNode.assetDataUrl,
-          mimeType: inputNode.assetMimeType,
-        },
-      ];
-    }
-
-    if ((inputNode.outputDataUrl || inputNode.outputUrl) && inputNode.kind === 'image') {
-      return [
-        {
-          node: inputNode,
-          role: 'reference_image',
-          content: inputNode.outputDataUrl ?? inputNode.outputUrl!,
-        },
-      ];
-    }
-
-    if ((inputNode.outputDataUrl || inputNode.outputUrl) && inputNode.kind === 'video') {
-      return [
-        {
-          node: inputNode,
-          role: 'reference_video',
-          content: inputNode.outputDataUrl ?? inputNode.outputUrl!,
-        },
-      ];
-    }
-
-    const outputText = getEffectiveNodeOutputText(inputNode);
-    if (outputText) {
-      return [{ node: inputNode, role: 'text', content: outputText }];
-    }
-
-    return [];
-  });
+  return collectPromptReferencedInputs(node, canvas);
 }
 
 function collectPromptReferencedInputs(node: CanvasNodeView, canvas: CanvasView): InputAsset[] {
-  const references = Array.from((node.prompt ?? '').matchAll(/@(text|image):([a-zA-Z0-9_-]+)/g));
+  const upstreamNodeIds = new Set(getUpstreamNodeIds(canvas, node.id));
+  const references = parsePromptReferences(node.prompt ?? '');
 
   return references.flatMap<InputAsset>((match) => {
-    const kind = match[1];
-    const nodeId = match[2];
+    const kind = match.kind;
+    const nodeId = match.assetId;
+
+    if (!upstreamNodeIds.has(nodeId)) {
+      return [];
+    }
+
     const referencedNode = canvas.nodes.find((current) => current.id === nodeId);
 
     if (!referencedNode) {
@@ -686,7 +667,7 @@ function collectPromptReferencedInputs(node: CanvasNodeView, canvas: CanvasView)
           ? referencedNode.textContent
           : getEffectiveNodeOutputText(referencedNode);
 
-      return text ? [{ node: referencedNode, role: 'text', content: text, token: match[0] }] : [];
+      return text ? [{ node: referencedNode, role: 'text', content: text, token: match.token }] : [];
     }
 
     if (kind === 'image') {
@@ -703,7 +684,28 @@ function collectPromptReferencedInputs(node: CanvasNodeView, canvas: CanvasView)
               node: referencedNode,
               role: 'reference_image',
               content: imageUrl,
-              token: match[0],
+              token: match.token,
+              mimeType: referencedNode.assetMimeType,
+            },
+          ]
+        : [];
+    }
+
+    if (kind === 'video') {
+      const videoUrl =
+        referencedNode.kind === 'videoAsset'
+          ? referencedNode.assetDataUrl
+          : referencedNode.kind === 'video'
+            ? referencedNode.outputDataUrl ?? referencedNode.outputUrl
+            : undefined;
+
+      return videoUrl
+        ? [
+            {
+              node: referencedNode,
+              role: 'reference_video',
+              content: videoUrl,
+              token: match.token,
               mimeType: referencedNode.assetMimeType,
             },
           ]
@@ -712,6 +714,25 @@ function collectPromptReferencedInputs(node: CanvasNodeView, canvas: CanvasView)
 
     return [];
   });
+}
+
+function dataUrlToBlob(dataUrl: string, fallbackMimeType?: string): Blob | null {
+  const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/);
+  if (!match) {
+    return null;
+  }
+
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new Blob([bytes], { type: fallbackMimeType ?? match[1] });
+}
+
+function isDataUrl(value: string): boolean {
+  return /^data:[^;,]+;base64,/.test(value);
 }
 
 function normalizeOutput(

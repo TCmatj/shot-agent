@@ -474,6 +474,30 @@ export function moveCanvasNodes(
   );
 }
 
+export function getUpstreamNodeIds(canvas: CanvasView, nodeId: string): string[] {
+  const upstreamNodeIds: string[] = [];
+  const visited = new Set<string>([nodeId]);
+  const queue = canvas.edges
+    .filter((edge) => edge.toNodeId === nodeId)
+    .map((edge) => edge.fromNodeId);
+
+  while (queue.length > 0) {
+    const currentNodeId = queue.shift()!;
+    if (visited.has(currentNodeId)) {
+      continue;
+    }
+
+    visited.add(currentNodeId);
+    upstreamNodeIds.push(currentNodeId);
+
+    canvas.edges
+      .filter((edge) => edge.toNodeId === currentNodeId)
+      .forEach((edge) => queue.push(edge.fromNodeId));
+  }
+
+  return upstreamNodeIds;
+}
+
 function rectanglesIntersect(first: CanvasSelectionRect, second: CanvasSelectionRect): boolean {
   return (
     first.x <= second.x + second.width &&

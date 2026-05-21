@@ -8,6 +8,7 @@ import {
   canNodeReceiveInput,
   deleteCanvas,
   exportCanvas,
+  getUpstreamNodeIds,
   findNodesInSelectionRect,
   getNodeCenter,
   getNodeInputPoint,
@@ -325,6 +326,28 @@ describe('canvas workspace persistence', () => {
     ]);
     expect(addCanvasEdge(first, 'node_1', 'node_1')).toEqual(first);
     expect(addCanvasEdge(first, 'node_1', 'node_2')).toEqual(first);
+  });
+
+  it('finds only upstream nodes as referenceable assets', () => {
+    const canvas: CanvasView = {
+      id: 'canvas_1',
+      name: '画布',
+      updatedAt: '刚刚',
+      nodes: [
+        { id: 'text_1', title: 'Text', modelId: 'asset-text', kind: 'textAsset', x: 0, y: 0 },
+        { id: 'image_1', title: 'Image', modelId: 'gpt-image-2', kind: 'image', x: 360, y: 0 },
+        { id: 'video_1', title: 'Video', modelId: 'seedance2.0', kind: 'video', x: 720, y: 0 },
+        { id: 'side_1', title: 'Side', modelId: 'asset-image', kind: 'imageAsset', x: 0, y: 320 },
+      ],
+      edges: [
+        { id: 'edge_text_image', fromNodeId: 'text_1', toNodeId: 'image_1' },
+        { id: 'edge_image_video', fromNodeId: 'image_1', toNodeId: 'video_1' },
+      ],
+    };
+
+    expect(getUpstreamNodeIds(canvas, 'video_1')).toEqual(['image_1', 'text_1']);
+    expect(getUpstreamNodeIds(canvas, 'image_1')).toEqual(['text_1']);
+    expect(getUpstreamNodeIds(canvas, 'side_1')).toEqual([]);
   });
 
   it('blocks video nodes from connecting to text generation nodes', () => {

@@ -112,7 +112,7 @@ const canvas: CanvasView = {
       kind: 'video',
       x: 0,
       y: 0,
-      prompt: 'Slow camera orbit',
+      prompt: 'Slow camera orbit @image:image_asset_1',
     },
     {
       id: 'chat_1',
@@ -127,6 +127,8 @@ const canvas: CanvasView = {
   edges: [
     { id: 'edge_text_image', fromNodeId: 'text_1', toNodeId: 'image_1' },
     { id: 'edge_image_video', fromNodeId: 'image_asset_1', toNodeId: 'video_1' },
+    { id: 'edge_text_chat', fromNodeId: 'text_1', toNodeId: 'chat_1' },
+    { id: 'edge_image_chat', fromNodeId: 'image_asset_1', toNodeId: 'chat_1' },
   ],
 };
 
@@ -178,7 +180,7 @@ describe('generation client request building', () => {
     });
   });
 
-  it('builds an OpenAI image generation request with text inputs appended', () => {
+  it('does not automatically append connected text inputs without prompt references', () => {
     const result = buildGenerationRequest({
       canvas,
       nodeId: 'image_1',
@@ -201,9 +203,106 @@ describe('generation client request building', () => {
 
     expect(result.ok && JSON.parse(result.request.body as string)).toEqual({
       model: 'custom-image-model',
-      prompt: 'A ceramic cup\n\n参考文本：\n- use a clean studio background',
+      prompt: 'A ceramic cup',
       n: 1,
       size: '1024x1024',
+    });
+  });
+
+  it('builds an OpenAI image request with upstream text prompt references appended', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'image_1'
+            ? { ...node, prompt: 'A ceramic cup @text:text_1' }
+            : node,
+        ),
+      },
+      nodeId: 'image_1',
+      provider: openaiProvider,
+      token: 'token',
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
+      model: 'custom-image-model',
+      prompt: 'A ceramic cup @text:text_1\n\n参考文本：\n- use a clean studio background',
+    });
+  });
+
+  it('ignores prompt references that are not connected upstream', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'image_1'
+            ? { ...node, prompt: 'A ceramic cup @image:image_asset_1' }
+            : node,
+        ),
+      },
+      nodeId: 'image_1',
+      provider: openaiProvider,
+      token: 'token',
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
+      prompt: 'A ceramic cup @image:image_asset_1',
+    });
+  });
+
+  it('uses OpenAI image edits when an upstream image is referenced', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'image_1'
+            ? { ...node, prompt: 'A ceramic cup @image:image_asset_1' }
+            : node,
+        ),
+        edges: [
+          ...canvas.edges,
+          { id: 'edge_image_asset_to_image', fromNodeId: 'image_asset_1', toNodeId: 'image_1' },
+        ],
+      },
+      nodeId: 'image_1',
+      provider: openaiProvider,
+      token: 'token',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      request: {
+        url: 'https://api.openai.com/v1/images/edits',
+        responseKind: 'image',
+      },
+    });
+    expect(result.ok && result.request.body).toBeInstanceOf(FormData);
+  });
+
+  it('rejects OpenAI image references that cannot be uploaded as local data', () => {
+    expect(
+      buildGenerationRequest({
+        canvas: {
+          ...canvas,
+          nodes: canvas.nodes.map((node) =>
+            node.id === 'image_asset_1'
+              ? { ...node, assetDataUrl: 'https://cdn.example.com/reference.png' }
+              : node.id === 'image_1'
+                ? { ...node, prompt: 'A ceramic cup @image:image_asset_1' }
+                : node,
+          ),
+          edges: [
+            ...canvas.edges,
+            { id: 'edge_image_asset_to_image', fromNodeId: 'image_asset_1', toNodeId: 'image_1' },
+          ],
+        },
+        nodeId: 'image_1',
+        provider: openaiProvider,
+        token: 'token',
+      }),
+    ).toEqual({
+      ok: false,
+      error: '图片生成的 @image 引用当前需要本地图片数据，暂不支持直接引用远程 URL',
     });
   });
 
@@ -231,7 +330,7 @@ describe('generation client request building', () => {
     expect(result.ok && JSON.parse(result.request.body as string)).toEqual({
       model: 'doubao-seedance-2-0-260128',
       content: [
-        { type: 'text', text: 'Slow camera orbit' },
+        { type: 'text', text: 'Slow camera orbit @image:image_asset_1' },
         {
           type: 'image_url',
           image_url: {
