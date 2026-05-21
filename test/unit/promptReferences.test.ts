@@ -11,6 +11,29 @@ describe('parsePromptReferences', () => {
     ]);
   });
 
+  it('resolves Chinese image placeholders by occurrence order', () => {
+    const refs = parsePromptReferences('@图片 是主体，@图片 是参考背景', {
+      image: ['image_1', 'image_2'],
+    });
+
+    expect(refs).toEqual([
+      { token: '@图片', assetId: 'image_1', kind: 'image' },
+      { token: '@图片', assetId: 'image_2', kind: 'image' },
+    ]);
+  });
+
+  it('shifts Chinese image placeholder resolution when inserted before existing placeholders', () => {
+    const refs = parsePromptReferences('@图片 新增，@图片 是主体，@图片 是参考背景', {
+      image: ['image_0', 'image_1', 'image_2'],
+    });
+
+    expect(refs.map((reference) => reference.assetId)).toEqual([
+      'image_0',
+      'image_1',
+      'image_2',
+    ]);
+  });
+
   it('ignores unsupported reference kinds', () => {
     const refs = parsePromptReferences('忽略 @unknown:asset_1');
 
@@ -19,6 +42,13 @@ describe('parsePromptReferences', () => {
 
   it('removes a reference token with one backward delete', () => {
     expect(removePromptReferenceAtCaret('参考 @text:asset_1 继续', 16, 'backward')).toEqual({
+      prompt: '参考 继续',
+      caret: 3,
+    });
+  });
+
+  it('removes a Chinese reference token with one backward delete', () => {
+    expect(removePromptReferenceAtCaret('参考 @图片 继续', 6, 'backward')).toEqual({
       prompt: '参考 继续',
       caret: 3,
     });

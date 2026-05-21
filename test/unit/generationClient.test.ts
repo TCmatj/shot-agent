@@ -302,7 +302,7 @@ describe('generation client request building', () => {
       }),
     ).toEqual({
       ok: false,
-      error: '图片生成的 @image 引用当前需要本地图片数据，暂不支持直接引用远程 URL',
+      error: '图片生成的 @图片 引用当前需要本地图片数据，暂不支持直接引用远程 URL',
     });
   });
 
@@ -340,6 +340,55 @@ describe('generation client request building', () => {
         },
       ],
     });
+  });
+
+  it('resolves Chinese image placeholders to upstream images by prompt order', () => {
+    const secondImage = {
+      id: 'image_asset_2',
+      title: 'Second Reference',
+      modelId: 'asset-image',
+      kind: 'imageAsset' as const,
+      x: 0,
+      y: 180,
+      assetName: 'second.png',
+      assetDataUrl: 'data:image/png;base64,c2Vjb25k',
+      assetMimeType: 'image/png',
+    };
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'video_1'
+            ? { ...node, prompt: '@图片 是主体，@图片 做背景参考' }
+            : node,
+        ).concat(secondImage),
+        edges: [
+          ...canvas.edges,
+          { id: 'edge_image_second_video', fromNodeId: 'image_asset_2', toNodeId: 'video_1' },
+        ],
+      },
+      nodeId: 'video_1',
+      provider: seedanceProvider,
+      token: 'seedance-token',
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string).content).toEqual([
+      { type: 'text', text: '@图片 是主体，@图片 做背景参考' },
+      {
+        type: 'image_url',
+        image_url: {
+          url: 'data:image/png;base64,aW1hZ2U=',
+          role: 'reference_image',
+        },
+      },
+      {
+        type: 'image_url',
+        image_url: {
+          url: 'data:image/png;base64,c2Vjb25k',
+          role: 'reference_image',
+        },
+      },
+    ]);
   });
 
   it('builds text generation requests with stream enabled when requested', () => {

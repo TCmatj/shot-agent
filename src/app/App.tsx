@@ -49,7 +49,11 @@ import {
   getOutputVersionsForDisplay,
   paginateOutputVersions,
 } from '../domain/outputVersions';
-import { parsePromptReferences, removePromptReferenceAtCaret } from '../domain/promptReferences';
+import {
+  parsePromptReferences,
+  removePromptReferenceAtCaret,
+  type PromptReferenceResolution,
+} from '../domain/promptReferences';
 import { createGenerationRecord, type GenerationRecord } from '../domain/generationHistory';
 import {
   getEffectiveNodeOutputText,
@@ -536,7 +540,7 @@ function getPromptReferenceSuggestions(
     const textPreview = getNodeTextReferencePreview(node);
     if (textPreview) {
       suggestions.push({
-        token: `@text:${node.id}`,
+        token: '@文本',
         title: node.title,
         subtitle: node.id,
         kindLabel: '文本',
@@ -547,7 +551,7 @@ function getPromptReferenceSuggestions(
     const imageUrl = getNodeImageReferenceUrl(node);
     if (imageUrl) {
       suggestions.push({
-        token: `@image:${node.id}`,
+        token: '@图片',
         title: node.title,
         subtitle: node.id,
         kindLabel: '图片',
@@ -558,7 +562,7 @@ function getPromptReferenceSuggestions(
     const videoUrl = getNodeVideoReferenceUrl(node);
     if (videoUrl) {
       suggestions.push({
-        token: `@video:${node.id}`,
+        token: '@视频',
         title: node.title,
         subtitle: node.id,
         kindLabel: '视频',
@@ -570,6 +574,31 @@ function getPromptReferenceSuggestions(
   });
 }
 
+function getPromptReferenceResolution(
+  canvas: CanvasView | null,
+  currentNodeId: string,
+): PromptReferenceResolution {
+  if (!canvas) {
+    return {};
+  }
+
+  const upstreamNodes = getUpstreamNodeIds(canvas, currentNodeId)
+    .map((nodeId) => canvas.nodes.find((node) => node.id === nodeId))
+    .filter((node): node is CanvasNodeView => Boolean(node));
+
+  return {
+    text: upstreamNodes
+      .filter((node) => node.kind === 'textAsset' || Boolean(getNodeTextReferencePreview(node)))
+      .map((node) => node.id),
+    image: upstreamNodes
+      .filter((node) => Boolean(getNodeImageReferenceUrl(node)))
+      .map((node) => node.id),
+    video: upstreamNodes
+      .filter((node) => Boolean(getNodeVideoReferenceUrl(node)))
+      .map((node) => node.id),
+  };
+}
+
 function getPromptReferencePreviews(
   canvas: CanvasView | null,
   currentNodeId: string,
@@ -579,83 +608,78 @@ function getPromptReferencePreviews(
     return [];
   }
 
-  const seenTokens = new Set<string>();
   const upstreamNodeIds = new Set(getUpstreamNodeIds(canvas, currentNodeId));
 
-  return parsePromptReferences(prompt).flatMap<PromptReferencePreview>(
-    (reference) => {
-      if (reference.kind !== 'text' && reference.kind !== 'image' && reference.kind !== 'video') {
-        return [];
-      }
+  return parsePromptReferences(
+    prompt,
+    getPromptReferenceResolution(canvas, currentNodeId),
+  ).flatMap<PromptReferencePreview>((reference) => {
+    if (reference.kind !== 'text' && reference.kind !== 'image' && reference.kind !== 'video') {
+      return [];
+    }
 
-      const kind = reference.kind;
-      const nodeId = reference.assetId;
-      const token = reference.token;
+    const kind = reference.kind;
+    const nodeId = reference.assetId;
+    const token = reference.token;
 
-      if (seenTokens.has(token)) {
-        return [];
-      }
-      seenTokens.add(token);
+    const referencedNode = upstreamNodeIds.has(nodeId)
+      ? canvas.nodes.find((candidate) => candidate.id === nodeId)
+      : undefined;
+    if (!referencedNode) {
+      return [];
+    }
 
-      const referencedNode = upstreamNodeIds.has(nodeId)
-        ? canvas.nodes.find((candidate) => candidate.id === nodeId)
-        : undefined;
-      if (!referencedNode) {
-        return [];
-      }
-
-      if (kind === 'text') {
-        const textPreview = getNodeTextReferencePreview(referencedNode);
-        return textPreview
-          ? [
-              {
-                token,
-                title: referencedNode.title,
-                subtitle: referencedNode.id,
-                kindLabel: '文本',
-                kind,
-                textPreview,
-              },
-            ]
-          : [];
-      }
-
-      const imageUrl = getNodeImageReferenceUrl(referencedNode);
-      if (kind === 'image') {
-        return imageUrl
-          ? [
-              {
-                token,
-                title: referencedNode.title,
-                subtitle: referencedNode.id,
-                kindLabel: '图片',
-                kind,
-                imageUrl,
-              },
-            ]
-          : [];
-      }
-
-      const videoUrl = getNodeVideoReferenceUrl(referencedNode);
-      return videoUrl
+    if (kind === 'text') {
+      const textPreview = getNodeTextReferencePreview(referencedNode);
+      return textPreview
         ? [
             {
               token,
               title: referencedNode.title,
               subtitle: referencedNode.id,
-              kindLabel: '视频',
+              kindLabel: '文本',
               kind,
-              videoUrl,
+              textPreview,
             },
           ]
         : [];
-    },
-  );
+    }
+
+    const imageUrl = getNodeImageReferenceUrl(referencedNode);
+    if (kind === 'image') {
+      return imageUrl
+        ? [
+            {
+              token,
+              title: referencedNode.title,
+              subtitle: referencedNode.id,
+              kindLabel: '图片',
+              kind,
+              imageUrl,
+            },
+          ]
+        : [];
+    }
+
+    const videoUrl = getNodeVideoReferenceUrl(referencedNode);
+    return videoUrl
+      ? [
+          {
+            token,
+            title: referencedNode.title,
+            subtitle: referencedNode.id,
+            kindLabel: '视频',
+            kind,
+            videoUrl,
+          },
+        ]
+      : [];
+  });
 }
 
 function getPromptReferenceTrigger(value: string, caret: number) {
   const prefix = value.slice(0, caret);
-  const match = prefix.match(/(@[a-zA-Z]*(?::[a-zA-Z0-9_-]*)?)$/);
+  const match = prefix.match(/(@(?:[a-zA-Z]*(?::[a-zA-Z0-9_-]*)?|[\u4e00-\u9fa5]*))$/);
 
   if (!match) {
     return null;
@@ -675,7 +699,8 @@ function filterPromptReferenceSuggestions(
   query: string,
 ) {
   return suggestions.filter((suggestion) => {
-    const searchable = `${suggestion.token} ${suggestion.title} ${suggestion.subtitle}`.toLowerCase();
+    const searchable =
+      `${suggestion.token} ${suggestion.kindLabel} ${suggestion.title} ${suggestion.subtitle}`.toLowerCase();
 
     return searchable.includes(query);
   });
@@ -731,14 +756,20 @@ function renderPromptEditorContent(
   references: PromptReferencePreview[],
   onPreviewImage: (reference: PromptReferencePreview) => void,
 ) {
-  const referenceByToken = new Map(references.map((reference) => [reference.token, reference]));
+  const referencesByToken = new Map<string, PromptReferencePreview[]>();
+  references.forEach((reference) => {
+    referencesByToken.set(reference.token, [
+      ...(referencesByToken.get(reference.token) ?? []),
+      reference,
+    ]);
+  });
   const fragment = document.createDocumentFragment();
   let cursor = 0;
 
-  for (const match of value.matchAll(/@(text|image|video):([a-zA-Z0-9_-]+)/g)) {
+  for (const match of value.matchAll(/@(text|image|video):([a-zA-Z0-9_-]+)|@(图片|视频|文本)/g)) {
     const token = match[0];
     const start = match.index ?? 0;
-    const reference = referenceByToken.get(token);
+    const reference = referencesByToken.get(token)?.shift();
 
     if (start > cursor) {
       fragment.append(document.createTextNode(value.slice(cursor, start)));
@@ -975,7 +1006,7 @@ function PromptTextarea({
         <div className="prompt-reference-menu">
           {visibleSuggestions.map((suggestion) => (
             <button
-              key={suggestion.token}
+              key={`${suggestion.token}:${suggestion.subtitle}`}
               type="button"
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => insertSuggestion(suggestion)}
@@ -986,7 +1017,7 @@ function PromptTextarea({
                 <span>{suggestion.kindLabel}</span>
               )}
               <strong>{suggestion.title}</strong>
-              <small>{suggestion.textPreview ? `@${suggestion.textPreview}` : suggestion.token}</small>
+              <small>{suggestion.textPreview ? suggestion.textPreview : suggestion.token}</small>
             </button>
           ))}
         </div>
@@ -2627,7 +2658,10 @@ export function App() {
     const providerModelId =
       node.providerModelId ?? findProviderModelsForNode(node)[0]?.providerModelId ?? node.modelId;
     const upstreamNodeIds = new Set(getUpstreamNodeIds(activeCanvas, node.id));
-    const inputAssetIds = parsePromptReferences(node.prompt ?? '')
+    const inputAssetIds = parsePromptReferences(
+      node.prompt ?? '',
+      getPromptReferenceResolution(activeCanvas, node.id),
+    )
       .map((reference) => reference.assetId)
       .filter((assetId, index, assetIds) =>
         upstreamNodeIds.has(assetId) && assetIds.indexOf(assetId) === index,
@@ -3580,7 +3614,7 @@ export function App() {
                         <PromptTextarea
                           canvas={activeCanvas}
                           node={node}
-                          placeholder="输入提示词，使用 @text / @image / @video 引用已连线的上游资产"
+                          placeholder="输入提示词，使用 @文本 / @图片 / @视频 引用已连线的上游资产"
                           stopPointerDown
                           onChange={(value) =>
                             updateNode(node.id, (current) => ({
@@ -3846,7 +3880,7 @@ export function App() {
                 <PromptTextarea
                   canvas={activeCanvas}
                   node={selectedNode}
-                  placeholder="输入节点提示词，支持 @text / @image / @video 引用已连线的上游资产"
+                  placeholder="输入节点提示词，支持 @文本 / @图片 / @视频 引用已连线的上游资产"
                   onChange={(value) =>
                     updateNode(selectedNode.id, (current) => ({
                       ...current,

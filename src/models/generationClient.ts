@@ -1,6 +1,6 @@
 import { getUpstreamNodeIds, type CanvasNodeView, type CanvasView } from '../app/canvasWorkspace';
 import { getEffectiveOutputText } from '../domain/outputVersions';
-import { parsePromptReferences } from '../domain/promptReferences';
+import { parsePromptReferences, type PromptReferenceResolution } from '../domain/promptReferences';
 import {
   mapCanonicalModelToProviderModel,
   type ProviderConfig,
@@ -244,7 +244,7 @@ export function buildGenerationRequest(
   if (imageInputs.some((asset) => !isDataUrl(asset.content))) {
     return {
       ok: false,
-      error: '图片生成的 @image 引用当前需要本地图片数据，暂不支持直接引用远程 URL',
+      error: '图片生成的 @图片 引用当前需要本地图片数据，暂不支持直接引用远程 URL',
     };
   }
 
@@ -657,7 +657,10 @@ function collectInputAssets(node: CanvasNodeView, canvas: CanvasView): InputAsse
 
 function collectPromptReferencedInputs(node: CanvasNodeView, canvas: CanvasView): InputAsset[] {
   const upstreamNodeIds = new Set(getUpstreamNodeIds(canvas, node.id));
-  const references = parsePromptReferences(node.prompt ?? '');
+  const references = parsePromptReferences(
+    node.prompt ?? '',
+    getPromptReferenceResolution(node, canvas),
+  );
 
   return references.flatMap<InputAsset>((match) => {
     const kind = match.kind;
@@ -726,6 +729,39 @@ function collectPromptReferencedInputs(node: CanvasNodeView, canvas: CanvasView)
 
     return [];
   });
+}
+
+function getPromptReferenceResolution(
+  node: CanvasNodeView,
+  canvas: CanvasView,
+): PromptReferenceResolution {
+  const upstreamNodeIds = getUpstreamNodeIds(canvas, node.id);
+  const upstreamNodes = upstreamNodeIds
+    .map((nodeId) => canvas.nodes.find((current) => current.id === nodeId))
+    .filter((current): current is CanvasNodeView => Boolean(current));
+
+  return {
+    text: upstreamNodes
+      .filter(
+        (current) =>
+          current.kind === 'textAsset' || Boolean(getEffectiveNodeOutputText(current)),
+      )
+      .map((current) => current.id),
+    image: upstreamNodes
+      .filter(
+        (current) =>
+          current.kind === 'imageAsset' ||
+          (current.kind === 'image' && Boolean(current.outputDataUrl ?? current.outputUrl)),
+      )
+      .map((current) => current.id),
+    video: upstreamNodes
+      .filter(
+        (current) =>
+          current.kind === 'videoAsset' ||
+          (current.kind === 'video' && Boolean(current.outputDataUrl ?? current.outputUrl)),
+      )
+      .map((current) => current.id),
+  };
 }
 
 function dataUrlToBlob(dataUrl: string, fallbackMimeType?: string): Blob | null {

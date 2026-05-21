@@ -1,16 +1,42 @@
 import type { AssetKind, PromptReference } from './types';
 
 const supportedKinds = new Set<AssetKind>(['image', 'video', 'audio', 'file', 'text']);
-const referencePattern = /@(image|video|audio|file|text):([a-zA-Z0-9_-]+)/g;
+const referencePattern =
+  /@(image|video|audio|file|text):([a-zA-Z0-9_-]+)|@(图片|视频|音频|文件|文本)/g;
+const naturalReferenceKindByLabel: Record<string, AssetKind> = {
+  图片: 'image',
+  视频: 'video',
+  音频: 'audio',
+  文件: 'file',
+  文本: 'text',
+};
 
-export function parsePromptReferences(prompt: string): PromptReference[] {
+export type PromptReferenceResolution = Partial<Record<AssetKind, string[]>>;
+
+export function parsePromptReferences(
+  prompt: string,
+  resolution: PromptReferenceResolution = {},
+): PromptReference[] {
   const references: PromptReference[] = [];
+  const occurrenceIndexes: Record<AssetKind, number> = {
+    image: 0,
+    video: 0,
+    audio: 0,
+    file: 0,
+    text: 0,
+  };
 
   for (const match of prompt.matchAll(referencePattern)) {
-    const kind = match[1] as AssetKind;
-    const assetId = match[2];
+    const kind = (match[1] as AssetKind | undefined) ?? naturalReferenceKindByLabel[match[3]];
 
-    if (!supportedKinds.has(kind)) {
+    if (!kind || !supportedKinds.has(kind)) {
+      continue;
+    }
+
+    const assetId = match[2] ?? resolution[kind]?.[occurrenceIndexes[kind]];
+    occurrenceIndexes[kind] += 1;
+
+    if (!assetId) {
       continue;
     }
 
