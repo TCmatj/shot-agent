@@ -165,9 +165,25 @@ button:disabled {
 }
 
 .storage-migrate-button {
+  background: #10151b;
+  border-color: #3c4652;
+  color: #eef2f5;
   justify-content: center;
-  min-height: 34px;
+  min-height: 36px;
   width: 100%;
+}
+
+.storage-migrate-button svg {
+  color: #8dffbc;
+}
+
+.storage-migrate-button:not(:disabled):hover {
+  background: #18212a;
+  border-color: #6b7d90;
+}
+
+.storage-migrate-button:disabled svg {
+  color: #66717f;
 }
 
 .canvas-list {

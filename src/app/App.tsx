@@ -2897,9 +2897,15 @@ export function App() {
             type="button"
             className="storage-migrate-button"
             disabled={!folderStorageReady || !rootDirectoryHandle}
+            title={
+              folderStorageReady && rootDirectoryHandle
+                ? '将当前浏览器中的画布数据写入已选择的文件夹'
+                : '请先选择画布存储文件夹'
+            }
             onClick={() => void migrateCurrentWorkspaceToFolder()}
           >
-            迁移当前画布到文件夹
+            <Save size={15} />
+            <span>迁移到文件夹</span>
           </button>
         </section>
         <section className="panel">
