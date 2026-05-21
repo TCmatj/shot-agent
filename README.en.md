@@ -48,10 +48,6 @@ The first phase focuses on integrating:
 - Generation history and retry rules
 - Local canvas storage interfaces
 
-## Documentation Maintenance
-
-The Chinese main README and English README should be updated together for every future change.
-
 ## License
 
 This project is licensed under the GNU General Public License v3.0 only. See [LICENSE](LICENSE) for details.

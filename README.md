@@ -48,10 +48,6 @@
 - 生成历史与重试规则
 - 本地画布存储接口
 
-## 文档维护
-
-以后每次变更 README 时，都需要同步更新中文主文档和英文文档。
-
 ## 开源协议
 
 本项目使用 GNU General Public License v3.0 only 开源协议。详情见 [LICENSE](LICENSE)。
