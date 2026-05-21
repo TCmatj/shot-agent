@@ -903,7 +903,7 @@ button:disabled {
 }
 
 .prompt-reference-token > span {
-  color: #85c7ff;
+  color: #aeb8c5;
   font-weight: 800;
 }
 
@@ -952,7 +952,7 @@ button:disabled {
 }
 
 .prompt-reference-chip span {
-  color: #85c7ff;
+  color: #aeb8c5;
   font-weight: 800;
 }
 
@@ -1015,7 +1015,7 @@ button:disabled {
 }
 
 .prompt-reference-menu span {
-  color: #85c7ff;
+  color: #aeb8c5;
   font-size: 12px;
   font-weight: 700;
   justify-self: center;
@@ -1371,15 +1371,16 @@ button:disabled {
   background: #050607;
   min-height: 0;
   overflow: auto;
-  padding: 18px;
+  padding: 20px;
 }
 
 .provider-manager-header {
   align-items: center;
   display: flex;
   justify-content: space-between;
-  margin-bottom: 14px;
-  min-width: 1460px;
+  margin: 0 auto 14px;
+  max-width: 1280px;
+  width: 100%;
 }
 
 .provider-manager-header span {
@@ -1390,13 +1391,16 @@ button:disabled {
 .provider-table {
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.2fr) minmax(160px, 1fr) 150px 86px minmax(360px, 2fr) 178px;
-  min-width: 1460px;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0 auto;
+  max-width: 1280px;
+  width: 100%;
 }
 
 .provider-table-header {
   border-bottom: 1px solid #252b34;
   color: #8d98a7;
+  display: none;
   font-size: 12px;
   font-weight: 600;
   padding: 0 0 10px;
@@ -1404,19 +1408,23 @@ button:disabled {
 
 .provider-list {
   display: grid;
-  gap: 10px;
-  margin-top: 10px;
-  min-width: 1460px;
+  gap: 12px;
+  margin: 0 auto;
+  max-width: 1280px;
+  width: 100%;
 }
 
 .provider-row {
   align-items: start;
+  background: #090b0e;
   border: 1px solid #252b34;
   border-radius: 8px;
   display: grid;
-  gap: 10px;
-  grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.2fr) minmax(160px, 1fr) 150px 86px minmax(360px, 2fr) 178px;
-  padding: 12px;
+  gap: 12px;
+  grid-template-columns:
+    minmax(150px, 1fr) minmax(220px, 1.35fr) minmax(170px, 1fr)
+    150px 86px 180px;
+  padding: 14px;
 }
 
 .provider-row.is-editing {
@@ -1461,6 +1469,7 @@ button:disabled {
 .provider-models {
   display: grid;
   gap: 8px;
+  grid-column: 1 / -2;
 }
 
 .provider-models > div {
@@ -1481,6 +1490,8 @@ button:disabled {
   align-self: start;
   display: grid;
   gap: 8px;
+  grid-column: -2 / -1;
+  grid-row: 1 / span 2;
 }
 
 .provider-row-actions button {

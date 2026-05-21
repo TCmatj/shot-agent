@@ -880,7 +880,17 @@ function PromptTextarea({
   }
 
   function handleEditorInput(target: HTMLElement) {
-    onChange(serializePromptEditor(target));
+    const value = serializePromptEditor(target);
+    const caret = getPromptEditorCaretOffset(target);
+    const previews = getPromptReferencePreviews(canvas, node.id, value);
+
+    onChange(value);
+    if (previews.length > 0 && /@(图片|视频|文本|image|video|text):?/.test(value)) {
+      renderPromptEditorContent(target, value, previews, setPreviewImage);
+      window.requestAnimationFrame(() => {
+        setPromptEditorCaretOffset(target, caret);
+      });
+    }
     refreshTrigger(target);
   }
 
