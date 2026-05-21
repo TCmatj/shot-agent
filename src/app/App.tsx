@@ -23,6 +23,7 @@ import {
   Pencil,
   Play,
   Plus,
+  RefreshCw,
   RotateCcw,
   Save,
   Settings,
@@ -43,6 +44,8 @@ import {
 } from '../domain/provider';
 import type { ProviderConfig } from '../domain/provider';
 import type { ChatFormat } from '../domain/provider';
+import { initialProviders } from '../models/providerCatalog';
+import { fetchProviderModelList, mergeFetchedProviderModels } from '../models/providerModelList';
 import {
   appendOutputVersion,
   getLatestOutputVersion,
@@ -274,69 +277,6 @@ function CanvasActionRail({
     </div>
   );
 }
-
-const initialProviders: ProviderConfig[] = [
-  {
-    id: 'provider_openai',
-    name: 'OpenAI 官方',
-    protocol: 'openai-compatible',
-    baseURL: 'https://api.openai.com',
-    apiTokenRef: 'secret_openai',
-    enabled: true,
-    models: [
-      {
-        id: 'model_openai_gpt_image_2',
-        providerModelId: 'gpt-image-2',
-        canonicalModelId: 'gpt-image-2',
-        enabled: true,
-      },
-      {
-        id: 'model_openai_chat',
-        providerModelId: 'gpt-5.4-mini',
-        canonicalModelId: 'chat-openai',
-        enabled: true,
-      },
-    ],
-  },
-  {
-    id: 'provider_seedance',
-    name: '火山方舟',
-    protocol: 'volcengine',
-    baseURL: 'https://ark.cn-beijing.volces.com',
-    apiTokenRef: 'secret_seedance',
-    enabled: true,
-    models: [
-      {
-        id: 'model_seedance_2_0',
-        providerModelId: 'doubao-seedance-2-0-260128',
-        canonicalModelId: 'seedance2.0',
-        enabled: true,
-      },
-      {
-        id: 'model_seedance_2_0_fast',
-        providerModelId: 'doubao-seedance-2-0-fast-260128',
-        canonicalModelId: 'seedance2.0-fast',
-        enabled: true,
-      },
-    ],
-  },
-  {
-    id: 'provider_anthropic',
-    name: 'Anthropic 官方',
-    protocol: 'anthropic-compatible',
-    baseURL: 'https://api.anthropic.com/v1',
-    apiTokenRef: 'secret_anthropic',
-    enabled: true,
-    models: [
-      {
-        id: 'model_anthropic_chat',
-        providerModelId: 'claude-sonnet-4-5',
-        canonicalModelId: 'chat-anthropic',
-        enabled: true,
-      },
-    ],
-  },
-];
 
 const nodeTemplates: NodeTemplate[] = [
   {
@@ -1151,6 +1091,7 @@ export function App() {
   const [providers, setProviders] = useState<ProviderConfig[]>(loadProviders);
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderConfig>>({});
   const [editingProviderIds, setEditingProviderIds] = useState<string[]>([]);
+  const [fetchingProviderModelIds, setFetchingProviderModelIds] = useState<string[]>([]);
   const [showProviderManager, setShowProviderManager] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [workspaceState, setWorkspaceState] = useState(() => {
@@ -2448,6 +2389,43 @@ export function App() {
     cancelEditProvider(providerId);
   }
 
+  async function refreshProviderModels(providerId: string) {
+    const provider =
+      providerDrafts[providerId] ?? providers.find((current) => current.id === providerId);
+
+    if (!provider) {
+      return;
+    }
+
+    setFetchingProviderModelIds((current) =>
+      current.includes(providerId) ? current : [...current, providerId],
+    );
+
+    try {
+      const result = await fetchProviderModelList(provider);
+
+      if (!result.ok) {
+        setCanvasMessage(result.error);
+        return;
+      }
+
+      const providerWithModels = mergeFetchedProviderModels(provider, result.models);
+
+      if (editingProviderIds.includes(providerId)) {
+        setProviderDrafts((current) => ({
+          ...current,
+          [providerId]: providerWithModels,
+        }));
+      } else {
+        setProviders((current) => saveProviderDraft(current, providerWithModels));
+      }
+
+      setCanvasMessage(`已更新 ${provider.name} 的模型列表：${result.models.length} 个模型`);
+    } finally {
+      setFetchingProviderModelIds((current) => current.filter((id) => id !== providerId));
+    }
+  }
+
   function updateProviderDraft(
     providerId: string,
     updater: (provider: ProviderConfig) => ProviderConfig,
@@ -3122,6 +3100,7 @@ export function App() {
             <div className="provider-list">
               {providerRows.map((provider) => {
                 const isEditingProvider = editingProviderIds.includes(provider.id);
+                const isFetchingProviderModels = fetchingProviderModelIds.includes(provider.id);
                 const providerView = providerDrafts[provider.id] ?? provider;
 
                 return (
@@ -3292,6 +3271,14 @@ export function App() {
                         编辑
                       </button>
                     )}
+                    <button
+                      type="button"
+                      disabled={isFetchingProviderModels}
+                      onClick={() => void refreshProviderModels(provider.id)}
+                    >
+                      <RefreshCw size={16} />
+                      {isFetchingProviderModels ? '获取中' : '获取模型列表'}
+                    </button>
                     <button
                       type="button"
                       className="danger-button"
