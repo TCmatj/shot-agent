@@ -269,7 +269,8 @@ button:disabled {
 }
 
 .toolbar-title,
-.toolbar-actions {
+.toolbar-actions,
+.toolbar-provider-actions {
   align-items: center;
   display: flex;
   gap: 10px;
@@ -1115,11 +1116,13 @@ button:disabled {
 }
 
 .canvas-action-rail {
+  --canvas-bottom-ui-space: 140px;
+
   display: grid;
   gap: 84px;
   left: 18px;
   position: absolute;
-  top: 50%;
+  top: calc((100% - var(--canvas-bottom-ui-space)) / 2);
   transform: translateY(-50%);
   z-index: 1;
 }
@@ -1224,6 +1227,19 @@ button:disabled {
   min-height: 0;
   overflow: auto;
   padding: 18px;
+}
+
+.provider-manager-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  min-width: 1460px;
+}
+
+.provider-manager-header span {
+  color: #dfe5ec;
+  font-weight: 600;
 }
 
 .provider-table {

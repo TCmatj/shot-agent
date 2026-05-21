@@ -2181,7 +2181,7 @@ export function App() {
         </nav>
         <section className="panel storage-panel">
           <div className="panel-title-row">
-            <h2>瀛樺偍</h2>
+            <h2>存储</h2>
             <button
               type="button"
               className="icon-button"
@@ -2202,7 +2202,7 @@ export function App() {
           </label>
           <p>
             {storage.mode === 'custom-folder'
-              ? `当前：{storage.folderName ?? storage.folderPath ?? '自定义文件夹'}`
+              ? `当前：${storage.folderName ?? storage.folderPath ?? '自定义文件夹'}`
               : '当前：浏览器本地存储'}
           </p>
         </section>
@@ -2326,21 +2326,12 @@ export function App() {
           </div>
           <div className="toolbar-actions">
             {showProviderManager ? (
-              <>
+              <div className="toolbar-provider-actions">
                 <button type="button" onClick={addProvider}>
                   <Plus size={18} />
                   新增供应商
                 </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="关闭供应商管理"
-                  title="关闭供应商管理"
-                  onClick={returnToCanvas}
-                >
-                  <X size={18} />
-                </button>
-              </>
+              </div>
             ) : (
               <button type="button">
                 <Play size={18} />
@@ -2351,6 +2342,18 @@ export function App() {
         </div>
         {showProviderManager ? (
           <div className="provider-manager-view">
+            <div className="provider-manager-header">
+              <span>供应商管理</span>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="关闭供应商管理"
+                title="关闭供应商管理"
+                onClick={returnToCanvas}
+              >
+                <X size={18} />
+              </button>
+            </div>
             <div className="provider-table provider-table-header">
               <span>供应商名称</span>
               <span>Base URL</span>
