@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  calculateCanvasCenterFromMinimapFrame,
   calculateMinimapViewportFrame,
   parseStoredCanvasViewports,
   serializeStoredCanvasViewports,
@@ -47,6 +48,20 @@ describe('canvas viewports storage', () => {
       top: expect.any(Number),
       width: 220,
       height: expect.any(Number),
+    });
+  });
+
+  it('maps a dragged minimap viewport frame back to canvas center coordinates', () => {
+    expect(
+      calculateCanvasCenterFromMinimapFrame(
+        { left: 40, top: 30, width: 110, height: 75 },
+        { minX: -80, minY: -80, maxX: 640, maxY: 400, width: 720, height: 480 },
+        { width: 220, height: 150 },
+        { width: 360, height: 240 },
+      ),
+    ).toEqual({
+      x: expect.closeTo(230.909, 3),
+      y: expect.closeTo(138.182, 3),
     });
   });
 });

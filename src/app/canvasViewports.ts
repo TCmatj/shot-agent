@@ -1,4 +1,4 @@
-import type { Bounds, CanvasViewport, Size } from './canvasViewport';
+import type { Bounds, CanvasViewport, Point, Size } from './canvasViewport';
 
 export type StoredCanvasViewports = Record<string, CanvasViewport>;
 
@@ -105,5 +105,25 @@ export function calculateMinimapViewportFrame(
     top: vertical.start,
     width: horizontal.length,
     height: vertical.length,
+  };
+}
+
+export function calculateCanvasCenterFromMinimapFrame(
+  frame: MinimapViewportFrame,
+  bounds: Bounds,
+  minimapSize: Size,
+  viewportSize: Size,
+): Point {
+  const scale = Math.min(minimapSize.width / bounds.width, minimapSize.height / bounds.height);
+  const maxLeft = Math.max(0, minimapSize.width - frame.width);
+  const maxTop = Math.max(0, minimapSize.height - frame.height);
+  const left = clamp(frame.left, 0, maxLeft);
+  const top = clamp(frame.top, 0, maxTop);
+  const viewportX = bounds.minX + left / scale;
+  const viewportY = bounds.minY + top / scale;
+
+  return {
+    x: viewportX + viewportSize.width / 2,
+    y: viewportY + viewportSize.height / 2,
   };
 }

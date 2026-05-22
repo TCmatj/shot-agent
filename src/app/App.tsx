@@ -1,5 +1,6 @@
 ﻿import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CompositionEvent as ReactCompositionEvent,
@@ -150,6 +151,7 @@ import {
   type WorkspaceHistory,
 } from './workspaceHistory';
 import {
+  calculateCanvasCenterFromMinimapFrame,
   calculateMinimapViewportFrame,
   parseStoredCanvasViewports,
   serializeStoredCanvasViewports,
@@ -218,10 +220,22 @@ type DragState =
       current: Point;
     };
 
+type DragPreviewState = {
+  nodeIds: string[];
+  dx: number;
+  dy: number;
+} | null;
+
 type ModalDragState = {
   pointerId: number;
   lastX: number;
   lastY: number;
+};
+
+type MinimapDragState = {
+  pointerId: number;
+  grabOffsetX: number;
+  grabOffsetY: number;
 };
 
 type CanvasActionRailProps = {
@@ -1557,6 +1571,10 @@ export function App() {
   const [workspaceHistory, setWorkspaceHistory] =
     useState<WorkspaceHistory<typeof workspaceState>>(createWorkspaceHistory);
   const [dragState, setDragState] = useState<DragState | null>(null);
+  const dragStateRef = useRef<DragState | null>(null);
+  const [dragPreview, setDragPreview] = useState<DragPreviewState>(null);
+  const dragPreviewRef = useRef<DragPreviewState>(null);
+  const dragPreviewFrameRef = useRef<number | null>(null);
   const [addMenu, setAddMenu] = useState<AddMenuState>(null);
   const [edgeDraft, setEdgeDraft] = useState<EdgeDraft>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -1564,6 +1582,7 @@ export function App() {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [canvasClipboard, setCanvasClipboard] = useState<CanvasClipboardPayload | null>(null);
   const [canvasMessage, setCanvasMessage] = useState<string | null>(null);
+  const [minimapDragState, setMinimapDragState] = useState<MinimapDragState | null>(null);
   const [isRenamingCanvas, setIsRenamingCanvas] = useState(false);
   const [draftCanvasName, setDraftCanvasName] = useState('');
   const [editingCanvasId, setEditingCanvasId] = useState<string | null>(null);
@@ -1603,6 +1622,30 @@ export function App() {
   const canUndoWorkspace = workspaceHistory.past.length > 0;
   const canRedoWorkspace = workspaceHistory.future.length > 0;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? null;
+  const renderedCanvasNodes = useMemo(() => {
+    if (!activeCanvas) {
+      return [];
+    }
+
+    if (!dragPreview || dragPreview.nodeIds.length === 0) {
+      return activeCanvas.nodes;
+    }
+
+    const previewNodeIds = new Set(dragPreview.nodeIds);
+    return activeCanvas.nodes.map((node) =>
+      previewNodeIds.has(node.id)
+        ? {
+            ...node,
+            x: node.x + dragPreview.dx,
+            y: node.y + dragPreview.dy,
+          }
+        : node,
+    );
+  }, [activeCanvas, dragPreview]);
+  const renderedActiveCanvas = useMemo(
+    () => (activeCanvas ? { ...activeCanvas, nodes: renderedCanvasNodes } : null),
+    [activeCanvas, renderedCanvasNodes],
+  );
   const selectedNode =
     activeCanvas?.nodes.find((node) => node.id === selectedNodeId) ?? null;
   const selectedVideoScenario =
@@ -1699,7 +1742,7 @@ export function App() {
   const selectedProviderHasDraft = selectedProvider
     ? Boolean(providerDrafts[selectedProvider.id])
     : false;
-  const minimapBounds = getCanvasContentBounds(activeCanvas?.nodes ?? [], canvasNodeSize);
+  const minimapBounds = getCanvasContentBounds(renderedCanvasNodes, canvasNodeSize);
   const minimapScale = Math.min(
     minimapSize.width / minimapBounds.width,
     minimapSize.height / minimapBounds.height,
@@ -1720,6 +1763,15 @@ export function App() {
     () => () => {
       seedanceTrackersRef.current.forEach((tracker) => tracker.stop());
       seedanceTrackersRef.current.clear();
+    },
+    [],
+  );
+
+  useEffect(
+    () => () => {
+      if (dragPreviewFrameRef.current !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(dragPreviewFrameRef.current);
+      }
     },
     [],
   );
@@ -2440,10 +2492,53 @@ export function App() {
     return node.chatFormat ?? 'openai';
   }
 
+  function updateDragState(next: DragState | null) {
+    dragStateRef.current = next;
+    setDragState(next);
+  }
+
+  function flushDragPreview() {
+    if (dragPreviewFrameRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(dragPreviewFrameRef.current);
+      dragPreviewFrameRef.current = null;
+    }
+
+    setDragPreview(dragPreviewRef.current);
+  }
+
+  function scheduleDragPreview(next: DragPreviewState) {
+    dragPreviewRef.current = next;
+
+    if (typeof window === 'undefined') {
+      setDragPreview(next);
+      return;
+    }
+
+    if (dragPreviewFrameRef.current !== null) {
+      return;
+    }
+
+    dragPreviewFrameRef.current = window.requestAnimationFrame(() => {
+      dragPreviewFrameRef.current = null;
+      setDragPreview(dragPreviewRef.current);
+    });
+  }
+
+  function clearDragPreview() {
+    if (dragPreviewFrameRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(dragPreviewFrameRef.current);
+      dragPreviewFrameRef.current = null;
+    }
+
+    dragPreviewRef.current = null;
+    setDragPreview(null);
+  }
+
   function startRenameNode(node: CanvasNodeView, surface: 'canvas' | 'inspector') {
     setAddMenu(null);
     setEdgeDraft(null);
-    setDragState(null);
+    updateDragState(null);
+    clearDragPreview();
     selectSingleNode(node.id);
     setEditingNodeTitleId(node.id);
     setEditingNodeTitleSurface(surface);
@@ -2694,12 +2789,13 @@ export function App() {
 
     setAddMenu(null);
     setEdgeDraft(null);
+    clearDragPreview();
     clearSelection();
     event.currentTarget.setPointerCapture(event.pointerId);
 
     if (event.metaKey || event.ctrlKey) {
       const point = getCanvasPointFromClient(event.clientX, event.clientY);
-      setDragState({
+      updateDragState({
         mode: 'select',
         pointerId: event.pointerId,
         start: point,
@@ -2708,7 +2804,7 @@ export function App() {
       return;
     }
 
-    setDragState({
+    updateDragState({
       mode: 'pan',
       pointerId: event.pointerId,
       lastX: event.clientX,
@@ -2724,6 +2820,7 @@ export function App() {
     event.stopPropagation();
     setAddMenu(null);
     setEdgeDraft(null);
+    clearDragPreview();
     const nodeIdsToDrag = selectedNodeIds.includes(nodeId) ? selectedNodeIds : [nodeId];
 
     if (!selectedNodeIds.includes(nodeId)) {
@@ -2734,7 +2831,7 @@ export function App() {
 
     setWorkspaceHistory((history) => pushWorkspaceHistory(history, workspaceState));
     event.currentTarget.setPointerCapture(event.pointerId);
-    setDragState({
+    updateDragState({
       mode: 'node',
       pointerId: event.pointerId,
       nodeId,
@@ -2753,39 +2850,45 @@ export function App() {
       return;
     }
 
-    if (!dragState || dragState.pointerId !== event.pointerId) {
+    const activeDragState = dragStateRef.current;
+
+    if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
       return;
     }
 
-    if (dragState.mode === 'select') {
-      setDragState({
-        ...dragState,
+    if (activeDragState.mode === 'select') {
+      updateDragState({
+        ...activeDragState,
         current: getCanvasPointFromClient(event.clientX, event.clientY),
       });
       return;
     }
 
     const clientDelta = {
-      dx: event.clientX - dragState.lastX,
-      dy: event.clientY - dragState.lastY,
+      dx: event.clientX - activeDragState.lastX,
+      dy: event.clientY - activeDragState.lastY,
     };
     const delta = getCanvasDeltaFromClientDelta(clientDelta);
 
-    if (dragState.mode === 'pan') {
+    if (activeDragState.mode === 'pan') {
       setViewport((current) => panViewport(current, delta));
     } else {
       const canvasDelta = {
         dx: delta.dx / viewport.scale,
         dy: delta.dy / viewport.scale,
       };
-
-      updateActiveCanvasNodes((nodes) =>
-        moveCanvasNodes(nodes, dragState.nodeIds, canvasDelta),
-        { history: false },
-      );
+      scheduleDragPreview({
+        nodeIds: activeDragState.nodeIds,
+        dx: (dragPreviewRef.current?.dx ?? 0) + canvasDelta.dx,
+        dy: (dragPreviewRef.current?.dy ?? 0) + canvasDelta.dy,
+      });
     }
 
-    setDragState({ ...dragState, lastX: event.clientX, lastY: event.clientY });
+    dragStateRef.current = {
+      ...activeDragState,
+      lastX: event.clientX,
+      lastY: event.clientY,
+    };
   }
 
   function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
@@ -2794,10 +2897,12 @@ export function App() {
       return;
     }
 
-    if (dragState?.pointerId === event.pointerId) {
-      if (dragState.mode === 'select') {
+    const activeDragState = dragStateRef.current;
+
+    if (activeDragState?.pointerId === event.pointerId) {
+      if (activeDragState.mode === 'select') {
         const rect = normalizeCanvasSelectionRect(
-          dragState.start,
+          activeDragState.start,
           getCanvasPointFromClient(event.clientX, event.clientY),
         );
         const selectedIds =
@@ -2808,9 +2913,20 @@ export function App() {
         setSelectedNodeIds(selectedIds);
         setSelectedNodeId(selectedIds.length === 1 ? selectedIds[0] : null);
         setSelectedEdgeId(null);
+      } else if (activeDragState.mode === 'node' && dragPreviewRef.current) {
+        const preview = dragPreviewRef.current;
+        flushDragPreview();
+
+        if (preview.dx !== 0 || preview.dy !== 0) {
+          updateActiveCanvasNodes(
+            (nodes) => moveCanvasNodes(nodes, preview.nodeIds, preview),
+            { history: false },
+          );
+        }
       }
 
-      setDragState(null);
+      updateDragState(null);
+      clearDragPreview();
     }
   }
 
@@ -2827,7 +2943,8 @@ export function App() {
     const from = getNodeOutputPoint(node);
 
     setAddMenu(null);
-    setDragState(null);
+    updateDragState(null);
+    clearDragPreview();
     selectSingleNode(node.id);
     setEdgeDraft({
       fromNodeId: node.id,
@@ -3020,31 +3137,106 @@ export function App() {
     setViewport(defaultViewport);
   }
 
-  function focusMinimapPoint(event: PointerEvent<HTMLButtonElement>) {
-    if (!activeCanvas) {
+  function getViewportSizeForMinimap() {
+    const canvas = canvasRef.current;
+
+    return (
+      canvasSize ??
+      (canvas
+        ? { width: canvas.offsetWidth, height: canvas.offsetHeight }
+        : { width: 960, height: 640 })
+    );
+  }
+
+  function focusMinimapAtLocalPoint(localPoint: Point) {
+    if (!renderedActiveCanvas) {
+      return;
+    }
+
+    const bounds = getCanvasContentBounds(renderedActiveCanvas.nodes, canvasNodeSize);
+    const center = {
+      x: bounds.minX + bounds.width * Math.min(1, Math.max(0, localPoint.x / minimapSize.width)),
+      y: bounds.minY + bounds.height * Math.min(1, Math.max(0, localPoint.y / minimapSize.height)),
+    };
+
+    setViewport(
+      getViewportForCanvasCenter(center, getViewportSizeForMinimap(), viewport.scale),
+    );
+  }
+
+  function moveViewportFromMinimapFrame(nextFrame: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  }) {
+    const center = calculateCanvasCenterFromMinimapFrame(
+      nextFrame,
+      minimapBounds,
+      minimapSize,
+      {
+        width: getViewportSizeForMinimap().width / viewport.scale,
+        height: getViewportSizeForMinimap().height / viewport.scale,
+      },
+    );
+
+    setViewport(
+      getViewportForCanvasCenter(center, getViewportSizeForMinimap(), viewport.scale),
+    );
+  }
+
+  function handleMinimapPointerDown(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+
+    if (event.button !== 0) {
       return;
     }
 
     const rect = event.currentTarget.getBoundingClientRect();
-    const bounds = getCanvasContentBounds(activeCanvas.nodes, canvasNodeSize);
-    const xRatio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5;
-    const yRatio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5;
-    const center = {
-      x: bounds.minX + bounds.width * Math.min(1, Math.max(0, xRatio)),
-      y: bounds.minY + bounds.height * Math.min(1, Math.max(0, yRatio)),
+    const localPoint = {
+      x: Math.min(Math.max(0, event.clientX - rect.left), rect.width),
+      y: Math.min(Math.max(0, event.clientY - rect.top), rect.height),
     };
-    const canvas = canvasRef.current;
 
-    setViewport(
-      getViewportForCanvasCenter(
-        center,
-        canvasSize ??
-          (canvas
-            ? { width: canvas.offsetWidth, height: canvas.offsetHeight }
-            : { width: 960, height: 640 }),
-        viewport.scale,
-      ),
-    );
+    if (
+      minimapViewportFrame &&
+      event.target instanceof Element &&
+      event.target.closest('.canvas-minimap-window')
+    ) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setMinimapDragState({
+        pointerId: event.pointerId,
+        grabOffsetX: localPoint.x - minimapViewportFrame.left,
+        grabOffsetY: localPoint.y - minimapViewportFrame.top,
+      });
+      return;
+    }
+
+    focusMinimapAtLocalPoint(localPoint);
+  }
+
+  function handleMinimapPointerMove(event: PointerEvent<HTMLButtonElement>) {
+    if (!minimapDragState || minimapDragState.pointerId !== event.pointerId || !minimapViewportFrame) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const localPoint = {
+      x: Math.min(Math.max(0, event.clientX - rect.left), rect.width),
+      y: Math.min(Math.max(0, event.clientY - rect.top), rect.height),
+    };
+
+    moveViewportFromMinimapFrame({
+      ...minimapViewportFrame,
+      left: localPoint.x - minimapDragState.grabOffsetX,
+      top: localPoint.y - minimapDragState.grabOffsetY,
+    });
+  }
+
+  function handleMinimapPointerEnd(event: PointerEvent<HTMLButtonElement>) {
+    if (minimapDragState?.pointerId === event.pointerId) {
+      setMinimapDragState(null);
+    }
   }
 
   function addProvider() {
@@ -3784,10 +3976,12 @@ export function App() {
               type="button"
               className="canvas-minimap"
               aria-label="缩略位置图"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={focusMinimapPoint}
+              onPointerDown={handleMinimapPointerDown}
+              onPointerMove={handleMinimapPointerMove}
+              onPointerUp={handleMinimapPointerEnd}
+              onPointerCancel={handleMinimapPointerEnd}
             >
-              {activeCanvas.nodes.map((node) => (
+              {renderedCanvasNodes.map((node) => (
                 <span
                   key={node.id}
                   className={`canvas-minimap-node is-${node.kind}`}
@@ -3801,7 +3995,9 @@ export function App() {
               ))}
               {minimapViewportFrame ? (
                 <span
-                  className="canvas-minimap-window"
+                  className={`canvas-minimap-window ${
+                    minimapDragState ? 'is-dragging' : ''
+                  }`}
                   style={{
                     left: minimapViewportFrame.left,
                     top: minimapViewportFrame.top,
@@ -4418,9 +4614,9 @@ export function App() {
             }}
           >
             <svg className="edge-layer" aria-label="节点连线">
-              {activeCanvas?.edges.map((edge) => {
-                const fromNode = activeCanvas.nodes.find((node) => node.id === edge.fromNodeId);
-                const toNode = activeCanvas.nodes.find((node) => node.id === edge.toNodeId);
+              {renderedActiveCanvas?.edges.map((edge) => {
+                const fromNode = renderedActiveCanvas.nodes.find((node) => node.id === edge.fromNodeId);
+                const toNode = renderedActiveCanvas.nodes.find((node) => node.id === edge.toNodeId);
 
                 if (!fromNode || !toNode) {
                   return null;
@@ -4476,7 +4672,7 @@ export function App() {
                 }}
               />
             ) : null}
-            {activeCanvas?.nodes.map((node) => {
+            {renderedCanvasNodes.map((node) => {
               const Icon = getNodeIcon(node.kind);
               const providersForNode = findProvidersForNode(node);
               const isGenerating = runningNodeIds.has(node.id);

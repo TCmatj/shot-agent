@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../../src/app/App';
@@ -14,6 +14,24 @@ const workspaceStorageKey = 'shot-agent:canvas-workspace';
 describe('App image preview', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    HTMLElement.prototype.setPointerCapture = vi.fn();
+    HTMLElement.prototype.releasePointerCapture = vi.fn();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal(
+      'PointerEvent',
+      class PointerEvent extends MouseEvent {
+        pointerId: number;
+
+        constructor(type: string, init?: MouseEventInit & { pointerId?: number }) {
+          super(type, init);
+          this.pointerId = init?.pointerId ?? 0;
+        }
+      },
+    );
 
     vi.stubGlobal(
       'ResizeObserver',
@@ -214,5 +232,103 @@ describe('App video node inspector', () => {
     expect(within(videoNode!).queryByText('首帧图')).toBeNull();
     expect(within(videoNode!).queryByText('尾帧图')).toBeNull();
     expect(within(videoNode!).getByText('文本')).toBeTruthy();
+  });
+});
+
+describe('App canvas dragging', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    HTMLElement.prototype.setPointerCapture = vi.fn();
+    HTMLElement.prototype.releasePointerCapture = vi.fn();
+    vi.stubGlobal(
+      'PointerEvent',
+      class PointerEvent extends MouseEvent {
+        pointerId: number;
+
+        constructor(type: string, init?: MouseEventInit & { pointerId?: number }) {
+          super(type, init);
+          this.pointerId = init?.pointerId ?? 0;
+        }
+      },
+    );
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      },
+    );
+  });
+
+  it('applies node drag deltas from the latest pointer position inside a single batch', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_drag',
+          name: '拖动画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'node_text_1',
+              title: '文本节点',
+              modelId: 'asset-text',
+              kind: 'textAsset',
+              x: 0,
+              y: 0,
+              textContent: '拖动测试',
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    const { container } = render(<App />);
+    const canvas = container.querySelector('.infinite-canvas') as HTMLDivElement | null;
+    const header = container.querySelector('.canvas-node header') as HTMLElement | null;
+    const node = container.querySelector('.canvas-node') as HTMLElement | null;
+
+    expect(canvas).toBeTruthy();
+    expect(header).toBeTruthy();
+    expect(node).toBeTruthy();
+
+    act(() => {
+      fireEvent.pointerDown(header!, {
+        button: 0,
+        pointerId: 1,
+        clientX: 100,
+        clientY: 100,
+      });
+      canvas!.dispatchEvent(
+        new PointerEvent('pointermove', {
+          bubbles: true,
+          pointerId: 1,
+          clientX: 110,
+          clientY: 100,
+        }),
+      );
+      canvas!.dispatchEvent(
+        new PointerEvent('pointermove', {
+          bubbles: true,
+          pointerId: 1,
+          clientX: 120,
+          clientY: 100,
+        }),
+      );
+      canvas!.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          pointerId: 1,
+          clientX: 120,
+          clientY: 100,
+        }),
+      );
+    });
+
+    expect(node!.style.transform).toContain('translate(20px, 0px)');
   });
 });

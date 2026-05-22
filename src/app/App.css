@@ -1245,9 +1245,14 @@ audio.asset-preview {
 .canvas-minimap-window {
   background: rgba(255, 255, 255, 0.05);
   border: 2px solid rgba(255, 255, 255, 0.48);
+  cursor: grab;
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.18),
     0 0 18px rgba(255, 255, 255, 0.08);
+}
+
+.canvas-minimap-window.is-dragging {
+  cursor: grabbing;
 }
 
 @media (max-width: 720px) {
