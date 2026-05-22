@@ -176,6 +176,41 @@ export async function saveDataUrlOutputToCanvasFolder(
   };
 }
 
+export async function saveGeneratedMediaBlobToCanvasFolder(
+  rootHandle: ShotAgentDirectoryHandle,
+  canvas: CanvasView,
+  input: {
+    blob: Blob;
+    fileName: string;
+    kind: 'image' | 'video' | 'cover';
+  },
+): Promise<{ assetName: string; assetPath: string; mimeType: string }> {
+  const canvasDir = await getCanvasDirectory(rootHandle, canvas, true);
+  const assetsDir = await canvasDir.getDirectoryHandle('assets', { create: true });
+  const mediaDirName =
+    input.kind === 'video' ? 'videos' : input.kind === 'cover' ? 'covers' : 'images';
+  const mediaDir = await assetsDir.getDirectoryHandle(mediaDirName, { create: true });
+  const extension = getExtensionFromMimeType(
+    input.blob.type,
+    input.kind === 'video' ? 'video' : 'image',
+  );
+  const assetName = await makeUniqueFileName(
+    mediaDir,
+    ensureFileExtension(input.fileName, extension),
+  );
+  const fileHandle = await mediaDir.getFileHandle(assetName, { create: true });
+  const writable = await fileHandle.createWritable();
+
+  await writable.write(input.blob);
+  await writable.close();
+
+  return {
+    assetName,
+    assetPath: `assets/${mediaDirName}/${assetName}`,
+    mimeType: input.blob.type,
+  };
+}
+
 async function hydrateWorkspaceAssetUrls(
   rootHandle: ShotAgentDirectoryHandle,
   state: CanvasWorkspaceState,
@@ -192,6 +227,9 @@ async function hydrateWorkspaceAssetUrls(
           outputDataUrl: node.outputPath
             ? await readAssetObjectUrl(rootHandle, canvas, node.outputPath)
             : node.outputDataUrl,
+          outputCoverDataUrl: node.outputCoverPath
+            ? await readAssetObjectUrl(rootHandle, canvas, node.outputCoverPath)
+            : node.outputCoverDataUrl,
         })),
       ),
     })),
@@ -248,6 +286,22 @@ async function persistCanvasAssets(
           };
         }
 
+        if (nextNode.outputCoverDataUrl && !nextNode.outputCoverPath) {
+          const savedCover = await saveDataUrlAssetToCanvasDirectory(
+            canvasDir,
+            nextNode.outputCoverDataUrl,
+            {
+              kind: 'image',
+              fileName: `${nextNode.id}-cover-${Date.now()}`,
+              directoryName: 'covers',
+            },
+          );
+          nextNode = {
+            ...nextNode,
+            outputCoverPath: savedCover.assetPath,
+          };
+        }
+
         return nextNode;
       }),
     ),
@@ -260,11 +314,12 @@ async function saveDataUrlAssetToCanvasDirectory(
   input: {
     kind: 'image' | 'video' | 'file';
     fileName: string;
+    directoryName?: 'images' | 'videos' | 'files' | 'covers';
   },
 ): Promise<{ assetName: string; assetPath: string; mimeType: string }> {
   const blob = dataUrlToBlob(dataUrl);
   const assetsDir = await canvasDir.getDirectoryHandle('assets', { create: true });
-  const mediaDirName = getMediaDirectoryName(input.kind);
+  const mediaDirName = input.directoryName ?? getMediaDirectoryName(input.kind);
   const mediaDir = await assetsDir.getDirectoryHandle(mediaDirName, { create: true });
   const extension = getExtensionFromMimeType(
     blob.type,

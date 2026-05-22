@@ -13,14 +13,27 @@ import {
   mapCanonicalModelToProviderModel,
   type ProviderConfig,
 } from '../domain/provider';
+import {
+  getSeedanceCapabilities,
+  type SeedanceInputPortId,
+  type SeedanceModelId,
+  type SeedanceScenario,
+} from '../domain/seedance';
 
 type ModelNodeKind = 'image' | 'video' | 'chat';
 
 type InputAsset = {
   node: CanvasNodeView;
-  role: 'text' | 'reference_image' | 'reference_video';
+  role: 'text' | 'reference_image' | 'reference_video' | 'reference_audio';
   content: string;
   token?: string;
+  mimeType?: string;
+};
+
+type SeedanceConnectedAsset = {
+  node: CanvasNodeView;
+  portId?: SeedanceInputPortId | 'default';
+  content: string;
   mimeType?: string;
 };
 
@@ -65,6 +78,9 @@ export type GenerationOutput =
       taskId?: string;
       status?: string;
       videoUrl?: string;
+      lastFrameUrl?: string;
+      completionTokens?: number;
+      totalTokens?: number;
       rawResponse: unknown;
     }
   | {
@@ -76,6 +92,25 @@ export type GenerationOutput =
 export type SubmitGenerationNodeInput = BuildGenerationRequestInput & {
   fetcher?: GenerationFetch;
 };
+
+export type QueryGenerationTaskInput = {
+  provider: ProviderConfig;
+  taskId: string;
+  token?: string;
+  fetcher?: GenerationFetch;
+};
+
+export type QueryGenerationTaskResult =
+  | {
+      ok: true;
+      output: Extract<GenerationOutput, { kind: 'video-task' }>;
+    }
+  | {
+      ok: false;
+      error: string;
+      status?: number;
+      rawResponse?: unknown;
+    };
 
 export type StreamGenerationNodeInput = BuildGenerationRequestInput & {
   fetcher?: typeof fetch;
@@ -181,6 +216,13 @@ export function buildGenerationRequest(
   const prompt = buildPrompt(node, input.canvas);
   if (!prompt.trim()) {
     return { ok: false, error: '提交前必须填写提示词' };
+  }
+
+  if (node.kind === 'video' && input.provider.protocol === 'volcengine') {
+    const validationError = validateSeedanceVideoNode(node);
+    if (validationError) {
+      return { ok: false, error: validationError };
+    }
   }
 
   if (input.provider.protocol === 'volcengine') {
@@ -304,6 +346,58 @@ export async function submitGenerationNode(
   }
 
   return normalizeOutput(built.request.responseKind, rawResponse);
+}
+
+export async function queryGenerationTask(
+  input: QueryGenerationTaskInput,
+): Promise<QueryGenerationTaskResult> {
+  if (!input.token?.trim()) {
+    return { ok: false, error: `缺少供应商密钥：${input.provider.apiTokenRef}` };
+  }
+
+  if (input.provider.protocol !== 'volcengine') {
+    return { ok: false, error: `当前供应商不支持任务查询：${input.provider.protocol}` };
+  }
+
+  const fetcher = input.fetcher ?? fetch;
+  let response: Awaited<ReturnType<GenerationFetch>>;
+
+  try {
+    response = await fetcher(
+      `${normalizeBaseURL(input.provider.baseURL, false)}/api/v3/contents/generations/tasks/${input.taskId}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${input.token}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : '查询生成任务失败',
+    };
+  }
+
+  const rawResponse = await readResponse(response);
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: extractErrorMessage(rawResponse) ?? `请求失败（${response.status}）`,
+      status: response.status,
+      rawResponse,
+    };
+  }
+
+  const normalized = normalizeOutput('video-task', rawResponse);
+  return normalized.ok && normalized.output.kind === 'video-task'
+    ? { ok: true, output: normalized.output }
+    : {
+        ok: false,
+        error: normalized.ok ? '视频任务查询响应格式错误' : normalized.error,
+        rawResponse,
+      };
 }
 
 export async function streamChatGenerationNode(
@@ -607,25 +701,14 @@ function buildSeedanceVideoTaskRequest(
   node: CanvasNodeView,
   canvas: CanvasView,
 ): GenerationRequest {
-  const mediaContent = collectInputAssets(node, canvas)
-    .filter((asset) => asset.role === 'reference_image' || asset.role === 'reference_video')
-    .map((asset) =>
-      asset.role === 'reference_image'
-        ? {
-            type: 'image_url',
-            image_url: {
-              url: asset.content,
-              role: 'reference_image',
-            },
-          }
-        : {
-            type: 'video_url',
-            video_url: {
-              url: asset.content,
-              role: 'reference_video',
-            },
-          },
-    );
+  const scenario = node.seedanceScenario ?? 'text_to_video';
+  const body = buildSeedanceRequestBody({
+    providerModelId: model,
+    prompt,
+    node,
+    canvas,
+    scenario,
+  });
 
   return {
     url: `${normalizeBaseURL(provider.baseURL, false)}/api/v3/contents/generations/tasks`,
@@ -634,12 +717,261 @@ function buildSeedanceVideoTaskRequest(
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model,
-      content: [{ type: 'text', text: prompt }, ...mediaContent],
-    }),
+    body: JSON.stringify(body),
     responseKind: 'video-task',
   };
+}
+
+function validateSeedanceVideoNode(node: CanvasNodeView): string | null {
+  const modelId = node.modelId as SeedanceModelId;
+  const resolution = node.videoResolution ?? '720p';
+  const capabilities = getSeedanceCapabilities(modelId);
+
+  if (!capabilities.supportedResolutions.includes(resolution)) {
+    return `当前模型不支持所选视频分辨率：${resolution}`;
+  }
+
+  return null;
+}
+
+function buildSeedanceRequestBody(input: {
+  providerModelId: string;
+  prompt: string;
+  node: CanvasNodeView;
+  canvas: CanvasView;
+  scenario: SeedanceScenario;
+}): Record<string, unknown> {
+  return {
+    model: input.providerModelId,
+    content: [
+      { type: 'text', text: input.prompt },
+      ...collectSeedanceScenarioAssets(input.node, input.canvas, input.scenario),
+    ],
+    ...(input.node.videoResolution ? { resolution: input.node.videoResolution } : {}),
+    ...(input.node.videoRatio ? { ratio: input.node.videoRatio } : {}),
+    ...(typeof input.node.videoDurationSeconds === 'number'
+      ? { duration: input.node.videoDurationSeconds }
+      : {}),
+    ...(typeof input.node.videoFramesPerSecond === 'number'
+      ? { framespersecond: input.node.videoFramesPerSecond }
+      : {}),
+    ...(typeof input.node.videoSeed === 'number' ? { seed: input.node.videoSeed } : {}),
+    ...(typeof input.node.videoReturnLastFrame === 'boolean'
+      ? { return_last_frame: input.node.videoReturnLastFrame }
+      : {}),
+    ...(typeof input.node.videoGenerateAudio === 'boolean'
+      ? { generate_audio: input.node.videoGenerateAudio }
+      : {}),
+    ...(typeof input.node.videoPriority === 'number' ? { priority: input.node.videoPriority } : {}),
+  };
+}
+
+function collectSeedanceScenarioAssets(
+  node: CanvasNodeView,
+  canvas: CanvasView,
+  scenario: SeedanceScenario,
+): Array<Record<string, unknown>> {
+  const assets = collectConnectedSeedanceAssets(node, canvas);
+  const hasRolePorts = assets.some((asset) => asset.portId && asset.portId !== 'default');
+
+  if (hasRolePorts) {
+    return collectRoleBasedSeedanceAssets(assets);
+  }
+
+  const imageAssets = assets.filter((asset) => asset.node.kind === 'image' || asset.node.kind === 'imageAsset');
+  const videoAssets = assets.filter((asset) => asset.node.kind === 'video' || asset.node.kind === 'videoAsset');
+
+  if (scenario === 'image_to_video_first_frame') {
+    return imageAssets.slice(0, 1).map((asset) => ({
+      type: 'image_url',
+      image_url: {
+        url: asset.content,
+        role: 'first_frame',
+      },
+    }));
+  }
+
+  if (scenario === 'image_to_video_first_last_frame') {
+    return imageAssets.slice(0, 2).map((asset, index) => ({
+      type: 'image_url',
+      image_url: {
+        url: asset.content,
+        role: index === 0 ? 'first_frame' : 'last_frame',
+      },
+    }));
+  }
+
+  if (scenario === 'multimodal_reference_video') {
+    return [
+      ...imageAssets.map((asset) => ({
+        type: 'image_url',
+        image_url: {
+          url: asset.content,
+          role: 'reference_image',
+        },
+      })),
+      ...videoAssets.map((asset) => ({
+        type: 'video_url',
+        video_url: {
+          url: asset.content,
+          role: 'reference_video',
+        },
+      })),
+    ];
+  }
+
+  return [
+    ...imageAssets.map((asset) => ({
+      type: 'image_url',
+      image_url: {
+        url: asset.content,
+        role: 'reference_image',
+      },
+    })),
+    ...videoAssets.map((asset) => ({
+      type: 'video_url',
+      video_url: {
+        url: asset.content,
+        role: 'reference_video',
+      },
+    })),
+  ];
+}
+
+function collectRoleBasedSeedanceAssets(
+  assets: SeedanceConnectedAsset[],
+): Array<Record<string, unknown>> {
+  return assets.flatMap<Record<string, unknown>>((asset) => {
+    if (asset.portId === 'first_frame_image') {
+      return [{
+        type: 'image_url',
+        image_url: {
+          url: asset.content,
+          role: 'first_frame',
+        },
+      }];
+    }
+
+    if (asset.portId === 'last_frame_image') {
+      return [{
+        type: 'image_url',
+        image_url: {
+          url: asset.content,
+          role: 'last_frame',
+        },
+      }];
+    }
+
+    if (asset.portId === 'reference_image') {
+      return [{
+        type: 'image_url',
+        image_url: {
+          url: asset.content,
+          role: 'reference_image',
+        },
+      }];
+    }
+
+    if (asset.portId === 'reference_video') {
+      return [{
+        type: 'video_url',
+        video_url: {
+          url: asset.content,
+          role: 'reference_video',
+        },
+      }];
+    }
+
+    if (asset.portId === 'reference_audio') {
+      return [{
+        type: 'audio_url',
+        audio_url: {
+          url: asset.content,
+          role: 'reference_audio',
+        },
+      }];
+    }
+
+    return [];
+  });
+}
+
+function collectConnectedSeedanceAssets(node: CanvasNodeView, canvas: CanvasView): SeedanceConnectedAsset[] {
+  return canvas.edges
+    .filter((edge) => edge.toNodeId === node.id)
+    .map((edge) => ({
+      edge,
+      node: canvas.nodes.find((candidate) => candidate.id === edge.fromNodeId),
+    }))
+    .filter(
+      (
+        value,
+      ): value is {
+        edge: CanvasView['edges'][number];
+        node: CanvasNodeView;
+      } => Boolean(value.node),
+    )
+    .sort((first, second) => first.node.y - second.node.y || first.node.x - second.node.x)
+    .flatMap<SeedanceConnectedAsset>(({ edge, node: connectedNode }) => {
+      if (connectedNode.kind === 'imageAsset') {
+        return connectedNode.assetDataUrl
+          ? [{
+              node: connectedNode,
+              portId: edge.toPortId,
+              content: connectedNode.assetDataUrl,
+              mimeType: connectedNode.assetMimeType,
+            }]
+          : [];
+      }
+
+      if (connectedNode.kind === 'image') {
+        const imageUrl = connectedNode.outputDataUrl ?? connectedNode.outputUrl;
+        return imageUrl
+          ? [{
+              node: connectedNode,
+              portId: edge.toPortId,
+              content: imageUrl,
+              mimeType: connectedNode.assetMimeType,
+            }]
+          : [];
+      }
+
+      if (connectedNode.kind === 'videoAsset') {
+        return connectedNode.assetDataUrl
+          ? [{
+              node: connectedNode,
+              portId: edge.toPortId,
+              content: connectedNode.assetDataUrl,
+              mimeType: connectedNode.assetMimeType,
+            }]
+          : [];
+      }
+
+      if (connectedNode.kind === 'video') {
+        const videoUrl = connectedNode.outputDataUrl ?? connectedNode.outputUrl;
+        return videoUrl
+          ? [{
+              node: connectedNode,
+              portId: edge.toPortId,
+              content: videoUrl,
+              mimeType: connectedNode.assetMimeType,
+            }]
+          : [];
+      }
+
+      if (connectedNode.kind === 'audioAsset') {
+        return connectedNode.assetDataUrl
+          ? [{
+              node: connectedNode,
+              portId: edge.toPortId,
+              content: connectedNode.assetDataUrl,
+              mimeType: connectedNode.assetMimeType,
+            }]
+          : [];
+      }
+
+      return [];
+    });
 }
 
 function buildPrompt(node: CanvasNodeView, canvas: CanvasView): string {
@@ -676,9 +1008,10 @@ function renderPromptForModel(
 }
 
 function buildPromptReferenceLabelQueues(inputAssets: InputAsset[]): Map<string, string[]> {
-  const kindCounts: Record<'image' | 'video', number> = {
+  const kindCounts: Record<'image' | 'video' | 'audio', number> = {
     image: 0,
     video: 0,
+    audio: 0,
   };
   const queues = new Map<string, string[]>();
 
@@ -700,13 +1033,17 @@ function buildPromptReferenceLabelQueues(inputAssets: InputAsset[]): Map<string,
   return queues;
 }
 
-function getInputAssetKind(asset: InputAsset): 'image' | 'video' | 'text' {
+function getInputAssetKind(asset: InputAsset): 'image' | 'video' | 'audio' | 'text' {
   if (asset.role === 'reference_image') {
     return 'image';
   }
 
   if (asset.role === 'reference_video') {
     return 'video';
+  }
+
+  if (asset.role === 'reference_audio') {
+    return 'audio';
   }
 
   return 'text';
@@ -716,8 +1053,15 @@ function getPromptReferenceKey(kind: string, assetId: string, token?: string): s
   return `${kind}:${assetId}:${token ?? ''}`;
 }
 
-function getReferenceLabel(kind: 'image' | 'video' | 'text', index: number): string {
-  const prefix = kind === 'image' ? '图片' : kind === 'video' ? '视频' : '文本';
+function getReferenceLabel(kind: 'image' | 'video' | 'audio' | 'text', index: number): string {
+  const prefix =
+    kind === 'image'
+      ? '图片'
+      : kind === 'video'
+        ? '视频'
+        : kind === 'audio'
+          ? '音频'
+          : '文本';
 
   return `${prefix}${formatChineseIndex(index)}`;
 }
@@ -812,6 +1156,25 @@ function collectPromptReferencedInputs(node: CanvasNodeView, canvas: CanvasView)
               node: referencedNode,
               role: 'reference_video',
               content: videoUrl,
+              token: match.token,
+              mimeType: referencedNode.assetMimeType,
+            },
+          ]
+        : [];
+    }
+
+    if (kind === 'audio') {
+      const audioUrl =
+        referencedNode.kind === 'audioAsset'
+          ? referencedNode.assetDataUrl
+          : undefined;
+
+      return audioUrl
+        ? [
+            {
+              node: referencedNode,
+              role: 'reference_audio',
+              content: audioUrl,
               token: match.token,
               mimeType: referencedNode.assetMimeType,
             },
@@ -963,17 +1326,30 @@ function firstText(rawResponse: unknown): string | null {
   return null;
 }
 
-function videoTask(rawResponse: unknown): { taskId?: string; status?: string; videoUrl?: string } {
+function videoTask(rawResponse: unknown): {
+  taskId?: string;
+  status?: string;
+  videoUrl?: string;
+  lastFrameUrl?: string;
+  completionTokens?: number;
+  totalTokens?: number;
+} {
   if (!isRecord(rawResponse)) {
     return {};
   }
 
   const data = isRecord(rawResponse.data) ? rawResponse.data : rawResponse;
+  const content = isRecord(data.content) ? data.content : undefined;
+  const usage = isRecord(data.usage) ? data.usage : undefined;
 
   return {
     taskId: stringField(data, ['id', 'task_id']),
     status: stringField(data, ['status']),
-    videoUrl: stringField(data, ['video_url', 'url']),
+    videoUrl: content ? stringField(content, ['video_url', 'url']) : stringField(data, ['video_url', 'url']),
+    lastFrameUrl: content ? stringField(content, ['last_frame_url']) : undefined,
+    completionTokens:
+      usage && typeof usage.completion_tokens === 'number' ? usage.completion_tokens : undefined,
+    totalTokens: usage && typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined,
   };
 }
 

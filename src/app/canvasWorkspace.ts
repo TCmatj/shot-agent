@@ -4,8 +4,16 @@ import type {
   ImageQuality,
   ImageResolutionTier,
 } from '../domain/imageGenerationOptions';
+import { getSeedanceInputPorts, type SeedanceInputPortId } from '../domain/seedance';
 
-export type CanvasNodeKind = 'image' | 'video' | 'chat' | 'textAsset' | 'imageAsset' | 'videoAsset';
+export type CanvasNodeKind =
+  | 'image'
+  | 'video'
+  | 'chat'
+  | 'textAsset'
+  | 'imageAsset'
+  | 'videoAsset'
+  | 'audioAsset';
 
 export type CanvasNodeView = {
   id: string;
@@ -17,6 +25,22 @@ export type CanvasNodeView = {
   imageResolutionTier?: ImageResolutionTier;
   imageAspectRatio?: string;
   imageQuality?: ImageQuality;
+  seedanceScenario?:
+    | 'text_to_video'
+    | 'image_to_video_first_frame'
+    | 'image_to_video_first_last_frame'
+    | 'multimodal_reference_video';
+  videoResolution?: '480p' | '720p' | '1080p';
+  videoRatio?: string;
+  videoDurationSeconds?: number;
+  videoFramesPerSecond?: number;
+  videoSeed?: number;
+  videoGenerateAudio?: boolean;
+  videoReturnLastFrame?: boolean;
+  videoPriority?: number;
+  estimatedTokenCost?: number;
+  settledCompletionTokens?: number;
+  settledTotalTokens?: number;
   kind: CanvasNodeKind;
   x: number;
   y: number;
@@ -29,6 +53,8 @@ export type CanvasNodeView = {
   outputUrl?: string;
   outputDataUrl?: string;
   outputPath?: string;
+  outputCoverPath?: string;
+  outputCoverDataUrl?: string;
   generationId?: string;
   textContent?: string;
   assetName?: string;
@@ -41,6 +67,7 @@ export type CanvasEdgeView = {
   id: string;
   fromNodeId: string;
   toNodeId: string;
+  toPortId?: SeedanceInputPortId | 'default';
 };
 
 export type CanvasSelectionRect = {
@@ -115,7 +142,8 @@ function isCanvasNodeKind(kind: unknown): kind is CanvasNodeKind {
     kind === 'chat' ||
     kind === 'textAsset' ||
     kind === 'imageAsset' ||
-    kind === 'videoAsset'
+    kind === 'videoAsset' ||
+    kind === 'audioAsset'
   );
 }
 
@@ -128,7 +156,8 @@ function isCanvasEdgeView(value: unknown): value is CanvasEdgeView {
   return (
     typeof edge.id === 'string' &&
     typeof edge.fromNodeId === 'string' &&
-    typeof edge.toNodeId === 'string'
+    typeof edge.toNodeId === 'string' &&
+    (edge.toPortId === undefined || typeof edge.toPortId === 'string')
   );
 }
 
@@ -231,6 +260,7 @@ export function stripTransientAssetData(canvases: CanvasView[]): CanvasView[] {
       ...node,
       assetDataUrl: node.assetPath ? undefined : node.assetDataUrl,
       outputDataUrl: node.outputPath ? undefined : node.outputDataUrl,
+      outputCoverDataUrl: node.outputCoverPath ? undefined : node.outputCoverDataUrl,
     })),
   }));
 }
@@ -444,7 +474,22 @@ export function getNodeCenter(node: CanvasNodeView): { x: number; y: number } {
   };
 }
 
-export function getNodeInputPoint(node: CanvasNodeView): { x: number; y: number } {
+export function getNodeInputPoint(
+  node: CanvasNodeView,
+  portId?: SeedanceInputPortId | 'default',
+): { x: number; y: number } {
+  if (node.kind === 'video' && portId && portId !== 'default') {
+    const ports = getSeedanceInputPorts(node.seedanceScenario ?? 'text_to_video');
+    const portIndex = ports.findIndex((port) => port.id === portId);
+
+    if (portIndex >= 0) {
+      return {
+        x: node.x,
+        y: node.y + 60 + portIndex * 36,
+      };
+    }
+  }
+
   return {
     x: node.x,
     y: node.y + 88,
@@ -559,7 +604,9 @@ export function pasteCanvasClipboard(
     const fromNodeId = idMap.get(edge.fromNodeId);
     const toNodeId = idMap.get(edge.toNodeId);
 
-    return fromNodeId && toNodeId ? [createCanvasEdge(fromNodeId, toNodeId)] : [];
+    return fromNodeId && toNodeId
+      ? [createCanvasEdge(fromNodeId, toNodeId, edge.toPortId)]
+      : [];
   });
 
   return {
@@ -627,7 +674,10 @@ export function canConnectCanvasNodes(fromNode: CanvasNodeView, toNode: CanvasNo
     return false;
   }
 
-  if (toNode.kind === 'chat' && (fromNode.kind === 'video' || fromNode.kind === 'videoAsset')) {
+  if (
+    toNode.kind === 'chat' &&
+    (fromNode.kind === 'video' || fromNode.kind === 'videoAsset' || fromNode.kind === 'audioAsset')
+  ) {
     return false;
   }
 
@@ -642,11 +692,16 @@ export function createSequentialEdges(nodes: CanvasNodeView[]): CanvasEdgeView[]
   }));
 }
 
-export function createCanvasEdge(fromNodeId: string, toNodeId: string): CanvasEdgeView {
+export function createCanvasEdge(
+  fromNodeId: string,
+  toNodeId: string,
+  toPortId?: SeedanceInputPortId | 'default',
+): CanvasEdgeView {
   return {
-    id: `edge_${fromNodeId}_${toNodeId}`,
+    id: `edge_${fromNodeId}_${toNodeId}${toPortId ? `_${toPortId}` : ''}`,
     fromNodeId,
     toNodeId,
+    ...(toPortId ? { toPortId } : {}),
   };
 }
 
@@ -654,16 +709,24 @@ export function addCanvasEdge(
   edges: CanvasEdgeView[],
   fromNodeId: string,
   toNodeId: string,
+  toPortId?: SeedanceInputPortId | 'default',
 ): CanvasEdgeView[] {
   if (fromNodeId === toNodeId) {
     return edges;
   }
 
-  if (edges.some((edge) => edge.fromNodeId === fromNodeId && edge.toNodeId === toNodeId)) {
+  if (
+    edges.some(
+      (edge) =>
+        edge.fromNodeId === fromNodeId &&
+        edge.toNodeId === toNodeId &&
+        (edge.toPortId ?? 'default') === (toPortId ?? 'default'),
+    )
+  ) {
     return edges;
   }
 
-  return [...edges, createCanvasEdge(fromNodeId, toNodeId)];
+  return [...edges, createCanvasEdge(fromNodeId, toNodeId, toPortId)];
 }
 
 export function removeCanvasEdge(edges: CanvasEdgeView[], edgeId: string): CanvasEdgeView[] {

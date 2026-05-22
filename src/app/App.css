@@ -482,6 +482,39 @@ button:disabled {
   left: -7px;
 }
 
+.video-input-port-list {
+  display: grid;
+  gap: 8px;
+  left: -88px;
+  position: absolute;
+  top: 48px;
+}
+
+.video-input-port {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 28px;
+  position: relative;
+}
+
+.video-input-port .edge-handle-input {
+  left: auto;
+  position: static;
+  transform: none;
+}
+
+.video-input-port span {
+  background: rgba(9, 11, 14, 0.94);
+  border: 1px solid #2d343e;
+  border-radius: 999px;
+  color: #aeb8c5;
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
 .edge-handle-output {
   right: -7px;
 }
@@ -1110,6 +1143,14 @@ button:disabled {
   width: 100%;
 }
 
+audio.asset-preview {
+  width: 100%;
+}
+
+.node-body img.asset-preview {
+  cursor: zoom-in;
+}
+
 .asset-upload {
   align-items: center;
   background: #171a1f;
@@ -1168,6 +1209,7 @@ button:disabled {
 
 .canvas-minimap {
   background: rgba(0, 0, 0, 0.22);
+  border: 0;
   border-color: rgba(255, 255, 255, 0.09);
   border-radius: 6px;
   display: block;
@@ -1347,11 +1389,16 @@ button:disabled {
   border-radius: 8px;
   display: grid;
   gap: 16px;
+  max-height: calc(100% - 36px);
+  max-width: calc(100% - 36px);
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 16px;
   position: absolute;
   right: 18px;
+  scrollbar-gutter: stable;
   top: 18px;
-  width: 300px;
+  width: min(380px, calc(100% - 36px));
   z-index: 2;
 }
 
@@ -1377,6 +1424,49 @@ button:disabled {
   gap: 10px;
 }
 
+.video-generation-settings {
+  display: grid;
+  gap: 10px;
+}
+
+.video-inline-fields {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.video-scene-hint {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.video-usage-line {
+  color: #96a2b1;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.node-inline-video-mode {
+  display: grid;
+  gap: 6px;
+}
+
+.node-inline-video-mode span {
+  color: #96a2b1;
+  font-size: 12px;
+}
+
+.video-mode-select {
+  background: #13171d;
+  border: 1px solid #303640;
+  border-radius: 6px;
+  color: #eef2f5;
+  font: inherit;
+  min-width: 0;
+  padding: 10px;
+  width: 100%;
+}
+
 .node-inspector input,
 .node-inspector select,
 .node-inspector textarea {
@@ -1385,7 +1475,9 @@ button:disabled {
   border-radius: 6px;
   color: #eef2f5;
   font: inherit;
+  min-width: 0;
   padding: 10px;
+  width: 100%;
 }
 
 .node-title-input {

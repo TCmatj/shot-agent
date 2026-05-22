@@ -1,4 +1,4 @@
-import {
+﻿import {
   useEffect,
   useRef,
   useState,
@@ -33,6 +33,7 @@ import {
   Import,
   MessageSquare,
   Minus,
+  Music,
   Move,
   Pencil,
   Play,
@@ -86,7 +87,17 @@ import {
 } from '../domain/promptReferences';
 import { createGenerationRecord, type GenerationRecord } from '../domain/generationHistory';
 import {
+  estimateSeedanceTokens,
+  getSeedanceCapabilities,
+  getSeedanceInputPorts,
+  getVisibleSeedanceFields,
+  type SeedanceInputPortId,
+  type SeedanceModelId,
+  type SeedanceScenario,
+} from '../domain/seedance';
+import {
   getEffectiveNodeOutputText,
+  queryGenerationTask,
   resolveProviderToken,
   streamChatGenerationNode,
   submitGenerationNode,
@@ -137,6 +148,7 @@ import {
   type WorkspaceHistory,
 } from './workspaceHistory';
 import {
+  calculateMinimapViewportFrame,
   parseStoredCanvasViewports,
   serializeStoredCanvasViewports,
   type StoredCanvasViewports,
@@ -149,9 +161,11 @@ import {
   readWorkspaceFromFolder,
   saveAssetFileToCanvasFolder,
   saveDataUrlOutputToCanvasFolder,
+  saveGeneratedMediaBlobToCanvasFolder,
   storeRootDirectoryHandle,
   type ShotAgentDirectoryHandle,
 } from '../storage/browserFolderStore';
+import { createSeedanceTaskTracker } from '../models/seedanceTaskTracker';
 
 type NodeTemplate = {
   id: string;
@@ -357,6 +371,15 @@ const nodeTemplates: NodeTemplate[] = [
     icon: Video,
     outputOnly: true,
   },
+  {
+    id: 'asset-audio',
+    label: '音频节点',
+    title: '音频',
+    modelId: 'asset-audio',
+    kind: 'audioAsset',
+    icon: Music,
+    outputOnly: true,
+  },
 ];
 
 const initialCanvases: CanvasView[] = [
@@ -383,6 +406,7 @@ const initialCanvases: CanvasView[] = [
         kind: 'video',
         x: 520,
         y: 240,
+        seedanceScenario: 'image_to_video_first_frame',
       },
       {
         id: 'node_chat_1',
@@ -398,6 +422,7 @@ const initialCanvases: CanvasView[] = [
         id: 'edge_image_video',
         fromNodeId: 'node_image_1',
         toNodeId: 'node_video_1',
+        toPortId: 'first_frame_image',
       },
     ],
   },
@@ -458,6 +483,11 @@ type PromptReferenceSuggestion = {
 
 type PromptReferencePreview = PromptReferenceSuggestion & {
   kind: 'text' | 'image' | 'video';
+};
+
+type ImagePreviewState = {
+  title: string;
+  imageUrl: string;
 };
 
 function getPromptReferenceTokenForSuggestion(suggestion: PromptReferenceSuggestion): string {
@@ -736,6 +766,37 @@ function createPromptReferenceTokenElement(
   return token;
 }
 
+function ImagePreviewModal({
+  preview,
+  onClose,
+}: {
+  preview: ImagePreviewState | null;
+  onClose: () => void;
+}) {
+  if (!preview) {
+    return null;
+  }
+
+  return createPortal(
+    <div className="prompt-reference-image-backdrop" onPointerDown={onClose}>
+      <div
+        className="prompt-reference-image-modal"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <strong>{preview.title}</strong>
+          <button type="button" onClick={onClose}>
+            <X size={16} />
+            关闭
+          </button>
+        </header>
+        <img src={preview.imageUrl} alt={preview.title} />
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function renderPromptEditorContent(
   root: HTMLElement,
   value: string,
@@ -890,12 +951,23 @@ function PromptTextarea({
   const editorRef = useRef<HTMLDivElement>(null);
   const isComposingRef = useRef(false);
   const [trigger, setTrigger] = useState<ReturnType<typeof getPromptReferenceTrigger>>(null);
-  const [previewImage, setPreviewImage] = useState<PromptReferencePreview | null>(null);
+  const [previewImage, setPreviewImage] = useState<ImagePreviewState | null>(null);
   const suggestions = getPromptReferenceSuggestions(canvas, node.id);
   const referencePreviews = getPromptReferencePreviews(canvas, node.id, node.prompt ?? '');
   const visibleSuggestions = trigger
     ? filterPromptReferenceSuggestions(suggestions, trigger.query).slice(0, 8)
     : [];
+
+  function handlePreviewImage(reference: PromptReferencePreview) {
+    if (!reference.imageUrl) {
+      return;
+    }
+
+    setPreviewImage({
+      title: reference.title,
+      imageUrl: reference.imageUrl,
+    });
+  }
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -903,7 +975,7 @@ function PromptTextarea({
       return;
     }
 
-    renderPromptEditorContent(editor, node.prompt ?? '', referencePreviews, setPreviewImage);
+    renderPromptEditorContent(editor, node.prompt ?? '', referencePreviews, handlePreviewImage);
   }, [node.prompt, referencePreviews]);
 
   function syncEditorValue(nextValue: string, nextCaret?: number) {
@@ -913,7 +985,12 @@ function PromptTextarea({
       return;
     }
 
-    renderPromptEditorContent(editor, nextValue, getPromptReferencePreviews(canvas, node.id, nextValue), setPreviewImage);
+    renderPromptEditorContent(
+      editor,
+      nextValue,
+      getPromptReferencePreviews(canvas, node.id, nextValue),
+      handlePreviewImage,
+    );
     onChange(nextValue);
     window.requestAnimationFrame(() => {
       editor.focus();
@@ -941,7 +1018,7 @@ function PromptTextarea({
     }
 
     if (previews.length > 0 && /@(图片|视频|文本|image|video|text):?/.test(value)) {
-      renderPromptEditorContent(target, value, previews, setPreviewImage);
+      renderPromptEditorContent(target, value, previews, handlePreviewImage);
       window.requestAnimationFrame(() => {
         setPromptEditorCaretOffset(target, caret);
       });
@@ -1148,6 +1225,10 @@ function getNodeIcon(kind: CanvasNodeKind) {
     return Video;
   }
 
+  if (kind === 'audioAsset') {
+    return Music;
+  }
+
   if (kind === 'chat') {
     return MessageSquare;
   }
@@ -1195,6 +1276,46 @@ function getImageNodeSettingBadges(node: CanvasNodeView): string[] {
   const aspectLabel = size === 'auto' ? 'Auto' : `${aspectRatio} ${size}`;
 
   return [resolutionLabel, aspectLabel, qualityLabel];
+}
+
+function getVideoScenarioOptions(): Array<{ value: SeedanceScenario; label: string }> {
+  return [
+    { value: 'text_to_video', label: '文生视频' },
+    { value: 'image_to_video_first_frame', label: '首帧图生视频' },
+    { value: 'image_to_video_first_last_frame', label: '首尾帧图生视频' },
+    { value: 'multimodal_reference_video', label: '多模态参考视频' },
+  ];
+}
+
+function getVideoModelOptions(): Array<{ value: SeedanceModelId; label: string }> {
+  return [
+    { value: 'seedance2.0', label: 'seedance2.0' },
+    { value: 'seedance2.0-fast', label: 'seedance2.0-fast' },
+  ];
+}
+
+function getVideoScenarioLabel(scenario: SeedanceScenario): string {
+  return getVideoScenarioOptions().find((option) => option.value === scenario)?.label ?? scenario;
+}
+
+function getVideoInputPorts(scenario: SeedanceScenario) {
+  return getSeedanceInputPorts(scenario);
+}
+
+function getVideoScenarioHint(scenario: SeedanceScenario): string | null {
+  if (scenario === 'image_to_video_first_frame') {
+    return '只读取 1 张直接连到当前视频节点的上游图片，并按画布从上到下取第一张作为首帧。';
+  }
+
+  if (scenario === 'image_to_video_first_last_frame') {
+    return '只读取 2 张直接连到当前视频节点的上游图片，并按画布从上到下分别作为首帧和尾帧。';
+  }
+
+  if (scenario === 'multimodal_reference_video') {
+    return '多模态模式会读取直接连到当前视频节点的上游图片和视频作为参考素材；音频输入将在后续步骤接入。';
+  }
+
+  return null;
 }
 
 function getProviderInitial(providerName: string): string {
@@ -1363,6 +1484,9 @@ export function App() {
     viewport: CanvasViewport;
   } | null>(null);
   const workspaceStateRef = useRef(workspaceState);
+  const seedanceTrackersRef = useRef(
+    new Map<string, ReturnType<typeof createSeedanceTaskTracker>>(),
+  );
   const [workspaceHistory, setWorkspaceHistory] =
     useState<WorkspaceHistory<typeof workspaceState>>(createWorkspaceHistory);
   const [dragState, setDragState] = useState<DragState | null>(null);
@@ -1389,12 +1513,51 @@ export function App() {
   const [outputEditorMode, setOutputEditorMode] = useState<'preview' | 'edit'>('preview');
   const [outputModalPosition, setOutputModalPosition] = useState({ x: 0, y: 0 });
   const [modalDragState, setModalDragState] = useState<ModalDragState | null>(null);
+  const [previewImage, setPreviewImage] = useState<ImagePreviewState | null>(null);
   const { activeCanvasId, canvases, storage } = workspaceState;
   const canUndoWorkspace = workspaceHistory.past.length > 0;
   const canRedoWorkspace = workspaceHistory.future.length > 0;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? null;
   const selectedNode =
     activeCanvas?.nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const selectedVideoScenario =
+    selectedNode?.kind === 'video'
+      ? selectedNode.seedanceScenario ?? 'text_to_video'
+      : 'text_to_video';
+  const selectedVideoModel =
+    selectedNode?.kind === 'video'
+      ? ((selectedNode.modelId as SeedanceModelId) ?? 'seedance2.0')
+      : 'seedance2.0';
+  const selectedVideoCapabilities =
+    selectedNode?.kind === 'video'
+      ? getSeedanceCapabilities(selectedVideoModel)
+      : null;
+  const visibleVideoFields =
+    selectedNode?.kind === 'video'
+      ? getVisibleSeedanceFields({
+          model: selectedVideoModel,
+          scenario: selectedVideoScenario,
+        })
+      : [];
+  const selectedVideoReferenceCount =
+    selectedNode?.kind === 'video' && activeCanvas
+      ? countDirectVideoReferenceInputs(activeCanvas, selectedNode.id)
+      : 0;
+  const estimatedVideoTokens =
+    selectedNode?.kind === 'video'
+      ? estimateSeedanceTokens({
+          model: selectedVideoModel,
+          resolution:
+            selectedNode.videoResolution ??
+            selectedVideoCapabilities?.supportedResolutions[0] ??
+            '720p',
+          duration: selectedNode.videoDurationSeconds ?? 5,
+          framespersecond: selectedNode.videoFramesPerSecond ?? 24,
+          scenario: selectedVideoScenario,
+          generateAudio: selectedNode.videoGenerateAudio ?? true,
+          multimodalCount: selectedVideoReferenceCount,
+        })
+      : null;
   const selectedEdge =
     activeCanvas?.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const editingOutputNode =
@@ -1464,6 +1627,17 @@ export function App() {
         height: canvasSize.height / viewport.scale,
       }
     : null;
+  const minimapViewportFrame = minimapViewport
+    ? calculateMinimapViewportFrame(minimapViewport, minimapBounds, minimapSize)
+    : null;
+
+  useEffect(
+    () => () => {
+      seedanceTrackersRef.current.forEach((tracker) => tracker.stop());
+      seedanceTrackersRef.current.clear();
+    },
+    [],
+  );
 
   function setWorkspaceStateWithHistory(
     updater: (current: typeof workspaceState) => typeof workspaceState,
@@ -1510,6 +1684,109 @@ export function App() {
     clearSelection();
     setAddMenu(null);
     setEdgeDraft(null);
+  }
+
+  function openImagePreview(title: string, imageUrl: string) {
+    setPreviewImage({ title, imageUrl });
+  }
+
+  function isVideoPortSingleValue(portId: SeedanceInputPortId) {
+    return portId === 'first_frame_image' || portId === 'last_frame_image';
+  }
+
+  function canNodeConnectToVideoPort(node: CanvasNodeView, portId: SeedanceInputPortId) {
+    if (portId === 'text') {
+      return node.kind === 'textAsset' || node.kind === 'chat';
+    }
+
+    if (portId === 'first_frame_image' || portId === 'last_frame_image' || portId === 'reference_image') {
+      return node.kind === 'image' || node.kind === 'imageAsset';
+    }
+
+    if (portId === 'reference_video') {
+      return node.kind === 'video' || node.kind === 'videoAsset';
+    }
+
+    if (portId === 'reference_audio') {
+      return node.kind === 'audioAsset';
+    }
+
+    return false;
+  }
+
+  function getVideoPortLimitMessage(portId: SeedanceInputPortId) {
+    if (portId === 'first_frame_image') {
+      return '首帧图端口只允许连接 1 个图片输入。';
+    }
+
+    if (portId === 'last_frame_image') {
+      return '尾帧图端口只允许连接 1 个图片输入。';
+    }
+
+    return null;
+  }
+
+  function sanitizeVideoPortEdges(
+    canvas: CanvasView,
+    nodeId: string,
+    scenario: SeedanceScenario,
+  ): { removedEdgeIds: string[] } {
+    const visiblePortIds = new Set(getVideoInputPorts(scenario).map((port) => port.id));
+    const keptSinglePorts = new Set<SeedanceInputPortId>();
+    const removedEdgeIds: string[] = [];
+
+    canvas.edges
+      .filter((edge) => edge.toNodeId === nodeId)
+      .forEach((edge) => {
+        if (!edge.toPortId || edge.toPortId === 'default' || !visiblePortIds.has(edge.toPortId)) {
+          removedEdgeIds.push(edge.id);
+          return;
+        }
+
+        if (!isVideoPortSingleValue(edge.toPortId)) {
+          return;
+        }
+
+        if (keptSinglePorts.has(edge.toPortId)) {
+          removedEdgeIds.push(edge.id);
+          return;
+        }
+
+        keptSinglePorts.add(edge.toPortId);
+      });
+
+    return { removedEdgeIds };
+  }
+
+  function handleVideoScenarioChange(nodeId: string, nextScenario: SeedanceScenario) {
+    if (!activeCanvas) {
+      updateNode(nodeId, (current) => ({
+        ...current,
+        seedanceScenario: nextScenario,
+      }));
+      return;
+    }
+
+    const { removedEdgeIds } = sanitizeVideoPortEdges(activeCanvas, nodeId, nextScenario);
+
+    updateNode(
+      nodeId,
+      (current) => ({
+        ...current,
+        seedanceScenario: nextScenario,
+      }),
+      { history: removedEdgeIds.length === 0 },
+    );
+
+    if (removedEdgeIds.length === 0) {
+      return;
+    }
+
+    updateActiveCanvasEdges((edges) =>
+      edges.filter((edge) => !removedEdgeIds.includes(edge.id)),
+    );
+
+    setCanvasMessage('已按新的视频模式清理不再适用的输入连线。');
   }
 
   useEffect(() => {
@@ -2010,6 +2287,14 @@ export function App() {
     });
   }
 
+  function getDefaultVideoInputPort(
+    fromNode: CanvasNodeView,
+    scenario: SeedanceScenario,
+  ): SeedanceInputPortId | undefined {
+    return getVideoInputPorts(scenario).find((port) => canNodeConnectToVideoPort(fromNode, port.id))
+      ?.id;
+  }
+
   function addNode(template: NodeTemplate) {
     if (!activeCanvas) {
       return;
@@ -2039,7 +2324,16 @@ export function App() {
       const toNode = { id: nodeId, title: template.title, modelId: template.modelId, kind: template.kind, x: point.x, y: point.y };
 
       if (fromNode && canConnectCanvasNodes(fromNode, toNode)) {
-        updateActiveCanvasEdges((edges) => addCanvasEdge(edges, addMenu.fromNodeId!, nodeId));
+        updateActiveCanvasEdges((edges) =>
+          addCanvasEdge(
+            edges,
+            addMenu.fromNodeId!,
+            nodeId,
+            toNode.kind === 'video'
+              ? getDefaultVideoInputPort(fromNode, 'text_to_video')
+              : undefined,
+          ),
+        );
       }
     }
     selectSingleNode(nodeId);
@@ -2087,7 +2381,11 @@ export function App() {
   }
 
   async function addAssetNodeFromFile(file: File, point: Point): Promise<string | null> {
-    if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+    if (
+      !file.type.startsWith('image/') &&
+      !file.type.startsWith('video/') &&
+      !file.type.startsWith('audio/')
+    ) {
       return null;
     }
 
@@ -2096,22 +2394,24 @@ export function App() {
     }
 
     if (!rootDirectoryHandle || !folderStorageReady) {
-      setCanvasMessage('请先选择画布存储文件夹，再导入图片或视频素材。');
+      setCanvasMessage('请先选择画布存储文件夹，再导入图片、视频或音频素材。');
       return null;
     }
 
     try {
       const savedAsset = await saveAssetFileToCanvasFolder(rootDirectoryHandle, activeCanvas, file);
       const isImage = file.type.startsWith('image/');
-      const nodeId = `node_${isImage ? 'imageAsset' : 'videoAsset'}_${Date.now()}`;
+      const isVideo = file.type.startsWith('video/');
+      const nodeKind = isImage ? 'imageAsset' : isVideo ? 'videoAsset' : 'audioAsset';
+      const nodeId = `node_${nodeKind}_${Date.now()}`;
 
       updateActiveCanvasNodes((nodes) => [
         ...nodes,
         {
           id: nodeId,
-          title: isImage ? '图片' : '视频',
-          modelId: isImage ? 'asset-image' : 'asset-video',
-          kind: isImage ? 'imageAsset' : 'videoAsset',
+          title: isImage ? '图片' : isVideo ? '视频' : '音频',
+          modelId: isImage ? 'asset-image' : isVideo ? 'asset-video' : 'asset-audio',
+          kind: nodeKind,
           x: point.x,
           y: point.y,
           ...savedAsset,
@@ -2451,7 +2751,27 @@ export function App() {
     });
   }
 
-  function completeEdgeDraft(event: PointerEvent<HTMLButtonElement>, toNodeId: string) {
+  function countDirectVideoReferenceInputs(canvas: CanvasView, nodeId: string): number {
+    return canvas.edges.filter((edge) => {
+      if (edge.toNodeId !== nodeId) {
+        return false;
+      }
+
+      return (
+        edge.toPortId === 'reference_image' ||
+        edge.toPortId === 'reference_video' ||
+        edge.toPortId === 'reference_audio' ||
+        edge.toPortId === 'first_frame_image' ||
+        edge.toPortId === 'last_frame_image'
+      );
+    }).length;
+  }
+
+  function completeEdgeDraft(
+    event: PointerEvent<HTMLButtonElement>,
+    toNodeId: string,
+    toPortId?: SeedanceInputPortId | 'default',
+  ) {
     event.stopPropagation();
 
     if (!edgeDraft) {
@@ -2467,8 +2787,46 @@ export function App() {
       return;
     }
 
-    updateActiveCanvasEdges((edges) => addCanvasEdge(edges, edgeDraft.fromNodeId, toNodeId));
-    setSelectedEdgeId(`edge_${edgeDraft.fromNodeId}_${toNodeId}`);
+    if (activeCanvas && toNode.kind === 'video') {
+      if (!toPortId || toPortId === 'default') {
+        setCanvasMessage('请连接到视频节点左侧的具体输入端口。');
+        setEdgeDraft(null);
+        return;
+      }
+
+      const visiblePorts = getVideoInputPorts(toNode.seedanceScenario ?? 'text_to_video');
+
+      if (!visiblePorts.some((port) => port.id === toPortId)) {
+        setCanvasMessage('当前模式下不支持这个输入端口。');
+        setEdgeDraft(null);
+        return;
+      }
+
+      if (!canNodeConnectToVideoPort(fromNode, toPortId)) {
+        const portLabel = visiblePorts.find((port) => port.id === toPortId)?.label ?? '该';
+        setCanvasMessage(`这个节点不能连接到“${portLabel}”输入端口。`);
+        setEdgeDraft(null);
+        return;
+      }
+
+      if (
+        isVideoPortSingleValue(toPortId) &&
+        activeCanvas.edges.some(
+          (edge) => edge.toNodeId === toNode.id && edge.toPortId === toPortId,
+        )
+      ) {
+        setCanvasMessage(getVideoPortLimitMessage(toPortId) ?? '该输入端口已达到上限。');
+        setEdgeDraft(null);
+        return;
+      }
+    }
+
+    updateActiveCanvasEdges((edges) =>
+      addCanvasEdge(edges, edgeDraft.fromNodeId, toNodeId, toPortId),
+    );
+    setSelectedEdgeId(
+      `edge_${edgeDraft.fromNodeId}_${toNodeId}${toPortId ? `_${toPortId}` : ''}`,
+    );
     setSelectedNodeId(null);
     setSelectedNodeIds([]);
     setEdgeDraft(null);
@@ -2920,6 +3278,166 @@ export function App() {
     }
   }
 
+  function stopSeedanceTracking(nodeId: string) {
+    const tracker = seedanceTrackersRef.current.get(nodeId);
+    if (!tracker) {
+      return;
+    }
+
+    tracker.stop();
+    seedanceTrackersRef.current.delete(nodeId);
+  }
+
+  async function handleSeedanceTaskSuccess(
+    node: CanvasNodeView,
+    generationRecordId: string,
+    task: {
+      taskId?: string;
+      status?: string;
+      videoUrl?: string;
+      lastFrameUrl?: string;
+      completionTokens?: number;
+      totalTokens?: number;
+    },
+  ) {
+    let savedVideoPath: string | undefined;
+    let savedCoverPath: string | undefined;
+
+    if (rootDirectoryHandle && folderStorageReady && activeCanvas) {
+      if (task.videoUrl) {
+        const videoBlob = await (await fetch(task.videoUrl)).blob();
+        const savedVideo = await saveGeneratedMediaBlobToCanvasFolder(
+          rootDirectoryHandle,
+          activeCanvas,
+          {
+            blob: videoBlob,
+            fileName: `${task.taskId ?? node.id}.mp4`,
+            kind: 'video',
+          },
+        );
+        savedVideoPath = savedVideo.assetPath;
+      }
+
+      if (task.lastFrameUrl) {
+        const coverBlob = await (await fetch(task.lastFrameUrl)).blob();
+        const savedCover = await saveGeneratedMediaBlobToCanvasFolder(
+          rootDirectoryHandle,
+          activeCanvas,
+          {
+            blob: coverBlob,
+            fileName: `${task.taskId ?? node.id}.png`,
+            kind: 'cover',
+          },
+        );
+        savedCoverPath = savedCover.assetPath;
+      }
+    }
+
+    updateNode(node.id, (current) => ({
+      ...current,
+      generationStatus: 'succeeded',
+      generationError: undefined,
+      outputUrl: task.videoUrl ?? current.outputUrl,
+      outputPath: savedVideoPath ?? current.outputPath,
+      outputCoverPath: savedCoverPath ?? current.outputCoverPath,
+      settledCompletionTokens: task.completionTokens,
+      settledTotalTokens: task.totalTokens,
+      outputText: task.status ? `任务状态：${task.status}` : current.outputText,
+    }), { history: false });
+    updateGenerationHistoryRecord(generationRecordId, (record) => ({
+      ...record,
+      status: 'succeeded',
+      outputAssetIds: [node.id],
+      endedAt: new Date().toISOString(),
+    }));
+    stopSeedanceTracking(node.id);
+  }
+
+  function startSeedanceTracking(
+    node: CanvasNodeView,
+    provider: ProviderConfig,
+    token: string | undefined,
+    generationRecordId: string,
+    taskId: string,
+  ) {
+    stopSeedanceTracking(node.id);
+
+    const tracker = createSeedanceTaskTracker({
+      async getTask(currentTaskId) {
+        const result = await queryGenerationTask({
+          provider,
+          taskId: currentTaskId,
+          token,
+        });
+
+        if (!result.ok) {
+          return {
+            status: 'failed',
+            error: {
+              message: result.error,
+            },
+          };
+        }
+
+        return result.output;
+      },
+    });
+
+    seedanceTrackersRef.current.set(node.id, tracker);
+    tracker.start({
+      taskId,
+      onUpdate(task) {
+        updateNode(node.id, (current) => ({
+          ...current,
+          generationStatus:
+            task.status === 'queued' || task.status === 'running'
+              ? 'running'
+              : current.generationStatus,
+          settledCompletionTokens:
+            typeof task.completionTokens === 'number'
+              ? task.completionTokens
+              : current.settledCompletionTokens,
+          settledTotalTokens:
+            typeof task.totalTokens === 'number'
+              ? task.totalTokens
+              : current.settledTotalTokens,
+          outputText:
+            typeof task.status === 'string' ? `任务状态：${task.status}` : current.outputText,
+        }), { history: false });
+      },
+      onFinished(task) {
+        void handleSeedanceTaskSuccess(node, generationRecordId, task).catch((error) => {
+          markNodeGenerationFailed(node.id, error instanceof Error ? error.message : '视频保存失败');
+          stopSeedanceTracking(node.id);
+        });
+      },
+      onFailed(task) {
+        markNodeGenerationFailed(
+          node.id,
+          typeof task.error === 'object' &&
+            task.error &&
+            'message' in task.error &&
+            typeof task.error.message === 'string'
+            ? task.error.message
+            : '视频生成失败',
+        );
+        updateGenerationHistoryRecord(generationRecordId, (record) => ({
+          ...record,
+          status: 'failed',
+          errorMessage:
+            typeof task.error === 'object' &&
+            task.error &&
+            'message' in task.error &&
+            typeof task.error.message === 'string'
+              ? task.error.message
+              : '视频生成失败',
+          endedAt: new Date().toISOString(),
+        }));
+        stopSeedanceTracking(node.id);
+      },
+    });
+  }
+
   async function submitNodeGeneration(node: CanvasNodeView) {
     if (!activeCanvas) {
       return;
@@ -2949,6 +3467,22 @@ export function App() {
       .filter((assetId, index, assetIds) =>
         upstreamNodeIds.has(assetId) && assetIds.indexOf(assetId) === index,
       );
+    const estimatedVideoTokenCost =
+      node.kind === 'video'
+        ? estimateSeedanceTokens({
+            model: (node.modelId as SeedanceModelId) ?? 'seedance2.0',
+            resolution:
+              node.videoResolution ??
+              getSeedanceCapabilities((node.modelId as SeedanceModelId) ?? 'seedance2.0')
+                .supportedResolutions[0] ??
+              '720p',
+            duration: node.videoDurationSeconds ?? 5,
+            framespersecond: node.videoFramesPerSecond ?? 24,
+            scenario: node.seedanceScenario ?? 'text_to_video',
+            generateAudio: node.videoGenerateAudio ?? true,
+            multimodalCount: countDirectVideoReferenceInputs(activeCanvas, node.id),
+          })
+        : undefined;
     addGenerationHistoryRecord({
       ...createGenerationRecord({
         id: generationRecordId,
@@ -2972,6 +3506,8 @@ export function App() {
       generationId: generationRecordId,
       generationStatus: 'running',
       generationError: undefined,
+      estimatedTokenCost:
+        node.kind === 'video' ? estimatedVideoTokenCost ?? current.estimatedTokenCost : current.estimatedTokenCost,
       ...(node.kind === 'chat'
         ? {
             modelOutputText: '',
@@ -3052,6 +3588,34 @@ export function App() {
           }).catch(() => null)
         : null;
 
+    if (result.output.kind === 'video-task') {
+      const videoOutput = result.output;
+      updateNode(node.id, (current) => ({
+        ...current,
+        generationStatus: videoOutput.videoUrl ? 'succeeded' : 'running',
+        generationError: undefined,
+        generationId: videoOutput.taskId ?? generationRecordId,
+        estimatedTokenCost: current.estimatedTokenCost ?? estimatedVideoTokenCost,
+        settledCompletionTokens: videoOutput.completionTokens,
+        settledTotalTokens: videoOutput.totalTokens,
+        outputUrl: videoOutput.videoUrl,
+        outputText: videoOutput.status ? `任务状态：${videoOutput.status}` : undefined,
+      }), { history: false });
+      updateGenerationHistoryRecord(generationRecordId, (record) => ({
+        ...record,
+        status: videoOutput.videoUrl ? 'succeeded' : 'running',
+        outputAssetIds: videoOutput.videoUrl ? [node.id] : record.outputAssetIds,
+        endedAt: videoOutput.videoUrl ? new Date().toISOString() : record.endedAt,
+      }));
+
+      if (videoOutput.videoUrl) {
+        await handleSeedanceTaskSuccess(node, generationRecordId, videoOutput);
+      } else if (videoOutput.taskId) {
+        startSeedanceTracking(node, provider, token, generationRecordId, videoOutput.taskId);
+      }
+      return;
+    }
+
     updateNode(node.id, (current) => {
       if (result.output.kind === 'image') {
         return {
@@ -3079,28 +3643,16 @@ export function App() {
         };
       }
 
-      return {
-        ...current,
-        generationStatus: result.output.videoUrl ? 'succeeded' : 'running',
-        generationError: undefined,
-        generationId: result.output.taskId ?? generationRecordId,
-        outputUrl: result.output.videoUrl,
-        outputText: result.output.status ? `任务状态：${result.output.status}` : undefined,
-      };
+      return current;
     }, { history: false });
     updateGenerationHistoryRecord(generationRecordId, (record) => ({
       ...record,
-      status: result.output.kind === 'video-task' && !result.output.videoUrl ? 'running' : 'succeeded',
+      status: 'succeeded',
       outputAssetIds:
         result.output.kind === 'image' && (result.output.dataUrl || result.output.url)
           ? [node.id]
-          : result.output.kind === 'video-task' && result.output.videoUrl
-            ? [node.id]
-            : record.outputAssetIds,
-      endedAt:
-        result.output.kind === 'video-task' && !result.output.videoUrl
-          ? record.endedAt
-          : new Date().toISOString(),
+          : record.outputAssetIds,
+      endedAt: new Date().toISOString(),
     }));
   }
 
@@ -3110,7 +3662,7 @@ export function App() {
           <div
             className="canvas-navigation-panel"
             style={{
-              left: isSidebarCollapsed ? '66px' : 'min(219px, calc(100vw - 252px))',
+              left: isSidebarCollapsed ? '74px' : '278px',
             }}
             onPointerDown={(event) => event.stopPropagation()}
           >
@@ -3133,14 +3685,14 @@ export function App() {
                   }}
                 />
               ))}
-              {minimapViewport ? (
+              {minimapViewportFrame ? (
                 <span
                   className="canvas-minimap-window"
                   style={{
-                    left: (minimapViewport.x - minimapBounds.minX) * minimapScale,
-                    top: (minimapViewport.y - minimapBounds.minY) * minimapScale,
-                    width: Math.max(14, minimapViewport.width * minimapScale),
-                    height: Math.max(10, minimapViewport.height * minimapScale),
+                    left: minimapViewportFrame.left,
+                    top: minimapViewportFrame.top,
+                    width: minimapViewportFrame.width,
+                    height: minimapViewportFrame.height,
                   }}
                 />
               ) : null}
@@ -3761,7 +4313,7 @@ export function App() {
                 }
 
                 const from = getNodeOutputPoint(fromNode);
-                const to = getNodeInputPoint(toNode);
+                const to = getNodeInputPoint(toNode, edge.toPortId);
                 const controlOffset = Math.max(120, Math.abs(to.x - from.x) * 0.45);
 
                 return (
@@ -3817,6 +4369,10 @@ export function App() {
               const effectiveOutputText = getEffectiveNodeOutputText(node);
               const isLongOutput =
                 effectiveOutputText !== undefined && shouldCollapseMarkdown(effectiveOutputText);
+              const videoInputPorts =
+                node.kind === 'video'
+                  ? getVideoInputPorts(node.seedanceScenario ?? 'text_to_video')
+                  : [];
 
               return (
                 <article
@@ -3833,7 +4389,22 @@ export function App() {
                     setAddMenu(null);
                   }}
                 >
-                  {canNodeReceiveInput(node) ? (
+                  {node.kind === 'video' ? (
+                    <div className="video-input-port-list">
+                      {videoInputPorts.map((port) => (
+                        <label key={port.id} className="video-input-port">
+                          <button
+                            type="button"
+                            className="edge-handle edge-handle-input"
+                            aria-label={`连接到${port.label}`}
+                            onPointerUp={(event) => completeEdgeDraft(event, node.id, port.id)}
+                            onPointerDown={(event) => event.stopPropagation()}
+                          />
+                          <span>{port.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : canNodeReceiveInput(node) ? (
                     <button
                       type="button"
                       className="edge-handle edge-handle-input"
@@ -3926,7 +4497,32 @@ export function App() {
                       ) : null}
                     </div>
                   </header>
-                  <div className="node-body">
+                  <div
+                    className="node-body"
+                    onDoubleClick={(event) => {
+                      if (!(event.target instanceof HTMLImageElement)) {
+                        return;
+                      }
+
+                      if (!event.target.classList.contains('asset-preview')) {
+                        return;
+                      }
+
+                      const imageUrl =
+                        node.kind === 'imageAsset'
+                          ? node.assetDataUrl
+                          : node.kind === 'image'
+                            ? node.outputDataUrl ?? node.outputUrl
+                            : undefined;
+
+                      if (!imageUrl) {
+                        return;
+                      }
+
+                      event.stopPropagation();
+                      openImagePreview(node.title, imageUrl);
+                    }}
+                  >
                     {node.kind === 'textAsset' ? (
                       <textarea
                         value={node.textContent ?? ''}
@@ -3987,6 +4583,30 @@ export function App() {
                           />
                         </label>
                       </>
+                    ) : node.kind === 'audioAsset' ? (
+                      <>
+                        {node.assetDataUrl ? (
+                          <audio className="asset-preview" src={node.assetDataUrl} controls />
+                        ) : null}
+                        <label className="asset-upload">
+                          导入音频
+                          <input
+                            type="file"
+                            accept="audio/*"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onChange={(event) => {
+                              const file = event.target.files?.[0];
+                              if (file) {
+                                void addAssetNodeFromFile(file, { x: node.x, y: node.y }).then((nodeId) => {
+                                  if (nodeId) {
+                                    updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== node.id));
+                                  }
+                                });
+                              }
+                            }}
+                          />
+                        </label>
+                      </>
                     ) : (
                       <>
                         <p>
@@ -3999,7 +4619,7 @@ export function App() {
                         <PromptTextarea
                           canvas={activeCanvas}
                           node={node}
-                          placeholder="输入提示词，使用 @文本 / @图片 / @视频 引用已连线的上游资产"
+                          placeholder="输入提示词，使用 @文本 / @图片 / @视频 / @音频 引用已连线的上游资产"
                           stopPointerDown
                           onChange={(value) =>
                             updateNode(node.id, (current) => ({
@@ -4008,14 +4628,36 @@ export function App() {
                             }))
                           }
                         />
-                        <button
-                          type="button"
-                          disabled={isGenerating}
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={() => void submitNodeGeneration(node)}
-                        >
+                      <button
+                        type="button"
+                        disabled={isGenerating}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={() => void submitNodeGeneration(node)}
+                      >
                           {isGenerating ? '提交中' : '生成'}
-                        </button>
+                      </button>
+                        {node.kind === 'video' ? (
+                          <label className="node-inline-video-mode">
+                            <span>模式</span>
+                            <select
+                              className="video-mode-select"
+                              value={node.seedanceScenario ?? 'text_to_video'}
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onChange={(event) =>
+                                handleVideoScenarioChange(
+                                  node.id,
+                                  event.target.value as SeedanceScenario,
+                                )
+                              }
+                            >
+                              {getVideoScenarioOptions().map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
                         {node.generationError ? (
                           <p className="node-error">{node.generationError}</p>
                         ) : null}
@@ -4158,18 +4800,6 @@ export function App() {
                 <Trash2 size={16} />
                 删除节点
               </button>
-              <label>
-                节点名称
-                <input
-                  value={selectedNode.title}
-                  onChange={(event) =>
-                    updateNode(selectedNode.id, (current) => ({
-                      ...current,
-                      title: event.target.value,
-                    }))
-                  }
-                />
-              </label>
               {selectedNode.kind === 'chat' ? (
                 <label>
                   调用格式
@@ -4197,6 +4827,148 @@ export function App() {
                     <option value="anthropic">Anthropic Messages</option>
                   </select>
                 </label>
+              ) : null}
+              {selectedNode.kind === 'video' ? (
+                <div className="video-generation-settings">
+                  <label>
+                    类型
+                    <select
+                      className="video-mode-select"
+                      aria-label="类型"
+                      value={selectedVideoScenario}
+                      onChange={(event) =>
+                        handleVideoScenarioChange(
+                          selectedNode.id,
+                          event.target.value as SeedanceScenario,
+                        )
+                      }
+                    >
+                      {getVideoScenarioOptions().map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    模型
+                    <select
+                      aria-label="模型"
+                      value={selectedVideoModel}
+                      onChange={(event) => {
+                        const nextModel = event.target.value as SeedanceModelId;
+                        const nextCapabilities = getSeedanceCapabilities(nextModel);
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          modelId: nextModel,
+                          providerModelId: undefined,
+                          videoResolution: nextCapabilities.supportedResolutions.includes(
+                            current.videoResolution ?? '720p',
+                          )
+                            ? current.videoResolution
+                            : nextCapabilities.supportedResolutions[0],
+                        }));
+                      }}
+                    >
+                      {getVideoModelOptions().map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {visibleVideoFields.includes('resolution') ? (
+                    <label>
+                      分辨率
+                      <select
+                        aria-label="分辨率"
+                        value={
+                          selectedNode.videoResolution ??
+                          selectedVideoCapabilities?.supportedResolutions[0] ??
+                          '720p'
+                        }
+                        onChange={(event) =>
+                          updateNode(selectedNode.id, (current) => ({
+                            ...current,
+                            videoResolution: event.target.value as '480p' | '720p' | '1080p',
+                          }))
+                        }
+                      >
+                        {(selectedVideoCapabilities?.supportedResolutions ?? ['720p']).map(
+                          (resolution) => (
+                            <option key={resolution} value={resolution}>
+                              {resolution}
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    </label>
+                  ) : null}
+                  {visibleVideoFields.includes('duration') || visibleVideoFields.includes('framespersecond') ? (
+                    <div className="video-inline-fields">
+                      {visibleVideoFields.includes('duration') ? (
+                        <label>
+                          时长
+                          <input
+                            aria-label="时长"
+                            type="number"
+                            min={1}
+                            max={15}
+                            list="video-duration-options"
+                            value={selectedNode.videoDurationSeconds ?? 5}
+                            onChange={(event) =>
+                              updateNode(selectedNode.id, (current) => ({
+                                ...current,
+                                videoDurationSeconds: Number(event.target.value) || 5,
+                              }))
+                            }
+                          />
+                          <datalist id="video-duration-options">
+                            <option value="3" />
+                            <option value="5" />
+                            <option value="8" />
+                            <option value="10" />
+                          </datalist>
+                        </label>
+                      ) : null}
+                      {visibleVideoFields.includes('framespersecond') ? (
+                        <label>
+                          帧率
+                          <input
+                            aria-label="帧率"
+                            type="number"
+                            min={24}
+                            max={60}
+                            list="video-fps-options"
+                            value={selectedNode.videoFramesPerSecond ?? 24}
+                            onChange={(event) =>
+                              updateNode(selectedNode.id, (current) => ({
+                                ...current,
+                                videoFramesPerSecond: Number(event.target.value) || 24,
+                              }))
+                            }
+                          />
+                          <datalist id="video-fps-options">
+                            <option value="24" />
+                            <option value="30" />
+                            <option value="48" />
+                            <option value="60" />
+                          </datalist>
+                        </label>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {getVideoScenarioHint(selectedVideoScenario) ? (
+                    <p className="video-scene-hint">{getVideoScenarioHint(selectedVideoScenario)}</p>
+                  ) : null}
+                  <p className="video-usage-line">预计消耗：{estimatedVideoTokens ?? 0} tokens（本地预估）</p>
+                  <p className="video-usage-line">
+                    实际消耗：
+                    {typeof selectedNode.settledTotalTokens === 'number'
+                      ? `${selectedNode.settledCompletionTokens} completion tokens / ${selectedNode.settledTotalTokens} total tokens`
+                      : '等待官方结算'}
+                  </p>
+                </div>
               ) : null}
               <label>
                 供应商
@@ -4474,6 +5246,7 @@ export function App() {
             </div>,
             document.body,
           ) : null}
+          <ImagePreviewModal preview={previewImage} onClose={() => setPreviewImage(null)} />
         </div>
         )}
       </section>
@@ -4481,3 +5254,4 @@ export function App() {
     </main>
   );
 }
+

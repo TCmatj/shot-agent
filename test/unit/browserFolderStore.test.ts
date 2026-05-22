@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { persistWorkspaceToFolder } from '../../src/storage/browserFolderStore';
+import {
+  persistWorkspaceToFolder,
+  saveGeneratedMediaBlobToCanvasFolder,
+} from '../../src/storage/browserFolderStore';
 import { createWorkspaceState, type CanvasWorkspaceState } from '../../src/app/canvasWorkspace';
 
 class MemoryFileHandle {
@@ -109,5 +112,43 @@ describe('browser folder store', () => {
     expect(imageDir?.files.has('input.png')).toBe(true);
     expect([...imageDir?.files.keys() ?? []].some((fileName) => fileName.startsWith('node_image_output-'))).toBe(true);
     expect(String(root.files.get('workspace.json'))).not.toContain('data:image/png;base64');
+  });
+
+  it('saves fetched video output into assets/videos', async () => {
+    const root = new MemoryDirectoryHandle('Shot Agent');
+    const canvas = createWorkspaceState([
+      { id: 'canvas_1', name: 'Canvas', updatedAt: 'now', nodes: [], edges: [] },
+    ]).canvases[0];
+
+    const result = await saveGeneratedMediaBlobToCanvasFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      canvas,
+      {
+        blob: new Blob(['video'], { type: 'video/mp4' }),
+        fileName: 'task_1.mp4',
+        kind: 'video',
+      },
+    );
+
+    expect(result.assetPath).toBe('assets/videos/task_1.mp4');
+  });
+
+  it('saves last frame cover into assets/covers', async () => {
+    const root = new MemoryDirectoryHandle('Shot Agent');
+    const canvas = createWorkspaceState([
+      { id: 'canvas_1', name: 'Canvas', updatedAt: 'now', nodes: [], edges: [] },
+    ]).canvases[0];
+
+    const result = await saveGeneratedMediaBlobToCanvasFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      canvas,
+      {
+        blob: new Blob(['image'], { type: 'image/png' }),
+        fileName: 'task_1.png',
+        kind: 'cover',
+      },
+    );
+
+    expect(result.assetPath).toBe('assets/covers/task_1.png');
   });
 });

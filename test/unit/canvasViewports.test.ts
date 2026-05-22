@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  calculateMinimapViewportFrame,
   parseStoredCanvasViewports,
   serializeStoredCanvasViewports,
 } from '../../src/app/canvasViewports';
@@ -32,5 +33,20 @@ describe('canvas viewports storage', () => {
   it('returns an empty map for missing or malformed values', () => {
     expect(parseStoredCanvasViewports(null)).toEqual({});
     expect(parseStoredCanvasViewports('{bad json')).toEqual({});
+  });
+
+  it('keeps the minimap viewport frame inside the minimap bounds', () => {
+    expect(
+      calculateMinimapViewportFrame(
+        { x: -120, y: 20, width: 760, height: 420 },
+        { minX: 0, minY: 0, maxX: 640, maxY: 360, width: 640, height: 360 },
+        { width: 220, height: 150 },
+      ),
+    ).toEqual({
+      left: 0,
+      top: expect.any(Number),
+      width: 220,
+      height: expect.any(Number),
+    });
   });
 });

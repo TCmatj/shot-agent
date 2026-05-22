@@ -298,6 +298,22 @@ describe('canvas workspace persistence', () => {
     expect(getNodeOutputPoint(node)).toEqual({ x: 360, y: 108 });
   });
 
+  it('returns separate input points for video role ports', () => {
+    const node = {
+      id: 'node_video_1',
+      title: 'Video',
+      modelId: 'seedance2.0',
+      kind: 'video' as const,
+      x: 40,
+      y: 20,
+      seedanceScenario: 'image_to_video_first_last_frame' as const,
+    };
+
+    expect(getNodeInputPoint(node, 'first_frame_image')).toEqual({ x: 40, y: 80 });
+    expect(getNodeInputPoint(node, 'last_frame_image')).toEqual({ x: 40, y: 116 });
+    expect(getNodeInputPoint(node, 'text')).toEqual({ x: 40, y: 152 });
+  });
+
   it('normalizes selection rectangles and finds intersecting nodes', () => {
     const nodes = [
       { id: 'node_1', title: 'One', modelId: 'gpt-image-2', kind: 'image' as const, x: 0, y: 0 },
@@ -419,21 +435,22 @@ describe('canvas workspace persistence', () => {
   });
 
   it('creates stable canvas edge ids', () => {
-    expect(createCanvasEdge('node_1', 'node_2')).toEqual({
-      id: 'edge_node_1_node_2',
+    expect(createCanvasEdge('node_1', 'node_2', 'text')).toEqual({
+      id: 'edge_node_1_node_2_text',
       fromNodeId: 'node_1',
       toNodeId: 'node_2',
+      toPortId: 'text',
     });
   });
 
   it('adds edges without self links or duplicates', () => {
-    const first = addCanvasEdge([], 'node_1', 'node_2');
+    const first = addCanvasEdge([], 'node_1', 'node_2', 'text');
 
     expect(first).toEqual([
-      { id: 'edge_node_1_node_2', fromNodeId: 'node_1', toNodeId: 'node_2' },
+      { id: 'edge_node_1_node_2_text', fromNodeId: 'node_1', toNodeId: 'node_2', toPortId: 'text' },
     ]);
     expect(addCanvasEdge(first, 'node_1', 'node_1')).toEqual(first);
-    expect(addCanvasEdge(first, 'node_1', 'node_2')).toEqual(first);
+    expect(addCanvasEdge(first, 'node_1', 'node_2', 'text')).toEqual(first);
   });
 
   it('finds only upstream nodes as referenceable assets', () => {
