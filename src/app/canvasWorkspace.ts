@@ -398,6 +398,10 @@ export function renameCanvas(
     return state;
   }
 
+  if (isCanvasNameTaken(state, nextName, canvasId)) {
+    return state;
+  }
+
   return {
     ...state,
     canvases: state.canvases.map((canvas) =>
@@ -452,6 +456,9 @@ export function importCanvas(
   }
 
   const canvas = normalizeCanvas(parsed.canvas);
+  if (isCanvasNameTaken(state, canvas.name)) {
+    throw new Error('已存在同名画布');
+  }
   const importedCanvas: CanvasView = {
     ...canvas,
     id: nextId,
@@ -465,6 +472,33 @@ export function importCanvas(
     activeCanvasId: importedCanvas.id,
     canvases: [...state.canvases, importedCanvas],
   };
+}
+
+export function getNextAvailableCanvasName(
+  state: CanvasWorkspaceState,
+  baseName = '新画布',
+): string {
+  let index = 1;
+  let candidate = `${baseName} ${index}`;
+
+  while (isCanvasNameTaken(state, candidate)) {
+    index += 1;
+    candidate = `${baseName} ${index}`;
+  }
+
+  return candidate;
+}
+
+function isCanvasNameTaken(
+  state: CanvasWorkspaceState,
+  name: string,
+  excludeCanvasId?: string,
+): boolean {
+  const target = name.trim();
+
+  return state.canvases.some(
+    (canvas) => canvas.id !== excludeCanvasId && canvas.name.trim() === target,
+  );
 }
 
 export function getNodeCenter(node: CanvasNodeView): { x: number; y: number } {

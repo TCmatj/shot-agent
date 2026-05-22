@@ -4,6 +4,7 @@ import {
   canConnectCanvasNodes,
   copyCanvasSelection,
   createCanvasEdge,
+  getNextAvailableCanvasName,
   createSequentialEdges,
   createWorkspaceState,
   canNodeReceiveInput,
@@ -227,6 +228,34 @@ describe('canvas workspace persistence', () => {
     expect(renameCanvas(state, 'canvas_first', '   ')).toEqual(state);
   });
 
+  it('does not allow duplicate canvas names when renaming', () => {
+    const state = createWorkspaceState(canvases);
+
+    expect(renameCanvas(state, 'canvas_first', '第二画布')).toEqual(state);
+  });
+
+  it('returns the next available canvas name for auto-created canvases', () => {
+    const state = createWorkspaceState([
+      ...canvases,
+      {
+        id: 'canvas_third',
+        name: '新画布 1',
+        updatedAt: '刚刚',
+        nodes: [],
+        edges: [],
+      },
+      {
+        id: 'canvas_fourth',
+        name: '新画布 2',
+        updatedAt: '刚刚',
+        nodes: [],
+        edges: [],
+      },
+    ]);
+
+    expect(getNextAvailableCanvasName(state)).toBe('新画布 3');
+  });
+
   it('deletes canvas and moves active selection', () => {
     const state = {
       activeCanvasId: 'canvas_second',
@@ -262,15 +291,31 @@ describe('canvas workspace persistence', () => {
 
   it('exports and imports a canvas with a new id', () => {
     const state = createWorkspaceState(canvases);
-    const imported = importCanvas(state, exportCanvas(canvases[0]), 'canvas_imported');
+    const imported = importCanvas(
+      state,
+      exportCanvas({
+        ...canvases[0],
+        name: '导入画布',
+      }),
+      'canvas_imported',
+    );
 
     expect(imported.activeCanvasId).toBe('canvas_imported');
     expect(imported.canvases).toHaveLength(3);
     expect(imported.canvases[2]).toEqual({
       ...canvases[0],
       id: 'canvas_imported',
+      name: '导入画布',
       updatedAt: '刚刚',
     });
+  });
+
+  it('does not allow importing a canvas with a duplicate name', () => {
+    const state = createWorkspaceState(canvases);
+
+    expect(() => importCanvas(state, exportCanvas(canvases[0]), 'canvas_imported')).toThrow(
+      '已存在同名画布',
+    );
   });
 
   it('creates sequential edges from canvas nodes', () => {

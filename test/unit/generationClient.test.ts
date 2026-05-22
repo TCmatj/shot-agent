@@ -3,6 +3,7 @@ import type { CanvasView } from '../../src/app/canvasWorkspace';
 import type { ProviderConfig } from '../../src/domain/provider';
 import {
   buildGenerationRequest,
+  collectGenerationInputAssetIds,
   getEffectiveNodeOutputText,
   parseAnthropicStreamTextDelta,
   parseOpenAIStreamTextDelta,
@@ -457,6 +458,132 @@ describe('generation client request building', () => {
     });
   });
 
+  it('collects complete generation history inputs for first-last-frame mode', () => {
+    const secondImage = {
+      id: 'image_asset_2',
+      title: 'Second Reference',
+      modelId: 'asset-image',
+      kind: 'imageAsset' as const,
+      x: 0,
+      y: -120,
+      assetName: 'second.png',
+      assetDataUrl: 'data:image/png;base64,c2Vjb25k',
+      assetMimeType: 'image/png',
+    };
+
+    expect(
+      collectGenerationInputAssetIds({
+        canvas: {
+          ...canvas,
+          nodes: canvas.nodes
+            .map((node) =>
+              node.id === 'video_1'
+                ? {
+                    ...node,
+                    prompt: 'Keep the camera slow @text:text_1',
+                    seedanceScenario: 'image_to_video_first_last_frame' as const,
+                  }
+                : node,
+            )
+            .concat(secondImage),
+          edges: [
+            { id: 'edge_text_video', fromNodeId: 'text_1', toNodeId: 'video_1', toPortId: 'text' },
+            { id: 'edge_first_frame', fromNodeId: 'image_asset_2', toNodeId: 'video_1', toPortId: 'first_frame_image' },
+            { id: 'edge_last_frame', fromNodeId: 'image_asset_1', toNodeId: 'video_1', toPortId: 'last_frame_image' },
+          ],
+        },
+        nodeId: 'video_1',
+      }),
+    ).toEqual(['text_1', 'image_asset_2', 'image_asset_1']);
+  });
+
+  it('uses provider video urls for downstream video references', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: [
+          ...canvas.nodes.filter((node) => node.id !== 'video_1'),
+          {
+            id: 'video_local',
+            title: '本地视频',
+            modelId: 'seedance2.0',
+            kind: 'video',
+            x: 0,
+            y: 120,
+            outputUrl: 'https://example.com/remote.mp4',
+            outputPath: 'assets/videos/local.mp4',
+            outputDataUrl: 'blob:local-video',
+          },
+          {
+            id: 'video_1',
+            title: 'Video',
+            modelId: 'seedance2.0',
+            kind: 'video',
+            x: 320,
+            y: 0,
+            prompt: '@视频 做运动参考',
+            seedanceScenario: 'multimodal_reference_video',
+          },
+        ],
+        edges: [{ id: 'edge_video_ref', fromNodeId: 'video_local', toNodeId: 'video_1', toPortId: 'reference_video' }],
+      },
+      nodeId: 'video_1',
+      provider: seedanceProvider,
+      token: 'token',
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string).content).toEqual([
+      { type: 'text', text: '视频一 做运动参考' },
+      {
+        type: 'video_url',
+        video_url: { role: 'reference_video', url: 'https://example.com/remote.mp4' },
+      },
+    ]);
+  });
+
+  it('builds multimodal seedance requests with referenced audio assets', () => {
+    const audioAsset = {
+      id: 'audio_asset_1',
+      title: 'Audio Reference',
+      modelId: 'asset-audio',
+      kind: 'audioAsset' as const,
+      x: 0,
+      y: 240,
+      assetName: 'sound.mp3',
+      assetDataUrl: 'data:audio/mpeg;base64,YXVkaW8=',
+      assetMimeType: 'audio/mpeg',
+    };
+
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes
+          .map((node) =>
+            node.id === 'video_1'
+              ? {
+                  ...node,
+                  prompt: 'Make it cinematic @音频',
+                  seedanceScenario: 'multimodal_reference_video' as const,
+                }
+              : node,
+          )
+          .concat(audioAsset),
+        edges: [{ id: 'edge_audio_ref', fromNodeId: 'audio_asset_1', toNodeId: 'video_1', toPortId: 'reference_audio' }],
+      },
+      nodeId: 'video_1',
+      provider: seedanceProvider,
+      token: 'token',
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string).content).toEqual([
+      { type: 'text', text: 'Make it cinematic 音频一' },
+      {
+        type: 'audio_url',
+        audio_url: { role: 'reference_audio', url: 'data:audio/mpeg;base64,YXVkaW8=' },
+      },
+    ]);
+  });
+
   it('builds multimodal seedance requests from role ports', () => {
     const videoAsset = {
       id: 'video_asset_1',
@@ -516,9 +643,66 @@ describe('generation client request building', () => {
           type: 'video_url',
           video_url: { role: 'reference_video', url: 'data:video/mp4;base64,dmlkZW8=' },
         },
+      ],
+    });
+  });
+
+  it('uploads only referenced multimodal assets except frame inputs', () => {
+    const extraImageAsset = {
+      id: 'image_asset_2',
+      title: 'Unused Image Reference',
+      modelId: 'asset-image',
+      kind: 'imageAsset' as const,
+      x: 0,
+      y: -120,
+      assetName: 'unused.png',
+      assetDataUrl: 'data:image/png;base64,dW51c2Vk',
+      assetMimeType: 'image/png',
+    };
+    const extraVideoAsset = {
+      id: 'video_asset_2',
+      title: 'Unused Video Reference',
+      modelId: 'asset-video',
+      kind: 'videoAsset' as const,
+      x: 0,
+      y: 180,
+      assetName: 'unused.mp4',
+      assetDataUrl: 'data:video/mp4;base64,dW51c2Vk',
+      assetMimeType: 'video/mp4',
+    };
+
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes
+          .map((node) =>
+            node.id === 'video_1'
+              ? {
+                  ...node,
+                  prompt: 'Make it cinematic @image:image_asset_1',
+                  seedanceScenario: 'multimodal_reference_video' as const,
+                }
+              : node,
+          )
+          .concat(extraImageAsset, extraVideoAsset),
+        edges: [
+          { id: 'edge_image_ref_1', fromNodeId: 'image_asset_1', toNodeId: 'video_1', toPortId: 'reference_image' },
+          { id: 'edge_image_ref_2', fromNodeId: 'image_asset_2', toNodeId: 'video_1', toPortId: 'reference_image' },
+          { id: 'edge_video_ref_2', fromNodeId: 'video_asset_2', toNodeId: 'video_1', toPortId: 'reference_video' },
+        ],
+      },
+      nodeId: 'video_1',
+      provider: seedanceProvider,
+      token: 'token',
+    });
+
+    expect(result.ok && JSON.parse(result.request.body as string)).toEqual({
+      model: 'doubao-seedance-2-0-260128',
+      content: [
+        { type: 'text', text: 'Make it cinematic 图片一' },
         {
-          type: 'audio_url',
-          audio_url: { role: 'reference_audio', url: 'data:audio/mpeg;base64,YXVkaW8=' },
+          type: 'image_url',
+          image_url: { role: 'reference_image', url: 'data:image/png;base64,aW1hZ2U=' },
         },
       ],
     });
@@ -864,6 +1048,34 @@ describe('generation client request building', () => {
     });
   });
 
+  it('rejects malformed seedance submit responses without task id or video url', async () => {
+    const fetcher = vi.fn<GenerationFetch>(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: 'queued',
+        content: {},
+      }),
+    }));
+
+    await expect(
+      submitGenerationNode({
+        canvas,
+        nodeId: 'video_1',
+        provider: seedanceProvider,
+        token: 'token',
+        fetcher,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: '视频生成响应缺少任务 ID 或视频地址',
+      rawResponse: {
+        status: 'queued',
+        content: {},
+      },
+    });
+  });
+
   it('queries seedance task status through the polling endpoint', async () => {
     const fetcher = vi.fn<GenerationFetch>(async () => ({
       ok: true,
@@ -911,6 +1123,33 @@ describe('generation client request building', () => {
         method: 'GET',
       }),
     );
+  });
+
+  it('rejects malformed seedance polling responses without status information', async () => {
+    const fetcher = vi.fn<GenerationFetch>(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: 'task_1',
+        content: {},
+      }),
+    }));
+
+    await expect(
+      queryGenerationTask({
+        provider: seedanceProvider,
+        taskId: 'task_1',
+        token: 'token',
+        fetcher,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: '视频任务查询响应缺少状态信息',
+      rawResponse: {
+        id: 'task_1',
+        content: {},
+      },
+    });
   });
 
   it('parses OpenAI chat completion stream deltas', () => {

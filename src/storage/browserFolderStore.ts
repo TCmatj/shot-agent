@@ -128,7 +128,11 @@ export async function saveAssetFileToCanvasFolder(
 ): Promise<Pick<CanvasNodeView, 'assetName' | 'assetPath' | 'assetDataUrl' | 'assetMimeType'>> {
   const canvasDir = await getCanvasDirectory(rootHandle, canvas, true);
   const assetsDir = await canvasDir.getDirectoryHandle('assets', { create: true });
-  const mediaDirName = file.type.startsWith('video/') ? 'videos' : 'images';
+  const mediaDirName = file.type.startsWith('video/')
+    ? 'videos'
+    : file.type.startsWith('audio/')
+      ? 'audios'
+      : 'images';
   const mediaDir = await assetsDir.getDirectoryHandle(mediaDirName, { create: true });
   const assetName = await makeUniqueFileName(mediaDir, file.name);
   const fileHandle = await mediaDir.getFileHandle(assetName, { create: true });
@@ -312,9 +316,9 @@ async function saveDataUrlAssetToCanvasDirectory(
   canvasDir: FileSystemDirectoryHandle,
   dataUrl: string,
   input: {
-    kind: 'image' | 'video' | 'file';
+    kind: 'image' | 'video' | 'audio' | 'file';
     fileName: string;
-    directoryName?: 'images' | 'videos' | 'files' | 'covers';
+    directoryName?: 'images' | 'videos' | 'audios' | 'files' | 'covers';
   },
 ): Promise<{ assetName: string; assetPath: string; mimeType: string }> {
   const blob = dataUrlToBlob(dataUrl);
@@ -323,7 +327,7 @@ async function saveDataUrlAssetToCanvasDirectory(
   const mediaDir = await assetsDir.getDirectoryHandle(mediaDirName, { create: true });
   const extension = getExtensionFromMimeType(
     blob.type,
-    input.kind === 'video' ? 'video' : 'image',
+    input.kind === 'video' ? 'video' : input.kind === 'audio' ? 'audio' : 'image',
   );
   const assetName = await makeUniqueFileName(
     mediaDir,
@@ -360,9 +364,13 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mimeType });
 }
 
-function getNodeAssetKind(node: CanvasNodeView): 'image' | 'video' | 'file' {
+function getNodeAssetKind(node: CanvasNodeView): 'image' | 'video' | 'audio' | 'file' {
   if (node.kind === 'videoAsset' || node.assetMimeType?.startsWith('video/')) {
     return 'video';
+  }
+
+  if (node.kind === 'audioAsset' || node.assetMimeType?.startsWith('audio/')) {
+    return 'audio';
   }
 
   return node.assetMimeType?.startsWith('image/') || node.kind === 'imageAsset'
@@ -374,9 +382,15 @@ function getNodeOutputKind(node: CanvasNodeView): 'image' | 'video' {
   return node.kind === 'video' ? 'video' : 'image';
 }
 
-function getMediaDirectoryName(kind: 'image' | 'video' | 'file'): 'images' | 'videos' | 'files' {
+function getMediaDirectoryName(
+  kind: 'image' | 'video' | 'audio' | 'file',
+): 'images' | 'videos' | 'audios' | 'files' {
   if (kind === 'video') {
     return 'videos';
+  }
+
+  if (kind === 'audio') {
+    return 'audios';
   }
 
   return kind === 'file' ? 'files' : 'images';
@@ -412,7 +426,21 @@ async function getCanvasDirectory(
   canvas: CanvasView,
   create: boolean,
 ): Promise<FileSystemDirectoryHandle> {
-  return rootHandle.getDirectoryHandle(sanitizeFolderName(canvas.name), { create });
+  const primaryFolderName = getCanvasFolderName(canvas);
+
+  if (create) {
+    return rootHandle.getDirectoryHandle(primaryFolderName, { create: true });
+  }
+
+  try {
+    return await rootHandle.getDirectoryHandle(primaryFolderName);
+  } catch {
+    return rootHandle.getDirectoryHandle(sanitizeFolderName(canvas.name), { create: false });
+  }
+}
+
+function getCanvasFolderName(canvas: CanvasView): string {
+  return `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
 }
 
 async function ensureProjectDirectories(canvasDir: FileSystemDirectoryHandle): Promise<void> {
@@ -422,6 +450,7 @@ async function ensureProjectDirectories(canvasDir: FileSystemDirectoryHandle): P
   const assetsDir = await canvasDir.getDirectoryHandle('assets', { create: true });
   await assetsDir.getDirectoryHandle('images', { create: true });
   await assetsDir.getDirectoryHandle('videos', { create: true });
+  await assetsDir.getDirectoryHandle('audios', { create: true });
   await assetsDir.getDirectoryHandle('files', { create: true });
   await assetsDir.getDirectoryHandle('covers', { create: true });
   await canvasDir.getDirectoryHandle('exports', { create: true });
@@ -496,7 +525,7 @@ function fileToDataUrl(file: Blob): Promise<string> {
   });
 }
 
-function getExtensionFromMimeType(mimeType: string, kind: 'image' | 'video'): string {
+function getExtensionFromMimeType(mimeType: string, kind: 'image' | 'video' | 'audio'): string {
   if (mimeType.includes('png')) {
     return '.png';
   }
@@ -513,5 +542,13 @@ function getExtensionFromMimeType(mimeType: string, kind: 'image' | 'video'): st
     return '.mp4';
   }
 
-  return kind === 'video' ? '.mp4' : '.png';
+  if (mimeType.includes('mpeg') || mimeType.includes('mp3')) {
+    return '.mp3';
+  }
+
+  if (mimeType.includes('wav')) {
+    return '.wav';
+  }
+
+  return kind === 'video' ? '.mp4' : kind === 'audio' ? '.mp3' : '.png';
 }

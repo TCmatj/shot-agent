@@ -485,8 +485,8 @@ button:disabled {
 .video-input-port-list {
   display: grid;
   gap: 8px;
-  left: -88px;
   position: absolute;
+  right: 100%;
   top: 48px;
 }
 
@@ -494,14 +494,18 @@ button:disabled {
   align-items: center;
   display: flex;
   gap: 8px;
+  justify-content: flex-end;
   min-height: 28px;
+  padding-right: 14px;
   position: relative;
 }
 
 .video-input-port .edge-handle-input {
   left: auto;
-  position: static;
-  transform: none;
+  position: absolute;
+  right: -7px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .video-input-port span {

@@ -96,6 +96,7 @@ import {
   type SeedanceScenario,
 } from '../domain/seedance';
 import {
+  collectGenerationInputAssetIds,
   getEffectiveNodeOutputText,
   queryGenerationTask,
   resolveProviderToken,
@@ -112,6 +113,7 @@ import {
   deleteCanvas,
   exportCanvas,
   findNodesInSelectionRect,
+  getNextAvailableCanvasName,
   getUpstreamNodeIds,
   getNodeInputPoint,
   getNodeOutputPoint,
@@ -482,7 +484,7 @@ type PromptReferenceSuggestion = {
 };
 
 type PromptReferencePreview = PromptReferenceSuggestion & {
-  kind: 'text' | 'image' | 'video';
+  kind: 'text' | 'image' | 'video' | 'audio';
 };
 
 type ImagePreviewState = {
@@ -501,6 +503,10 @@ function getPromptReferenceTokenForSuggestion(suggestion: PromptReferenceSuggest
 
   if (suggestion.token === '@文本') {
     return `@text:${suggestion.subtitle}`;
+  }
+
+  if (suggestion.token === '@音频') {
+    return `@audio:${suggestion.subtitle}`;
   }
 
   return suggestion.token;
@@ -531,7 +537,15 @@ function getNodeVideoReferenceUrl(node: CanvasNodeView): string | undefined {
   }
 
   if (node.kind === 'video') {
-    return node.outputDataUrl ?? node.outputUrl;
+    return node.outputUrl ?? node.outputDataUrl;
+  }
+
+  return undefined;
+}
+
+function getNodeAudioReferenceUrl(node: CanvasNodeView): string | undefined {
+  if (node.kind === 'audioAsset') {
+    return node.assetDataUrl;
   }
 
   return undefined;
@@ -586,6 +600,16 @@ function getPromptReferenceSuggestions(
       });
     }
 
+    const audioUrl = getNodeAudioReferenceUrl(node);
+    if (audioUrl) {
+      suggestions.push({
+        token: '@音频',
+        title: node.title,
+        subtitle: node.id,
+        kindLabel: '音频',
+      });
+    }
+
     return suggestions;
   });
 }
@@ -612,6 +636,9 @@ function getPromptReferenceResolution(
     video: upstreamNodes
       .filter((node) => Boolean(getNodeVideoReferenceUrl(node)))
       .map((node) => node.id),
+    audio: upstreamNodes
+      .filter((node) => Boolean(getNodeAudioReferenceUrl(node)))
+      .map((node) => node.id),
   };
 }
 
@@ -630,7 +657,12 @@ function getPromptReferencePreviews(
     prompt,
     getPromptReferenceResolution(canvas, currentNodeId),
   ).flatMap<PromptReferencePreview>((reference) => {
-    if (reference.kind !== 'text' && reference.kind !== 'image' && reference.kind !== 'video') {
+    if (
+      reference.kind !== 'text' &&
+      reference.kind !== 'image' &&
+      reference.kind !== 'video' &&
+      reference.kind !== 'audio'
+    ) {
       return [];
     }
 
@@ -678,15 +710,30 @@ function getPromptReferencePreviews(
     }
 
     const videoUrl = getNodeVideoReferenceUrl(referencedNode);
-    return videoUrl
+    if (kind === 'video') {
+      return videoUrl
+        ? [
+            {
+              token,
+              title: referencedNode.title,
+              subtitle: referencedNode.id,
+              kindLabel: '视频',
+              kind,
+              videoUrl,
+            },
+          ]
+        : [];
+    }
+
+    const audioUrl = getNodeAudioReferenceUrl(referencedNode);
+    return audioUrl
       ? [
           {
             token,
             title: referencedNode.title,
             subtitle: referencedNode.id,
-            kindLabel: '视频',
+            kindLabel: '音频',
             kind,
-            videoUrl,
           },
         ]
       : [];
@@ -813,7 +860,7 @@ function renderPromptEditorContent(
   const fragment = document.createDocumentFragment();
   let cursor = 0;
 
-  for (const match of value.matchAll(/@(text|image|video):([a-zA-Z0-9_-]+)|@(图片|视频|文本)/g)) {
+  for (const match of value.matchAll(/@(text|image|video|audio):([a-zA-Z0-9_-]+)|@(图片|视频|文本|音频)/g)) {
     const token = match[0];
     const start = match.index ?? 0;
     const reference = referencesByToken.get(token)?.shift();
@@ -1017,7 +1064,7 @@ function PromptTextarea({
       return;
     }
 
-    if (previews.length > 0 && /@(图片|视频|文本|image|video|text):?/.test(value)) {
+    if (previews.length > 0 && /@(图片|视频|文本|音频|image|video|text|audio):?/.test(value)) {
       renderPromptEditorContent(target, value, previews, handlePreviewImage);
       window.requestAnimationFrame(() => {
         setPromptEditorCaretOffset(target, caret);
@@ -1302,17 +1349,37 @@ function getVideoInputPorts(scenario: SeedanceScenario) {
   return getSeedanceInputPorts(scenario);
 }
 
-function getVideoScenarioHint(scenario: SeedanceScenario): string | null {
+function getVideoPromptPlaceholder(scenario: SeedanceScenario): string {
   if (scenario === 'image_to_video_first_frame') {
-    return '只读取 1 张直接连到当前视频节点的上游图片，并按画布从上到下取第一张作为首帧。';
+    return '输入提示词，支持 @文本 引用文本；首帧图片通过连线传入，无需再 @ 引用图片';
   }
 
   if (scenario === 'image_to_video_first_last_frame') {
-    return '只读取 2 张直接连到当前视频节点的上游图片，并按画布从上到下分别作为首帧和尾帧。';
+    return '输入提示词，支持 @文本 引用文本；首帧和尾帧通过连线传入，无需再 @ 引用图片';
   }
 
   if (scenario === 'multimodal_reference_video') {
-    return '多模态模式会读取直接连到当前视频节点的上游图片和视频作为参考素材；音频输入将在后续步骤接入。';
+    return '输入提示词，支持 @文本 / @图片 / @视频 / @音频；连线仅提供可引用范围，只有提示词中引用的图片、视频和音频才会上传';
+  }
+
+  return '输入提示词，支持 @文本 引用文本';
+}
+
+function getVideoScenarioHint(scenario: SeedanceScenario): string | null {
+  if (scenario === 'text_to_video') {
+    return '文生视频模式仅读取提示词内容；支持使用 @文本 引用已连线的文本或对话输出。';
+  }
+
+  if (scenario === 'image_to_video_first_frame') {
+    return '首帧图生视频模式会自动读取直接连到当前视频节点的 1 张上游图片作为首帧；图片无需再在提示词里用 @ 引用。';
+  }
+
+  if (scenario === 'image_to_video_first_last_frame') {
+    return '首尾帧图生视频模式会自动读取直接连到当前视频节点的上游图片，按画布从上到下依次作为首帧和尾帧；无需再在提示词里 @ 引用图片。';
+  }
+
+  if (scenario === 'multimodal_reference_video') {
+    return '多模态参考视频模式下，连线用于提供可引用的参考素材范围；提示词中使用 @文本 / @图片 / @视频 / @音频 引用到的内容才会参与本次请求上传。';
   }
 
   return null;
@@ -1458,7 +1525,7 @@ export function App() {
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [providerSearchQuery, setProviderSearchQuery] = useState('');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [workspaceState, setWorkspaceState] = useState(() => {
+  const [workspaceState, setWorkspaceStateRaw] = useState(() => {
     if (typeof window === 'undefined') {
       return initialWorkspaceState;
     }
@@ -1512,6 +1579,24 @@ export function App() {
   const [draftOutputText, setDraftOutputText] = useState('');
   const [outputEditorMode, setOutputEditorMode] = useState<'preview' | 'edit'>('preview');
   const [outputModalPosition, setOutputModalPosition] = useState({ x: 0, y: 0 });
+
+  function setWorkspaceState(
+    action:
+      | typeof workspaceState
+      | ((current: typeof workspaceState) => typeof workspaceState),
+  ) {
+    if (typeof action === 'function') {
+      const current = workspaceStateRef.current;
+      const next = (action as (current: typeof workspaceState) => typeof workspaceState)(current);
+      workspaceStateRef.current = next;
+      setWorkspaceStateRaw(next);
+      return;
+    }
+
+    workspaceStateRef.current = action;
+    setWorkspaceStateRaw(action);
+  }
+
   const [modalDragState, setModalDragState] = useState<ModalDragState | null>(null);
   const [previewImage, setPreviewImage] = useState<ImagePreviewState | null>(null);
   const { activeCanvasId, canvases, storage } = workspaceState;
@@ -2433,13 +2518,13 @@ export function App() {
       activeCanvasId: id,
       canvases: [
         ...current.canvases,
-      {
-        id,
-        name: `新画布 ${current.canvases.length + 1}`,
-        updatedAt: '刚刚',
-        nodes: [],
-        edges: [],
-      },
+        {
+          id,
+          name: getNextAvailableCanvasName(current),
+          updatedAt: '刚刚',
+          nodes: [],
+          edges: [],
+        },
       ],
     }));
     setViewport(defaultViewport);
@@ -3302,34 +3387,61 @@ export function App() {
   ) {
     let savedVideoPath: string | undefined;
     let savedCoverPath: string | undefined;
+    let localVideoUrl: string | undefined;
+    let localCoverUrl: string | undefined;
+    const saveWarnings: string[] = [];
 
     if (rootDirectoryHandle && folderStorageReady && activeCanvas) {
       if (task.videoUrl) {
-        const videoBlob = await (await fetch(task.videoUrl)).blob();
-        const savedVideo = await saveGeneratedMediaBlobToCanvasFolder(
-          rootDirectoryHandle,
-          activeCanvas,
-          {
-            blob: videoBlob,
-            fileName: `${task.taskId ?? node.id}.mp4`,
-            kind: 'video',
-          },
-        );
-        savedVideoPath = savedVideo.assetPath;
+        try {
+          const videoResponse = await fetch(task.videoUrl);
+          if (!videoResponse.ok) {
+            throw new Error(`HTTP ${videoResponse.status}`);
+          }
+
+          const videoBlob = await videoResponse.blob();
+          const savedVideo = await saveGeneratedMediaBlobToCanvasFolder(
+            rootDirectoryHandle,
+            activeCanvas,
+            {
+              blob: videoBlob,
+              fileName: `${task.taskId ?? node.id}.mp4`,
+              kind: 'video',
+            },
+          );
+          savedVideoPath = savedVideo.assetPath;
+          localVideoUrl = URL.createObjectURL(videoBlob);
+        } catch (error) {
+          saveWarnings.push(
+            `视频结果未能保存到本地文件夹：${error instanceof Error ? error.message : '未知错误'}`,
+          );
+        }
       }
 
       if (task.lastFrameUrl) {
-        const coverBlob = await (await fetch(task.lastFrameUrl)).blob();
-        const savedCover = await saveGeneratedMediaBlobToCanvasFolder(
-          rootDirectoryHandle,
-          activeCanvas,
-          {
-            blob: coverBlob,
-            fileName: `${task.taskId ?? node.id}.png`,
-            kind: 'cover',
-          },
-        );
-        savedCoverPath = savedCover.assetPath;
+        try {
+          const coverResponse = await fetch(task.lastFrameUrl);
+          if (!coverResponse.ok) {
+            throw new Error(`HTTP ${coverResponse.status}`);
+          }
+
+          const coverBlob = await coverResponse.blob();
+          const savedCover = await saveGeneratedMediaBlobToCanvasFolder(
+            rootDirectoryHandle,
+            activeCanvas,
+            {
+              blob: coverBlob,
+              fileName: `${task.taskId ?? node.id}.png`,
+              kind: 'cover',
+            },
+          );
+          savedCoverPath = savedCover.assetPath;
+          localCoverUrl = URL.createObjectURL(coverBlob);
+        } catch (error) {
+          saveWarnings.push(
+            `视频封面未能保存到本地文件夹：${error instanceof Error ? error.message : '未知错误'}`,
+          );
+        }
       }
     }
 
@@ -3338,11 +3450,18 @@ export function App() {
       generationStatus: 'succeeded',
       generationError: undefined,
       outputUrl: task.videoUrl ?? current.outputUrl,
+      outputDataUrl: localVideoUrl ?? current.outputDataUrl,
       outputPath: savedVideoPath ?? current.outputPath,
       outputCoverPath: savedCoverPath ?? current.outputCoverPath,
+      outputCoverDataUrl: localCoverUrl ?? current.outputCoverDataUrl,
       settledCompletionTokens: task.completionTokens,
       settledTotalTokens: task.totalTokens,
-      outputText: task.status ? `任务状态：${task.status}` : current.outputText,
+      outputText: [
+        task.status ? `任务状态：${task.status}` : current.outputText,
+        ...saveWarnings,
+      ]
+        .filter(Boolean)
+        .join(' | '),
     }), { history: false });
     updateGenerationHistoryRecord(generationRecordId, (record) => ({
       ...record,
@@ -3458,15 +3577,10 @@ export function App() {
     const generationStartedAt = new Date().toISOString();
     const providerModelId =
       node.providerModelId ?? findProviderModelsForNode(node)[0]?.providerModelId ?? node.modelId;
-    const upstreamNodeIds = new Set(getUpstreamNodeIds(activeCanvas, node.id));
-    const inputAssetIds = parsePromptReferences(
-      node.prompt ?? '',
-      getPromptReferenceResolution(activeCanvas, node.id),
-    )
-      .map((reference) => reference.assetId)
-      .filter((assetId, index, assetIds) =>
-        upstreamNodeIds.has(assetId) && assetIds.indexOf(assetId) === index,
-      );
+    const inputAssetIds = collectGenerationInputAssetIds({
+      canvas: activeCanvas,
+      nodeId: node.id,
+    });
     const estimatedVideoTokenCost =
       node.kind === 'video'
         ? estimateSeedanceTokens({
@@ -4393,6 +4507,7 @@ export function App() {
                     <div className="video-input-port-list">
                       {videoInputPorts.map((port) => (
                         <label key={port.id} className="video-input-port">
+                          <span>{port.label}</span>
                           <button
                             type="button"
                             className="edge-handle edge-handle-input"
@@ -4400,7 +4515,6 @@ export function App() {
                             onPointerUp={(event) => completeEdgeDraft(event, node.id, port.id)}
                             onPointerDown={(event) => event.stopPropagation()}
                           />
-                          <span>{port.label}</span>
                         </label>
                       ))}
                     </div>
@@ -4619,7 +4733,11 @@ export function App() {
                         <PromptTextarea
                           canvas={activeCanvas}
                           node={node}
-                          placeholder="输入提示词，使用 @文本 / @图片 / @视频 / @音频 引用已连线的上游资产"
+                          placeholder={
+                            node.kind === 'video'
+                              ? getVideoPromptPlaceholder(node.seedanceScenario ?? 'text_to_video')
+                              : '输入节点提示词，支持 @文本 / @图片 / @视频 引用已连线的上游资产'
+                          }
                           stopPointerDown
                           onChange={(value) =>
                             updateNode(node.id, (current) => ({
@@ -5254,4 +5372,3 @@ export function App() {
     </main>
   );
 }
-

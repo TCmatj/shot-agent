@@ -143,6 +143,24 @@ export function getEffectiveNodeOutputText(node: CanvasNodeView): string | undef
   return getEffectiveOutputText(node);
 }
 
+export function collectGenerationInputAssetIds(input: {
+  canvas: CanvasView;
+  nodeId: string;
+}): string[] {
+  const node = input.canvas.nodes.find((current) => current.id === input.nodeId);
+  if (!node || !isModelNodeKind(node.kind)) {
+    return [];
+  }
+
+  const promptInputIds = collectInputAssets(node, input.canvas).map((asset) => asset.node.id);
+  const connectedVideoInputIds =
+    node.kind === 'video'
+      ? collectConnectedVideoHistoryAssetIds(node, input.canvas)
+      : [];
+
+  return uniqueAssetIds([...promptInputIds, ...connectedVideoInputIds]);
+}
+
 export function resolveProviderToken(
   provider: ProviderConfig,
   env: Record<string, string | undefined> = getViteEnv(),
@@ -391,13 +409,23 @@ export async function queryGenerationTask(
   }
 
   const normalized = normalizeOutput('video-task', rawResponse);
-  return normalized.ok && normalized.output.kind === 'video-task'
-    ? { ok: true, output: normalized.output }
-    : {
-        ok: false,
-        error: normalized.ok ? '视频任务查询响应格式错误' : normalized.error,
-        rawResponse,
-      };
+  if (!normalized.ok || normalized.output.kind !== 'video-task') {
+    return {
+      ok: false,
+      error: normalized.ok ? '视频任务查询响应格式错误' : normalized.error,
+      rawResponse,
+    };
+  }
+
+  if (!normalized.output.status && !normalized.output.videoUrl) {
+    return {
+      ok: false,
+      error: '视频任务查询响应缺少状态信息',
+      rawResponse,
+    };
+  }
+
+  return { ok: true, output: normalized.output };
 }
 
 export async function streamChatGenerationNode(
@@ -771,8 +799,12 @@ function collectSeedanceScenarioAssets(
   canvas: CanvasView,
   scenario: SeedanceScenario,
 ): Array<Record<string, unknown>> {
-  const assets = collectConnectedSeedanceAssets(node, canvas);
+  let assets = collectConnectedSeedanceAssets(node, canvas);
   const hasRolePorts = assets.some((asset) => asset.portId && asset.portId !== 'default');
+
+  if (scenario === 'multimodal_reference_video') {
+    assets = filterReferencedSeedanceAssets(node, canvas, assets);
+  }
 
   if (hasRolePorts) {
     return collectRoleBasedSeedanceAssets(assets);
@@ -836,6 +868,60 @@ function collectSeedanceScenarioAssets(
       },
     })),
   ];
+}
+
+function filterReferencedSeedanceAssets(
+  node: CanvasNodeView,
+  canvas: CanvasView,
+  assets: SeedanceConnectedAsset[],
+): SeedanceConnectedAsset[] {
+  const references = parsePromptReferences(
+    node.prompt ?? '',
+    getPromptReferenceResolution(node, canvas),
+  );
+  const referencedNodeIds = {
+    image: new Set(
+      references.filter((reference) => reference.kind === 'image').map((reference) => reference.assetId),
+    ),
+    video: new Set(
+      references.filter((reference) => reference.kind === 'video').map((reference) => reference.assetId),
+    ),
+    audio: new Set(
+      references.filter((reference) => reference.kind === 'audio').map((reference) => reference.assetId),
+    ),
+  };
+
+  return assets.filter((asset) => {
+    if (asset.portId === 'first_frame_image' || asset.portId === 'last_frame_image') {
+      return true;
+    }
+
+    if (asset.portId === 'reference_image') {
+      return referencedNodeIds.image.has(asset.node.id);
+    }
+
+    if (asset.portId === 'reference_video') {
+      return referencedNodeIds.video.has(asset.node.id);
+    }
+
+    if (asset.portId === 'reference_audio') {
+      return referencedNodeIds.audio.has(asset.node.id);
+    }
+
+    if (asset.node.kind === 'image' || asset.node.kind === 'imageAsset') {
+      return referencedNodeIds.image.has(asset.node.id);
+    }
+
+    if (asset.node.kind === 'video' || asset.node.kind === 'videoAsset') {
+      return referencedNodeIds.video.has(asset.node.id);
+    }
+
+    if (asset.node.kind === 'audioAsset') {
+      return referencedNodeIds.audio.has(asset.node.id);
+    }
+
+    return false;
+  });
 }
 
 function collectRoleBasedSeedanceAssets(
@@ -948,7 +1034,7 @@ function collectConnectedSeedanceAssets(node: CanvasNodeView, canvas: CanvasView
       }
 
       if (connectedNode.kind === 'video') {
-        const videoUrl = connectedNode.outputDataUrl ?? connectedNode.outputUrl;
+        const videoUrl = connectedNode.outputUrl ?? connectedNode.outputDataUrl;
         return videoUrl
           ? [{
               node: connectedNode,
@@ -972,6 +1058,36 @@ function collectConnectedSeedanceAssets(node: CanvasNodeView, canvas: CanvasView
 
       return [];
     });
+}
+
+function collectConnectedVideoHistoryAssetIds(node: CanvasNodeView, canvas: CanvasView): string[] {
+  const scenario = node.seedanceScenario ?? 'text_to_video';
+  const assets = collectConnectedSeedanceAssets(node, canvas);
+
+  if (scenario === 'multimodal_reference_video') {
+    return uniqueAssetIds(filterReferencedSeedanceAssets(node, canvas, assets).map((asset) => asset.node.id));
+  }
+
+  if (scenario === 'image_to_video_first_frame') {
+    return uniqueAssetIds(
+      assets
+        .filter((asset) => asset.portId === 'first_frame_image')
+        .map((asset) => asset.node.id),
+    );
+  }
+
+  if (scenario === 'image_to_video_first_last_frame') {
+    return uniqueAssetIds(
+      assets
+        .filter(
+          (asset) =>
+            asset.portId === 'first_frame_image' || asset.portId === 'last_frame_image',
+        )
+        .map((asset) => asset.node.id),
+    );
+  }
+
+  return [];
 }
 
 function buildPrompt(node: CanvasNodeView, canvas: CanvasView): string {
@@ -1147,7 +1263,7 @@ function collectPromptReferencedInputs(node: CanvasNodeView, canvas: CanvasView)
         referencedNode.kind === 'videoAsset'
           ? referencedNode.assetDataUrl
           : referencedNode.kind === 'video'
-            ? referencedNode.outputDataUrl ?? referencedNode.outputUrl
+            ? referencedNode.outputUrl ?? referencedNode.outputDataUrl
             : undefined;
 
       return videoUrl
@@ -1213,8 +1329,11 @@ function getPromptReferenceResolution(
       .filter(
         (current) =>
           current.kind === 'videoAsset' ||
-          (current.kind === 'video' && Boolean(current.outputDataUrl ?? current.outputUrl)),
+          (current.kind === 'video' && Boolean(current.outputUrl ?? current.outputDataUrl)),
       )
+      .map((current) => current.id),
+    audio: upstreamNodes
+      .filter((current) => current.kind === 'audioAsset' && Boolean(current.assetDataUrl))
       .map((current) => current.id),
   };
 }
@@ -1275,6 +1394,14 @@ function normalizeOutput(
   }
 
   const task = videoTask(rawResponse);
+  if (!task.taskId && !task.videoUrl) {
+    return {
+      ok: false,
+      error: '视频生成响应缺少任务 ID 或视频地址',
+      rawResponse,
+    };
+  }
+
   return {
     ok: true,
     output: {
@@ -1341,11 +1468,15 @@ function videoTask(rawResponse: unknown): {
   const data = isRecord(rawResponse.data) ? rawResponse.data : rawResponse;
   const content = isRecord(data.content) ? data.content : undefined;
   const usage = isRecord(data.usage) ? data.usage : undefined;
+  const videoUrl = content
+    ? stringField(content, ['video_url', 'url'])
+    : stringField(data, ['video_url', 'url']);
+  const status = stringField(data, ['status']) ?? (videoUrl ? 'succeeded' : undefined);
 
   return {
     taskId: stringField(data, ['id', 'task_id']),
-    status: stringField(data, ['status']),
-    videoUrl: content ? stringField(content, ['video_url', 'url']) : stringField(data, ['video_url', 'url']),
+    status,
+    videoUrl,
     lastFrameUrl: content ? stringField(content, ['last_frame_url']) : undefined,
     completionTokens:
       usage && typeof usage.completion_tokens === 'number' ? usage.completion_tokens : undefined,
@@ -1398,6 +1529,10 @@ function stringField(record: Record<string, unknown>, fields: string[]): string 
   }
 
   return undefined;
+}
+
+function uniqueAssetIds(assetIds: string[]): string[] {
+  return assetIds.filter((assetId, index) => assetIds.indexOf(assetId) === index);
 }
 
 function isModelNodeKind(kind: CanvasNodeView['kind']): kind is ModelNodeKind {

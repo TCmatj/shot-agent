@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   persistWorkspaceToFolder,
+  saveAssetFileToCanvasFolder,
   saveGeneratedMediaBlobToCanvasFolder,
 } from '../../src/storage/browserFolderStore';
 import { createWorkspaceState, type CanvasWorkspaceState } from '../../src/app/canvasWorkspace';
@@ -107,7 +108,7 @@ describe('browser folder store', () => {
     expect(canvas.nodes[1].outputPath).toMatch(/^assets\/images\/node_image_output-\d+\.png$/);
     expect(canvas.nodes[1].outputDataUrl).toBeUndefined();
 
-    const canvasDir = root.directories.get('素材画布');
+    const canvasDir = root.directories.get('素材画布__canvas_assets');
     const imageDir = canvasDir?.directories.get('assets')?.directories.get('images');
     expect(imageDir?.files.has('input.png')).toBe(true);
     expect([...imageDir?.files.keys() ?? []].some((fileName) => fileName.startsWith('node_image_output-'))).toBe(true);
@@ -150,5 +151,22 @@ describe('browser folder store', () => {
     );
 
     expect(result.assetPath).toBe('assets/covers/task_1.png');
+  });
+
+  it('stores imported audio assets in a dedicated audio directory', async () => {
+    const root = new MemoryDirectoryHandle('Shot Agent');
+    const canvas = createWorkspaceState([
+      { id: 'canvas_1', name: 'Canvas', updatedAt: 'now', nodes: [], edges: [] },
+    ]).canvases[0];
+
+    const result = await saveAssetFileToCanvasFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      canvas,
+      new File(['audio'], 'voice.mp3', { type: 'audio/mpeg' }),
+    );
+
+    expect(result.assetPath).toBe('assets/audios/voice.mp3');
+    const canvasDir = root.directories.get('Canvas__canvas_1');
+    expect(canvasDir?.directories.get('assets')?.directories.get('audios')?.files.has('voice.mp3')).toBe(true);
   });
 });
