@@ -89,11 +89,15 @@ import {
 import { createGenerationRecord, type GenerationRecord } from '../domain/generationHistory';
 import {
   estimateSeedanceTokens,
+  getDefaultSeedanceRatio,
   getSeedanceCapabilities,
+  getSeedanceDurationInputBounds,
   getSeedanceInputPorts,
   getVisibleSeedanceFields,
+  normalizeSeedanceDurationSeconds,
   type SeedanceInputPortId,
   type SeedanceModelId,
+  type SeedanceRatio,
   type SeedanceScenario,
 } from '../domain/seedance';
 import {
@@ -159,16 +163,9 @@ import {
 } from './canvasViewports';
 import { shouldApplyPersistedWorkspaceState } from './workspacePersistence';
 import {
-  ensureDirectoryPermission,
-  getStoredRootDirectoryHandle,
-  persistWorkspaceToFolder,
-  readWorkspaceFromFolder,
-  saveAssetFileToCanvasFolder,
-  saveDataUrlOutputToCanvasFolder,
-  saveGeneratedMediaBlobToCanvasFolder,
-  storeRootDirectoryHandle,
-  type ShotAgentDirectoryHandle,
-} from '../storage/browserFolderStore';
+  getWorkspaceStore,
+} from '../storage';
+import type { WorkspaceRootHandle } from '../storage/workspaceStore';
 import { createSeedanceTaskTracker } from '../models/seedanceTaskTracker';
 
 type NodeTemplate = {
@@ -193,10 +190,6 @@ type EdgeDraft = {
   from: Point;
   to: Point;
 } | null;
-
-type WindowWithDirectoryPicker = Window & {
-  showDirectoryPicker?: () => Promise<ShotAgentDirectoryHandle>;
-};
 
 type DragState =
   | {
@@ -423,6 +416,8 @@ const initialCanvases: CanvasView[] = [
         x: 520,
         y: 240,
         seedanceScenario: 'image_to_video_first_frame',
+        videoRatio: getDefaultSeedanceRatio('seedance2.0'),
+        videoFramesPerSecond: getSeedanceCapabilities('seedance2.0').fixedFrameRate,
       },
       {
         id: 'node_chat_1',
@@ -1339,6 +1334,30 @@ function getImageNodeSettingBadges(node: CanvasNodeView): string[] {
   return [resolutionLabel, aspectLabel, qualityLabel];
 }
 
+function getVideoNodeSettingBadges(node: CanvasNodeView): string[] {
+  const model = (node.modelId as SeedanceModelId) ?? 'seedance2.0';
+  const capabilities = getSeedanceCapabilities(model);
+  const resolution = node.videoResolution ?? capabilities.supportedResolutions[0] ?? '720p';
+  const ratio = node.videoRatio ?? getDefaultSeedanceRatio(model);
+  const duration = node.videoDurationSeconds ?? 5;
+  const durationLabel = duration === -1 ? 'Auto 时长' : `${duration}s`;
+  const frameRate = node.videoFramesPerSecond ?? capabilities.fixedFrameRate;
+
+  return [resolution, ratio === 'adaptive' ? 'Adaptive' : ratio, durationLabel, `${frameRate}fps`];
+}
+
+function getEstimatedVideoDurationSeconds(node: CanvasNodeView): number {
+  const model = (node.modelId as SeedanceModelId) ?? 'seedance2.0';
+  const capabilities = getSeedanceCapabilities(model);
+  const duration = node.videoDurationSeconds;
+
+  if (duration === -1) {
+    return capabilities.durationRangeSeconds.min;
+  }
+
+  return duration ?? 5;
+}
+
 function getVideoScenarioOptions(): Array<{ value: SeedanceScenario; label: string }> {
   return [
     { value: 'text_to_video', label: '文生视频' },
@@ -1529,6 +1548,7 @@ function ProviderAvatar({
 }
 
 export function App() {
+  const workspaceStore = useMemo(() => getWorkspaceStore(), []);
   const canvasRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>(loadProviders);
@@ -1549,7 +1569,7 @@ export function App() {
       initialWorkspaceState,
     );
   });
-  const [rootDirectoryHandle, setRootDirectoryHandle] = useState<ShotAgentDirectoryHandle | null>(
+  const [rootDirectoryHandle, setRootDirectoryHandle] = useState<WorkspaceRootHandle | null>(
     null,
   );
   const [folderStorageReady, setFolderStorageReady] = useState(false);
@@ -1579,6 +1599,7 @@ export function App() {
   const [edgeDraft, setEdgeDraft] = useState<EdgeDraft>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [inspectedNodeId, setInspectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [canvasClipboard, setCanvasClipboard] = useState<CanvasClipboardPayload | null>(null);
   const [canvasMessage, setCanvasMessage] = useState<string | null>(null);
@@ -1648,6 +1669,8 @@ export function App() {
   );
   const selectedNode =
     activeCanvas?.nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const inspectedNode =
+    activeCanvas?.nodes.find((node) => node.id === inspectedNodeId) ?? null;
   const selectedVideoScenario =
     selectedNode?.kind === 'video'
       ? selectedNode.seedanceScenario ?? 'text_to_video'
@@ -1679,8 +1702,9 @@ export function App() {
             selectedNode.videoResolution ??
             selectedVideoCapabilities?.supportedResolutions[0] ??
             '720p',
-          duration: selectedNode.videoDurationSeconds ?? 5,
-          framespersecond: selectedNode.videoFramesPerSecond ?? 24,
+          ratio: selectedNode.videoRatio ?? getDefaultSeedanceRatio(selectedVideoModel),
+          duration: getEstimatedVideoDurationSeconds(selectedNode),
+          framespersecond: selectedVideoCapabilities?.fixedFrameRate ?? 24,
           scenario: selectedVideoScenario,
           generateAudio: selectedNode.videoGenerateAudio ?? true,
           multimodalCount: selectedVideoReferenceCount,
@@ -1935,16 +1959,23 @@ export function App() {
 
     async function restoreFolderWorkspace() {
       try {
-        const handle = await getStoredRootDirectoryHandle();
-        if (!handle || !(await ensureDirectoryPermission(handle, 'readwrite'))) {
+        const handle = await workspaceStore.getStoredRootDirectoryHandle();
+        if (!handle || !(await workspaceStore.ensureDirectoryPermission(handle, 'readwrite'))) {
           if (!canceled) {
             setFolderStorageReady(false);
-            setCanvasMessage('请先选择画布存储文件夹，画布和素材将默认写入该文件夹。');
+            setCanvasMessage(
+              workspaceStore.kind === 'unsupported'
+                ? '当前环境不支持工作区文件夹存储。'
+                : '请先选择画布存储文件夹，画布和素材将默认写入该文件夹。',
+            );
           }
           return;
         }
 
-        const restoredState = await readWorkspaceFromFolder(handle, workspaceStateRef.current);
+        const restoredState = await workspaceStore.readWorkspaceFromFolder(
+          handle,
+          workspaceStateRef.current,
+        );
         if (!canceled) {
           setRootDirectoryHandle(handle);
           workspaceStateRef.current = restoredState;
@@ -1974,7 +2005,7 @@ export function App() {
 
     const snapshot = workspaceState;
 
-    void persistWorkspaceToFolder(rootDirectoryHandle, snapshot)
+    void workspaceStore.persistWorkspaceToFolder(rootDirectoryHandle, snapshot)
       .then((persistedState) => {
         if (
           !shouldApplyPersistedWorkspaceState(
@@ -2066,6 +2097,12 @@ export function App() {
     };
     setViewport(restoredViewport);
   }, [activeCanvasId]);
+
+  useEffect(() => {
+    if (inspectedNodeId && !activeCanvas?.nodes.some((node) => node.id === inspectedNodeId)) {
+      setInspectedNodeId(null);
+    }
+  }, [activeCanvas, inspectedNodeId]);
 
   useEffect(() => {
     if (!activeCanvasId) {
@@ -2453,6 +2490,14 @@ export function App() {
           template.kind === 'image' ? defaultImageResolutionTier : undefined,
         imageAspectRatio: template.kind === 'image' ? defaultImageAspectRatio : undefined,
         imageQuality: template.kind === 'image' ? defaultImageQuality : undefined,
+        videoRatio:
+          template.kind === 'video'
+            ? getDefaultSeedanceRatio(template.modelId as SeedanceModelId)
+            : undefined,
+        videoFramesPerSecond:
+          template.kind === 'video'
+            ? getSeedanceCapabilities(template.modelId as SeedanceModelId).fixedFrameRate
+            : undefined,
         textContent: template.kind === 'textAsset' ? '在这里输入文本' : undefined,
       },
     ]);
@@ -2579,7 +2624,11 @@ export function App() {
     }
 
     try {
-      const savedAsset = await saveAssetFileToCanvasFolder(rootDirectoryHandle, activeCanvas, file);
+      const savedAsset = await workspaceStore.saveAssetFileToCanvasFolder(
+        rootDirectoryHandle,
+        activeCanvas,
+        file,
+      );
       const isImage = file.type.startsWith('image/');
       const isVideo = file.type.startsWith('video/');
       const nodeKind = isImage ? 'imageAsset' : isVideo ? 'videoAsset' : 'audioAsset';
@@ -2627,31 +2676,35 @@ export function App() {
   }
 
   async function chooseCanvasStorageFolder() {
-    const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
-
-    if (!picker) {
-      setCanvasMessage('当前浏览器不支持文件夹写入，请使用支持 File System Access API 的 Chromium 浏览器。');
+    if (!workspaceStore.isSupported()) {
+      setCanvasMessage(
+        '当前环境不支持文件夹写入，请使用桌面版或支持 File System Access API 的 Chromium 浏览器。',
+      );
       return;
     }
 
     try {
-      const directory = await picker();
-      if (!(await ensureDirectoryPermission(directory, 'readwrite'))) {
+      const directory = await workspaceStore.pickRootDirectory();
+      if (!directory) {
+        return;
+      }
+
+      if (!(await workspaceStore.ensureDirectoryPermission(directory, 'readwrite'))) {
         setCanvasMessage('未获得文件夹写入权限，无法保存画布。');
         return;
       }
 
-      await storeRootDirectoryHandle(directory);
+      await workspaceStore.storeRootDirectoryHandle(directory);
       setRootDirectoryHandle(directory);
       setFolderStorageReady(true);
       const nextState = updateWorkspaceStorage(workspaceStateRef.current, {
         mode: 'custom-folder',
         folderName: directory.name,
-        folderPath: directory.name,
+        folderPath: directory.kind === 'desktop-directory' ? directory.path : directory.name,
       });
 
       setWorkspaceStateWithHistory(() => nextState);
-      const persistedState = await persistWorkspaceToFolder(directory, nextState);
+      const persistedState = await workspaceStore.persistWorkspaceToFolder(directory, nextState);
       workspaceStateRef.current = persistedState;
       setWorkspaceState(persistedState);
       setCanvasMessage(`画布存储文件夹已设置为：${directory.name}`);
@@ -2671,7 +2724,7 @@ export function App() {
     }
 
     try {
-      const persistedState = await persistWorkspaceToFolder(
+      const persistedState = await workspaceStore.persistWorkspaceToFolder(
         rootDirectoryHandle,
         workspaceStateRef.current,
       );
@@ -2945,7 +2998,7 @@ export function App() {
     setAddMenu(null);
     updateDragState(null);
     clearDragPreview();
-    selectSingleNode(node.id);
+    selectSingleNode(node.id, { preserveInspector: true });
     setEdgeDraft({
       fromNodeId: node.id,
       from,
@@ -3031,6 +3084,7 @@ export function App() {
     );
     setSelectedNodeId(null);
     setSelectedNodeIds([]);
+    setInspectedNodeId(null);
     setEdgeDraft(null);
   }
 
@@ -3592,7 +3646,7 @@ export function App() {
           }
 
           const videoBlob = await videoResponse.blob();
-          const savedVideo = await saveGeneratedMediaBlobToCanvasFolder(
+          const savedVideo = await workspaceStore.saveGeneratedMediaBlobToCanvasFolder(
             rootDirectoryHandle,
             activeCanvas,
             {
@@ -3618,7 +3672,7 @@ export function App() {
           }
 
           const coverBlob = await coverResponse.blob();
-          const savedCover = await saveGeneratedMediaBlobToCanvasFolder(
+          const savedCover = await workspaceStore.saveGeneratedMediaBlobToCanvasFolder(
             rootDirectoryHandle,
             activeCanvas,
             {
@@ -3777,13 +3831,18 @@ export function App() {
       node.kind === 'video'
         ? estimateSeedanceTokens({
             model: (node.modelId as SeedanceModelId) ?? 'seedance2.0',
-            resolution:
-              node.videoResolution ??
+              resolution:
+                node.videoResolution ??
+                getSeedanceCapabilities((node.modelId as SeedanceModelId) ?? 'seedance2.0')
+                  .supportedResolutions[0] ??
+                '720p',
+            ratio:
+              node.videoRatio ??
+              getDefaultSeedanceRatio((node.modelId as SeedanceModelId) ?? 'seedance2.0'),
+            duration: getEstimatedVideoDurationSeconds(node),
+            framespersecond:
               getSeedanceCapabilities((node.modelId as SeedanceModelId) ?? 'seedance2.0')
-                .supportedResolutions[0] ??
-              '720p',
-            duration: node.videoDurationSeconds ?? 5,
-            framespersecond: node.videoFramesPerSecond ?? 24,
+                .fixedFrameRate ?? 24,
             scenario: node.seedanceScenario ?? 'text_to_video',
             generateAudio: node.videoGenerateAudio ?? true,
             multimodalCount: countDirectVideoReferenceInputs(activeCanvas, node.id),
@@ -3888,7 +3947,7 @@ export function App() {
 
     const savedImageOutput =
       result.output.kind === 'image' && result.output.dataUrl && rootDirectoryHandle && folderStorageReady
-        ? await saveDataUrlOutputToCanvasFolder(rootDirectoryHandle, activeCanvas, result.output.dataUrl, {
+        ? await workspaceStore.saveDataUrlOutputToCanvasFolder(rootDirectoryHandle, activeCanvas, result.output.dataUrl, {
             kind: 'image',
             nodeId: node.id,
           }).catch(() => null)
@@ -4019,12 +4078,30 @@ export function App() {
     setSelectedNodeId(null);
     setSelectedNodeIds([]);
     setSelectedEdgeId(null);
+    setInspectedNodeId(null);
   }
 
-  function selectSingleNode(nodeId: string) {
+  function selectSingleNode(
+    nodeId: string,
+    options: {
+      openInspector?: boolean;
+      preserveInspector?: boolean;
+    } = {},
+  ) {
     setSelectedNodeId(nodeId);
     setSelectedNodeIds([nodeId]);
     setSelectedEdgeId(null);
+    setInspectedNodeId((current) => {
+      if (options.openInspector) {
+        return nodeId;
+      }
+
+      if (options.preserveInspector || current === nodeId) {
+        return current;
+      }
+
+      return null;
+    });
   }
 
   return (
@@ -4695,7 +4772,7 @@ export function App() {
                   style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
                   onPointerDown={(event) => {
                     event.stopPropagation();
-                    selectSingleNode(node.id);
+                    selectSingleNode(node.id, { preserveInspector: true });
                     setAddMenu(null);
                   }}
                 >
@@ -4766,7 +4843,7 @@ export function App() {
 
                             setAddMenu(null);
                             setEdgeDraft(null);
-                            selectSingleNode(node.id);
+                            selectSingleNode(node.id, { preserveInspector: true });
                           }}
                           onDoubleClick={(event) => {
                             event.stopPropagation();
@@ -4795,12 +4872,32 @@ export function App() {
                           >
                             <Pencil size={13} />
                           </button>
+                          <button
+                            type="button"
+                            className="node-title-edit-button"
+                            aria-label="打开节点配置"
+                            title="打开节点配置"
+                            onPointerDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              selectSingleNode(node.id, { openInspector: true, preserveInspector: true });
+                            }}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <Settings size={13} />
+                          </button>
                         </div>
                       )}
                       <p>{node.modelId}</p>
                       {node.kind === 'image' ? (
                         <div className="node-image-settings-meta" aria-label="图片生成参数">
                           {getImageNodeSettingBadges(node).map((badge) => (
+                            <span key={badge}>{badge}</span>
+                          ))}
+                        </div>
+                      ) : node.kind === 'video' ? (
+                        <div className="node-image-settings-meta node-video-settings-meta" aria-label="视频生成参数">
+                          {getVideoNodeSettingBadges(node).map((badge) => (
                             <span key={badge}>{badge}</span>
                           ))}
                         </div>
@@ -4942,36 +5039,48 @@ export function App() {
                             }))
                           }
                         />
-                      <button
-                        type="button"
-                        disabled={isGenerating}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={() => void submitNodeGeneration(node)}
-                      >
-                          {isGenerating ? '提交中' : '生成'}
-                      </button>
                         {node.kind === 'video' ? (
-                          <label className="node-inline-video-mode">
-                            <span>模式</span>
-                            <select
-                              className="video-mode-select"
-                              value={node.seedanceScenario ?? 'text_to_video'}
+                          <div className="node-inline-video-actions">
+                            <span className="node-inline-video-mode-label">模式</span>
+                            <label className="node-inline-video-mode">
+                              <select
+                                className="video-mode-select"
+                                value={node.seedanceScenario ?? 'text_to_video'}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onChange={(event) =>
+                                  handleVideoScenarioChange(
+                                    node.id,
+                                    event.target.value as SeedanceScenario,
+                                  )
+                                }
+                              >
+                                {getVideoScenarioOptions().map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <button
+                              type="button"
+                              className="node-inline-generate-button"
+                              disabled={isGenerating}
                               onPointerDown={(event) => event.stopPropagation()}
-                              onChange={(event) =>
-                                handleVideoScenarioChange(
-                                  node.id,
-                                  event.target.value as SeedanceScenario,
-                                )
-                              }
+                              onClick={() => void submitNodeGeneration(node)}
                             >
-                              {getVideoScenarioOptions().map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        ) : null}
+                              {isGenerating ? '提交中' : '生成'}
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isGenerating}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={() => void submitNodeGeneration(node)}
+                          >
+                            {isGenerating ? '提交中' : '生成'}
+                          </button>
+                        )}
                         {node.generationError ? (
                           <p className="node-error">{node.generationError}</p>
                         ) : null}
@@ -5054,7 +5163,10 @@ export function App() {
               </button>
             </div>
           ) : null}
-          {selectedNode ? (
+          {inspectedNode ? (() => {
+            const selectedNode = inspectedNode;
+
+            return (
             <aside className="node-inspector">
               <header>
                 {editingNodeTitleId === selectedNode.id &&
@@ -5181,6 +5293,16 @@ export function App() {
                           )
                             ? current.videoResolution
                             : nextCapabilities.supportedResolutions[0],
+                          videoRatio: nextCapabilities.supportedRatios.includes(
+                            current.videoRatio ?? getDefaultSeedanceRatio(nextModel),
+                          )
+                            ? current.videoRatio ?? getDefaultSeedanceRatio(nextModel)
+                            : getDefaultSeedanceRatio(nextModel),
+                          videoDurationSeconds: normalizeSeedanceDurationSeconds(
+                            nextModel,
+                            current.videoDurationSeconds ?? 5,
+                          ),
+                          videoFramesPerSecond: nextCapabilities.fixedFrameRate,
                         }));
                       }}
                     >
@@ -5191,85 +5313,133 @@ export function App() {
                       ))}
                     </select>
                   </label>
-                  {visibleVideoFields.includes('resolution') ? (
-                    <label>
-                      分辨率
-                      <select
-                        aria-label="分辨率"
-                        value={
-                          selectedNode.videoResolution ??
-                          selectedVideoCapabilities?.supportedResolutions[0] ??
-                          '720p'
-                        }
-                        onChange={(event) =>
-                          updateNode(selectedNode.id, (current) => ({
-                            ...current,
-                            videoResolution: event.target.value as '480p' | '720p' | '1080p',
-                          }))
-                        }
-                      >
-                        {(selectedVideoCapabilities?.supportedResolutions ?? ['720p']).map(
-                          (resolution) => (
-                            <option key={resolution} value={resolution}>
-                              {resolution}
-                            </option>
-                          ),
-                        )}
-                      </select>
-                    </label>
-                  ) : null}
-                  {visibleVideoFields.includes('duration') || visibleVideoFields.includes('framespersecond') ? (
-                    <div className="video-inline-fields">
+                  {visibleVideoFields.includes('resolution') ||
+                  visibleVideoFields.includes('ratio') ||
+                  visibleVideoFields.includes('duration') ? (
+                    <div className="video-top-inline-fields">
+                      {visibleVideoFields.includes('resolution') ? (
+                        <label className="video-inline-setting">
+                          <span>分辨率</span>
+                          <select
+                            aria-label="分辨率"
+                            value={
+                              selectedNode.videoResolution ??
+                              selectedVideoCapabilities?.supportedResolutions[0] ??
+                              '720p'
+                            }
+                            onChange={(event) =>
+                              updateNode(selectedNode.id, (current) => ({
+                                ...current,
+                                videoResolution: event.target.value as '480p' | '720p' | '1080p',
+                              }))
+                            }
+                          >
+                            {(selectedVideoCapabilities?.supportedResolutions ?? ['720p']).map(
+                              (resolution) => (
+                                <option key={resolution} value={resolution}>
+                                  {resolution}
+                                </option>
+                              ),
+                            )}
+                          </select>
+                        </label>
+                      ) : null}
+                      {visibleVideoFields.includes('ratio') ? (
+                        <label className="video-inline-setting">
+                          <span>比例</span>
+                          <select
+                            aria-label="比例"
+                            value={
+                              selectedNode.videoRatio ??
+                              (selectedVideoCapabilities
+                                ? getDefaultSeedanceRatio(selectedVideoModel)
+                                : '16:9')
+                            }
+                            onChange={(event) =>
+                              updateNode(selectedNode.id, (current) => ({
+                                ...current,
+                                videoRatio: event.target.value as SeedanceRatio,
+                              }))
+                            }
+                          >
+                            {(selectedVideoCapabilities?.supportedRatios ?? ['16:9']).map((ratio) => (
+                              <option key={ratio} value={ratio}>
+                                {ratio === 'adaptive' ? 'adaptive' : ratio}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
                       {visibleVideoFields.includes('duration') ? (
-                        <label>
-                          时长
-                          <input
-                            aria-label="时长"
-                            type="number"
-                            min={1}
-                            max={15}
-                            list="video-duration-options"
-                            value={selectedNode.videoDurationSeconds ?? 5}
-                            onChange={(event) =>
-                              updateNode(selectedNode.id, (current) => ({
-                                ...current,
-                                videoDurationSeconds: Number(event.target.value) || 5,
-                              }))
-                            }
-                          />
-                          <datalist id="video-duration-options">
-                            <option value="3" />
-                            <option value="5" />
-                            <option value="8" />
-                            <option value="10" />
-                          </datalist>
-                        </label>
+                        <div className="video-readonly-field video-inline-readonly" aria-label="帧率 24fps（官方固定）">
+                          <span>帧率</span>
+                          <strong>{selectedVideoCapabilities?.fixedFrameRate ?? 24}fps</strong>
+                        </div>
                       ) : null}
-                      {visibleVideoFields.includes('framespersecond') ? (
-                        <label>
-                          帧率
-                          <input
-                            aria-label="帧率"
-                            type="number"
-                            min={24}
-                            max={60}
-                            list="video-fps-options"
-                            value={selectedNode.videoFramesPerSecond ?? 24}
-                            onChange={(event) =>
-                              updateNode(selectedNode.id, (current) => ({
-                                ...current,
-                                videoFramesPerSecond: Number(event.target.value) || 24,
-                              }))
-                            }
-                          />
-                          <datalist id="video-fps-options">
-                            <option value="24" />
-                            <option value="30" />
-                            <option value="48" />
-                            <option value="60" />
-                          </datalist>
-                        </label>
-                      ) : null}
+                    </div>
+                  ) : null}
+                  {visibleVideoFields.includes('duration') ? (
+                    <div className="video-inline-fields">
+                      <div className="video-duration-control">
+                        <div className="video-duration-row">
+                          <label className="video-duration-label" htmlFor="video-duration-range">
+                            <span>时长</span>
+                            <strong>
+                              {selectedNode.videoDurationSeconds === -1
+                                ? 'Auto'
+                                : `${selectedNode.videoDurationSeconds ?? 5}s`}
+                            </strong>
+                          </label>
+                          <div className="video-duration-slider-wrap">
+                            <input
+                              className="video-duration-range"
+                              id="video-duration-range"
+                              aria-label="时长"
+                              type="range"
+                              min={Math.max(4, getSeedanceDurationInputBounds(selectedVideoModel).min)}
+                              max={getSeedanceDurationInputBounds(selectedVideoModel).max}
+                              step={1}
+                              value={
+                                selectedNode.videoDurationSeconds === -1
+                                  ? getSeedanceCapabilities(selectedVideoModel).durationRangeSeconds.min
+                                  : selectedNode.videoDurationSeconds ?? 5
+                              }
+                              disabled={selectedNode.videoDurationSeconds === -1}
+                              onChange={(event) =>
+                                updateNode(selectedNode.id, (current) => ({
+                                  ...current,
+                                  videoDurationSeconds: normalizeSeedanceDurationSeconds(
+                                    selectedVideoModel,
+                                    Number(event.target.value),
+                                  ),
+                                }))
+                              }
+                            />
+                          </div>
+                          <label className="video-duration-auto-toggle" title="自动时长">
+                            <input
+                              aria-label="自动时长"
+                              title="自动时长"
+                              type="checkbox"
+                              checked={selectedNode.videoDurationSeconds === -1}
+                              onChange={(event) =>
+                                updateNode(selectedNode.id, (current) => ({
+                                  ...current,
+                                  videoDurationSeconds: event.target.checked
+                                    ? -1
+                                    : normalizeSeedanceDurationSeconds(
+                                        selectedVideoModel,
+                                        current.videoDurationSeconds === -1
+                                          ? getSeedanceCapabilities(selectedVideoModel)
+                                              .durationRangeSeconds.min
+                                          : current.videoDurationSeconds ?? 5,
+                                      ),
+                                }))
+                              }
+                            />
+                          </label>
+                        </div>
+                      </div>
                     </div>
                   ) : null}
                   {getVideoScenarioHint(selectedVideoScenario) ? (
@@ -5431,7 +5601,8 @@ export function App() {
                 />
               </label>
             </aside>
-          ) : null}
+            );
+          })() : null}
           {editingOutputNode ? createPortal(
             <div className="output-modal-backdrop" onPointerDown={closeOutputEditor}>
               <section

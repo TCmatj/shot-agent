@@ -1,4 +1,5 @@
 export type SeedanceModelId = 'seedance2.0' | 'seedance2.0-fast';
+export type SeedanceRatio = '16:9' | '4:3' | '1:1' | '3:4' | '9:16' | '21:9' | 'adaptive';
 
 export type SeedanceScenario =
   | 'text_to_video'
@@ -37,6 +38,13 @@ export type SeedanceVisibleField =
 
 type SeedanceCapabilities = {
   supportedResolutions: Array<'480p' | '720p' | '1080p'>;
+  supportedRatios: SeedanceRatio[];
+  durationRangeSeconds: {
+    min: number;
+    max: number;
+    supportsAuto: boolean;
+  };
+  fixedFrameRate: number;
   supportsGenerateAudio: boolean;
   supportsPriority: boolean;
   maxReferenceImages: number;
@@ -47,6 +55,13 @@ type SeedanceCapabilities = {
 const capabilities: Record<SeedanceModelId, SeedanceCapabilities> = {
   'seedance2.0': {
     supportedResolutions: ['480p', '720p', '1080p'],
+    supportedRatios: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive'],
+    durationRangeSeconds: {
+      min: 4,
+      max: 15,
+      supportsAuto: true,
+    },
+    fixedFrameRate: 24,
     supportsGenerateAudio: true,
     supportsPriority: true,
     maxReferenceImages: 9,
@@ -55,6 +70,13 @@ const capabilities: Record<SeedanceModelId, SeedanceCapabilities> = {
   },
   'seedance2.0-fast': {
     supportedResolutions: ['480p', '720p'],
+    supportedRatios: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive'],
+    durationRangeSeconds: {
+      min: 4,
+      max: 15,
+      supportsAuto: true,
+    },
+    fixedFrameRate: 24,
     supportsGenerateAudio: true,
     supportsPriority: true,
     maxReferenceImages: 9,
@@ -63,8 +85,48 @@ const capabilities: Record<SeedanceModelId, SeedanceCapabilities> = {
   },
 };
 
+const officialSeedanceBillingSizes: Record<
+  Exclude<SeedanceRatio, 'adaptive'>,
+  Record<'480p' | '720p' | '1080p', { width: number; height: number }>
+> = {
+  '16:9': {
+    '480p': { width: 864, height: 496 },
+    '720p': { width: 1280, height: 720 },
+    '1080p': { width: 1920, height: 1080 },
+  },
+  '9:16': {
+    '480p': { width: 496, height: 864 },
+    '720p': { width: 720, height: 1280 },
+    '1080p': { width: 1080, height: 1920 },
+  },
+  '4:3': {
+    '480p': { width: 752, height: 560 },
+    '720p': { width: 1112, height: 834 },
+    '1080p': { width: 1664, height: 1248 },
+  },
+  '3:4': {
+    '480p': { width: 560, height: 752 },
+    '720p': { width: 834, height: 1112 },
+    '1080p': { width: 1248, height: 1664 },
+  },
+  '1:1': {
+    '480p': { width: 640, height: 640 },
+    '720p': { width: 960, height: 960 },
+    '1080p': { width: 1440, height: 1440 },
+  },
+  '21:9': {
+    '480p': { width: 992, height: 432 },
+    '720p': { width: 1470, height: 630 },
+    '1080p': { width: 2205, height: 945 },
+  },
+};
+
 export function getSeedanceCapabilities(model: SeedanceModelId): SeedanceCapabilities {
   return capabilities[model];
+}
+
+export function getDefaultSeedanceRatio(model: SeedanceModelId): SeedanceRatio {
+  return capabilities[model].supportedRatios[0];
 }
 
 export function getVisibleSeedanceFields(input: {
@@ -76,7 +138,6 @@ export function getVisibleSeedanceFields(input: {
     'resolution',
     'ratio',
     'duration',
-    'framespersecond',
     'seed',
     'returnLastFrame',
   ];
@@ -131,28 +192,44 @@ export function getSeedanceInputPorts(scenario: SeedanceScenario): SeedanceInput
 export function estimateSeedanceTokens(input: {
   model: SeedanceModelId;
   resolution: '480p' | '720p' | '1080p';
+  ratio?: SeedanceRatio;
   duration: number;
-  framespersecond: number;
+  framespersecond?: number;
   scenario: SeedanceScenario;
   generateAudio: boolean;
   multimodalCount: number;
 }): number {
-  const resolutionFactor =
-    input.resolution === '1080p' ? 2.1 : input.resolution === '720p' ? 1.4 : 1;
-  const fpsFactor = input.framespersecond / 24;
-  const audioFactor = input.generateAudio ? 1.1 : 1;
-  const scenarioFactor =
-    input.scenario === 'multimodal_reference_video'
-      ? 1.2
-      : input.scenario === 'image_to_video_first_last_frame'
-        ? 1.1
-        : 1;
+  const ratio = input.ratio && input.ratio !== 'adaptive' ? input.ratio : '16:9';
+  const { width, height } = officialSeedanceBillingSizes[ratio][input.resolution];
+  const fps = input.framespersecond ?? capabilities[input.model].fixedFrameRate;
 
-  return Math.round(
-    Math.max(
-      1,
-      9000 * input.duration * resolutionFactor * fpsFactor * audioFactor * scenarioFactor +
-        input.multimodalCount * 1200,
-    ),
-  );
+  return Math.max(1, Math.round((width * height * fps * input.duration) / 1024));
+}
+
+export function getSeedanceDurationInputBounds(model: SeedanceModelId): { min: number; max: number } {
+  const duration = capabilities[model].durationRangeSeconds;
+
+  return {
+    min: duration.supportsAuto ? -1 : duration.min,
+    max: duration.max,
+  };
+}
+
+export function normalizeSeedanceDurationSeconds(
+  model: SeedanceModelId,
+  value: number,
+): number {
+  const duration = capabilities[model].durationRangeSeconds;
+
+  if (!Number.isFinite(value)) {
+    return duration.min;
+  }
+
+  const integerValue = Math.round(value);
+
+  if (duration.supportsAuto && integerValue === -1) {
+    return -1;
+  }
+
+  return Math.min(duration.max, Math.max(duration.min, integerValue));
 }

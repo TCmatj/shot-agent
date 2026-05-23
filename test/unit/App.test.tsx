@@ -11,6 +11,19 @@ import {
 
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
 
+async function openNodeInspectorByTitle(title: string) {
+  const headings = await screen.findAllByRole('heading', { name: title });
+  const canvasHeading = headings.find((heading) => heading.closest('article'));
+
+  expect(canvasHeading).toBeTruthy();
+
+  const nodeCard = canvasHeading!.closest('article');
+  expect(nodeCard).toBeTruthy();
+
+  await userEvent.click(within(nodeCard!).getByRole('button', { name: '打开节点配置' }));
+  return nodeCard!;
+}
+
 describe('App image preview', () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -113,7 +126,7 @@ describe('App video node inspector', () => {
   it('shows scene preset controls for video nodes', async () => {
     render(<App />);
 
-    await userEvent.click(await screen.findByText('视频生成'));
+    await openNodeInspectorByTitle('视频生成');
 
     expect(screen.getByLabelText('类型')).toBeTruthy();
     expect(screen.queryByText('节点名称')).toBeNull();
@@ -123,7 +136,7 @@ describe('App video node inspector', () => {
   it('does not show 1080p for seedance2.0-fast', async () => {
     render(<App />);
 
-    await userEvent.click(await screen.findByText('视频生成'));
+    await openNodeInspectorByTitle('视频生成');
     await userEvent.selectOptions(screen.getByLabelText('模型'), 'seedance2.0-fast');
 
     expect(screen.queryByRole('option', { name: '1080p' })).toBeNull();
@@ -132,28 +145,112 @@ describe('App video node inspector', () => {
   it('renders estimated and settled token usage for video nodes', async () => {
     render(<App />);
 
-    await userEvent.click(await screen.findByText('视频生成'));
+    await openNodeInspectorByTitle('视频生成');
 
     expect(screen.getByText(/预计消耗：/)).toBeTruthy();
     expect(screen.getByText(/实际消耗：等待官方结算/)).toBeTruthy();
   });
 
-  it('renders inline editable duration and fps inputs with datalist options', async () => {
+  it('renders duration slider, auto-duration toggle, ratio options, and fixed fps', async () => {
     render(<App />);
 
-    await userEvent.click(await screen.findByText('视频生成'));
+    await openNodeInspectorByTitle('视频生成');
 
     const durationInput = screen.getByLabelText('时长');
-    const fpsInput = screen.getByLabelText('帧率');
+    const ratioSelect = screen.getByLabelText('比例') as HTMLSelectElement;
+    const autoDurationToggle = screen.getByLabelText('自动时长') as HTMLInputElement;
 
-    expect(durationInput.getAttribute('list')).toBe('video-duration-options');
-    expect(fpsInput.getAttribute('list')).toBe('video-fps-options');
+    expect(durationInput.getAttribute('type')).toBe('range');
+    expect(durationInput.className).toContain('video-duration-range');
+    expect(durationInput.getAttribute('min')).toBe('4');
+    expect(durationInput.getAttribute('max')).toBe('15');
+    expect(durationInput.getAttribute('step')).toBe('1');
+    expect(autoDurationToggle.checked).toBe(false);
+    expect(autoDurationToggle.getAttribute('title')).toBe('自动时长');
+    expect(screen.queryByText('自动时长')).toBeNull();
+    expect(screen.queryByText('4s')).toBeNull();
+    expect(screen.queryByText('15s')).toBeNull();
+    expect(
+      Array.from(ratioSelect.options).map((option) => option.value),
+    ).toEqual(['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive']);
+    expect(screen.getByLabelText('帧率 24fps（官方固定）')).toBeTruthy();
+  });
+
+  it('keeps the duration label and current value on one line without slider edge markers', async () => {
+    const { container } = render(<App />);
+
+    await openNodeInspectorByTitle('视频生成');
+
+    const durationRow = container.querySelector('.video-duration-row') as HTMLDivElement | null;
+    const durationLabel = container.querySelector(
+      '.video-duration-label',
+    ) as HTMLLabelElement | null;
+
+    expect(durationRow).toBeTruthy();
+    expect(durationLabel).toBeTruthy();
+    expect(screen.queryByText('15s')).toBeNull();
+    expect(durationRow?.textContent).toContain('时长');
+    expect(durationRow?.textContent).toContain('5s');
+  });
+
+  it('disables the duration slider when auto duration is enabled', async () => {
+    render(<App />);
+
+    await openNodeInspectorByTitle('视频生成');
+
+    const durationInput = screen.getByLabelText('时长') as HTMLInputElement;
+    const autoDurationToggle = screen.getByLabelText('自动时长') as HTMLInputElement;
+
+    expect(durationInput.disabled).toBe(false);
+    await userEvent.click(autoDurationToggle);
+    expect(autoDurationToggle.checked).toBe(true);
+    expect(durationInput.disabled).toBe(true);
+  });
+
+  it('shows selected video settings on the node card outside the inspector', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_video_meta',
+          name: '视频参数画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'video_1',
+              title: '视频生成',
+              modelId: 'seedance2.0',
+              kind: 'video',
+              x: 0,
+              y: 0,
+              videoResolution: '1080p',
+              videoRatio: '21:9',
+              videoDurationSeconds: -1,
+              videoFramesPerSecond: 24,
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    const { container } = render(<App />);
+    const badgeRegion = container.querySelector(
+      '.canvas-node-video .node-video-settings-meta',
+    ) as HTMLDivElement | null;
+
+    expect(badgeRegion).toBeTruthy();
+    expect(within(badgeRegion!).getByText('1080p')).toBeTruthy();
+    expect(within(badgeRegion!).getByText('21:9')).toBeTruthy();
+    expect(within(badgeRegion!).getByText('Auto 时长')).toBeTruthy();
+    expect(within(badgeRegion!).getByText('24fps')).toBeTruthy();
   });
 
   it('shows role-based input ports for first-last-frame mode', async () => {
     render(<App />);
 
-    await userEvent.click(await screen.findByText('视频生成'));
+    await openNodeInspectorByTitle('视频生成');
     await userEvent.selectOptions(screen.getByLabelText('类型'), 'image_to_video_first_last_frame');
 
     const videoNode = screen.getAllByRole('heading', { name: '视频生成' })[0].closest('article');
@@ -166,7 +263,7 @@ describe('App video node inspector', () => {
   it('shows multimodal prompt guidance for text, image, video, and audio references', async () => {
     render(<App />);
 
-    await userEvent.click(await screen.findByText('视频生成'));
+    await openNodeInspectorByTitle('视频生成');
     await userEvent.selectOptions(screen.getByLabelText('类型'), 'multimodal_reference_video');
 
     expect(
@@ -220,7 +317,7 @@ describe('App video node inspector', () => {
 
     render(<App />);
 
-    await userEvent.click(await screen.findByText('视频生成'));
+    await openNodeInspectorByTitle('视频生成');
 
     const videoNode = screen.getAllByRole('heading', { name: '视频生成' })[0].closest('article');
     expect(videoNode).toBeTruthy();
@@ -232,6 +329,24 @@ describe('App video node inspector', () => {
     expect(within(videoNode!).queryByText('首帧图')).toBeNull();
     expect(within(videoNode!).queryByText('尾帧图')).toBeNull();
     expect(within(videoNode!).getByText('文本')).toBeTruthy();
+  });
+
+  it('opens inspector only from the config button instead of clicking the node body', async () => {
+    render(<App />);
+
+    const headings = await screen.findAllByRole('heading', { name: '视频生成' });
+    const canvasHeading = headings.find((heading) => heading.closest('article'));
+    expect(canvasHeading).toBeTruthy();
+
+    await userEvent.click(canvasHeading!);
+    expect(document.querySelector('.node-inspector')).toBeNull();
+
+    const card = canvasHeading!.closest('article');
+    expect(card).toBeTruthy();
+    await userEvent.click(within(card!).getByRole('button', { name: '打开节点配置' }));
+
+    expect(document.querySelector('.node-inspector')).toBeTruthy();
+    expect(screen.getByLabelText('类型')).toBeTruthy();
   });
 });
 

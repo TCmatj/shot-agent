@@ -388,6 +388,7 @@ describe('generation client request building', () => {
 
     expect(result.ok && JSON.parse(result.request.body as string)).toEqual({
       model: 'doubao-seedance-2-0-260128',
+      ratio: '16:9',
       content: [
         { type: 'text', text: 'Slow camera orbit 图片一' },
         {
@@ -425,7 +426,6 @@ describe('generation client request building', () => {
                   seedanceScenario: 'image_to_video_first_last_frame' as const,
                   videoResolution: '720p' as const,
                   videoDurationSeconds: 5,
-                  videoFramesPerSecond: 24,
                 }
               : node,
           )
@@ -443,7 +443,6 @@ describe('generation client request building', () => {
     expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
       resolution: '720p',
       duration: 5,
-      framespersecond: 24,
       content: [
         { type: 'text', text: 'Keep the camera slow 图片一 图片二' },
         {
@@ -455,6 +454,50 @@ describe('generation client request building', () => {
           image_url: { role: 'last_frame', url: 'data:image/png;base64,aW1hZ2U=' },
         },
       ],
+    });
+    expect(result.ok && JSON.parse(result.request.body as string).framespersecond).toBeUndefined();
+  });
+
+  it('rejects Seedance durations outside the official range', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'video_1'
+            ? {
+                ...node,
+                videoDurationSeconds: 16,
+              }
+            : node,
+        ),
+      },
+      nodeId: 'video_1',
+      provider: seedanceProvider,
+      token: 'token',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: '当前模型的视频时长仅支持 -1 或 4~15 秒',
+    });
+  });
+
+  it('rejects Seedance ratios outside the official range', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'video_1' ? ({ ...node, videoRatio: '2:1' } as never) : node,
+        ),
+      },
+      nodeId: 'video_1',
+      provider: seedanceProvider,
+      token: 'token',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: '当前模型不支持所选视频比例：2:1',
     });
   });
 
@@ -698,6 +741,7 @@ describe('generation client request building', () => {
 
     expect(result.ok && JSON.parse(result.request.body as string)).toEqual({
       model: 'doubao-seedance-2-0-260128',
+      ratio: '16:9',
       content: [
         { type: 'text', text: 'Make it cinematic 图片一' },
         {

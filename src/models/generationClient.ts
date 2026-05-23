@@ -14,6 +14,7 @@ import {
   type ProviderConfig,
 } from '../domain/provider';
 import {
+  getDefaultSeedanceRatio,
   getSeedanceCapabilities,
   type SeedanceInputPortId,
   type SeedanceModelId,
@@ -759,6 +760,29 @@ function validateSeedanceVideoNode(node: CanvasNodeView): string | null {
     return `当前模型不支持所选视频分辨率：${resolution}`;
   }
 
+  const ratio = node.videoRatio ?? getDefaultSeedanceRatio(modelId);
+  if (!capabilities.supportedRatios.includes(ratio)) {
+    return `当前模型不支持所选视频比例：${ratio}`;
+  }
+
+  if (typeof node.videoDurationSeconds === 'number') {
+    const duration = node.videoDurationSeconds;
+    const supportsAuto = capabilities.durationRangeSeconds.supportsAuto;
+    const inRange =
+      Number.isInteger(duration) &&
+      ((supportsAuto && duration === -1) ||
+        (duration >= capabilities.durationRangeSeconds.min &&
+          duration <= capabilities.durationRangeSeconds.max));
+
+    if (!inRange) {
+      return `当前模型的视频时长仅支持 ${
+        supportsAuto
+          ? `-1 或 ${capabilities.durationRangeSeconds.min}~${capabilities.durationRangeSeconds.max}`
+          : `${capabilities.durationRangeSeconds.min}~${capabilities.durationRangeSeconds.max}`
+      } 秒`;
+    }
+  }
+
   return null;
 }
 
@@ -776,12 +800,9 @@ function buildSeedanceRequestBody(input: {
       ...collectSeedanceScenarioAssets(input.node, input.canvas, input.scenario),
     ],
     ...(input.node.videoResolution ? { resolution: input.node.videoResolution } : {}),
-    ...(input.node.videoRatio ? { ratio: input.node.videoRatio } : {}),
+    ratio: input.node.videoRatio ?? getDefaultSeedanceRatio(input.node.modelId as SeedanceModelId),
     ...(typeof input.node.videoDurationSeconds === 'number'
       ? { duration: input.node.videoDurationSeconds }
-      : {}),
-    ...(typeof input.node.videoFramesPerSecond === 'number'
-      ? { framespersecond: input.node.videoFramesPerSecond }
       : {}),
     ...(typeof input.node.videoSeed === 'number' ? { seed: input.node.videoSeed } : {}),
     ...(typeof input.node.videoReturnLastFrame === 'boolean'

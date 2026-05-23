@@ -4,7 +4,11 @@ import type {
   ImageQuality,
   ImageResolutionTier,
 } from '../domain/imageGenerationOptions';
-import { getSeedanceInputPorts, type SeedanceInputPortId } from '../domain/seedance';
+import {
+  getSeedanceInputPorts,
+  type SeedanceInputPortId,
+  type SeedanceRatio,
+} from '../domain/seedance';
 
 export type CanvasNodeKind =
   | 'image'
@@ -31,7 +35,7 @@ export type CanvasNodeView = {
     | 'image_to_video_first_last_frame'
     | 'multimodal_reference_video';
   videoResolution?: '480p' | '720p' | '1080p';
-  videoRatio?: string;
+  videoRatio?: SeedanceRatio;
   videoDurationSeconds?: number;
   videoFramesPerSecond?: number;
   videoSeed?: number;
