@@ -48,6 +48,84 @@
 - 生成历史与重试规则
 - 本地画布存储接口
 
+## 环境准备
+
+建议使用：
+
+- `Node.js 20+`
+- `npm 10+`
+
+桌面版额外需要：
+
+- `Rust` 与 `cargo`
+- macOS 下可直接使用：
+
+```bash
+curl https://sh.rustup.rs -sSf | sh -s -- -y
+source ~/.cargo/env
+```
+
+安装项目依赖：
+
+```bash
+npm install
+```
+
+## 浏览器版
+
+本地开发：
+
+```bash
+npm run dev
+```
+
+默认会启动 Vite 开发服务器。启动后在浏览器中打开终端输出的本地地址即可。
+
+生产构建：
+
+```bash
+npm run build
+```
+
+构建产物输出到：
+
+```text
+dist/
+```
+
+## 桌面版
+
+本地开发：
+
+```bash
+source ~/.cargo/env
+npm run desktop:dev
+```
+
+该命令会先启动前端开发服务器，再以 Tauri 桌面窗口方式运行应用。
+
+桌面构建：
+
+```bash
+source ~/.cargo/env
+npm run desktop:build
+```
+
+构建完成后，可在以下目录找到桌面产物：
+
+```text
+src-tauri/target/release/
+src-tauri/target/release/bundle/
+```
+
+macOS 本地安装可直接打开：
+
+```text
+src-tauri/target/release/bundle/macos/shot-agent.app
+```
+
+若构建出 DMG，也可通过 `bundle/dmg/` 下的安装包分发。
+
 ## 开源协议
 
 本项目使用 GNU General Public License v3.0 only 开源协议。详情见 [LICENSE](LICENSE)。

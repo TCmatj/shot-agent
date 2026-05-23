@@ -48,6 +48,84 @@ The first phase focuses on integrating:
 - Generation history and retry rules
 - Local canvas storage interfaces
 
+## Environment Setup
+
+Recommended versions:
+
+- `Node.js 20+`
+- `npm 10+`
+
+Desktop builds also require:
+
+- `Rust` and `cargo`
+- On macOS you can install them with:
+
+```bash
+curl https://sh.rustup.rs -sSf | sh -s -- -y
+source ~/.cargo/env
+```
+
+Install project dependencies:
+
+```bash
+npm install
+```
+
+## Browser Build
+
+Start local development:
+
+```bash
+npm run dev
+```
+
+This starts the Vite development server. Open the local URL shown in the terminal.
+
+Create a production browser build:
+
+```bash
+npm run build
+```
+
+Build output:
+
+```text
+dist/
+```
+
+## Desktop Build
+
+Start desktop development:
+
+```bash
+source ~/.cargo/env
+npm run desktop:dev
+```
+
+This starts the frontend dev server and launches the Tauri desktop window.
+
+Create a desktop production build:
+
+```bash
+source ~/.cargo/env
+npm run desktop:build
+```
+
+Build outputs are generated under:
+
+```text
+src-tauri/target/release/
+src-tauri/target/release/bundle/
+```
+
+For local installation on macOS, you can open:
+
+```text
+src-tauri/target/release/bundle/macos/shot-agent.app
+```
+
+If a DMG is generated, it can also be distributed from `bundle/dmg/`.
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0 only. See [LICENSE](LICENSE) for details.
