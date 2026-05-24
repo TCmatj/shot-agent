@@ -1,4 +1,5 @@
 import { basename, join } from '@tauri-apps/api/path';
+import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { exists, mkdir, readFile, readTextFile, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import {
@@ -22,11 +23,14 @@ export const desktopWorkspaceStore: WorkspaceStore = {
     const selected = await open({
       directory: true,
       multiple: false,
+      recursive: true,
     });
 
     if (!selected || Array.isArray(selected)) {
       return null;
     }
+
+    await authorizeWorkspaceDirectory(selected);
 
     return {
       kind: 'desktop-directory',
@@ -45,6 +49,8 @@ export const desktopWorkspaceStore: WorkspaceStore = {
       return null;
     }
 
+    await authorizeWorkspaceDirectory(path);
+
     return {
       kind: 'desktop-directory',
       name: await getPathLabel(path),
@@ -59,6 +65,10 @@ export const desktopWorkspaceStore: WorkspaceStore = {
     window.localStorage.setItem(rootDirectoryStorageKey, handle.path);
   },
   async ensureDirectoryPermission(handle) {
+    if (handle.kind === 'desktop-directory') {
+      await authorizeWorkspaceDirectory(handle.path);
+    }
+
     return handle.kind === 'desktop-directory';
   },
   async persistWorkspaceToFolder(handle, state) {
@@ -192,6 +202,10 @@ export const desktopWorkspaceStore: WorkspaceStore = {
     };
   },
 };
+
+async function authorizeWorkspaceDirectory(path: string): Promise<void> {
+  await invoke('authorize_workspace_directory', { path });
+}
 
 async function hydrateWorkspaceAssetUrls(
   rootPath: string,

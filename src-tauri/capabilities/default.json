@@ -7,6 +7,9 @@
     "core:default",
     "dialog:default",
     "fs:default",
+    "fs:read-all",
+    "fs:write-all",
+    "allow-authorize-workspace-directory",
     "opener:default"
   ]
 }

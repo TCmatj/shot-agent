@@ -2299,6 +2299,50 @@ export function App() {
   }, [viewport]);
 
   useEffect(() => {
+    function handleWindowDragOver(event: DragEvent) {
+      if (
+        !hasSupportedMediaDataTransferItems(event.dataTransfer?.items) &&
+        !getFirstSupportedMediaFile(event.dataTransfer?.files)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      event.dataTransfer!.dropEffect = 'copy';
+    }
+
+    function handleWindowDrop(event: DragEvent) {
+      const file = getFirstSupportedMediaFile(event.dataTransfer?.files);
+
+      if (!file) {
+        return;
+      }
+
+      event.preventDefault();
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const point =
+        rect && event.clientX >= rect.left && event.clientY >= rect.top
+          ? getCanvasPointFromClient(event.clientX, event.clientY)
+          : screenToCanvasPoint(
+              {
+                x: rect ? rect.width / 2 : 420,
+                y: rect ? rect.height / 2 : 280,
+              },
+              viewport,
+            );
+
+      void addAssetNodeFromFile(file, point);
+    }
+
+    window.addEventListener('dragover', handleWindowDragOver);
+    window.addEventListener('drop', handleWindowDrop);
+    return () => {
+      window.removeEventListener('dragover', handleWindowDragOver);
+      window.removeEventListener('drop', handleWindowDrop);
+    };
+  }, [viewport]);
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       const target = event.target;
       const isEditingText =
@@ -2824,6 +2868,24 @@ export function App() {
       setCanvasMessage(`保存素材 ${file.name} 到画布文件夹失败，请检查文件夹权限后重试。`);
       return null;
     }
+  }
+
+  function getFirstSupportedMediaFile(fileList?: FileList | null): File | null {
+    return Array.from(fileList ?? []).find(isSupportedMediaFile) ?? null;
+  }
+
+  function hasSupportedMediaDataTransferItems(items?: DataTransferItemList | null): boolean {
+    return Array.from(items ?? []).some(
+      (item) => item.kind === 'file' && isSupportedMediaMimeType(item.type),
+    );
+  }
+
+  function isSupportedMediaFile(file: File): boolean {
+    return isSupportedMediaMimeType(file.type);
+  }
+
+  function isSupportedMediaMimeType(mimeType: string): boolean {
+    return mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType.startsWith('audio/');
   }
 
   function createCanvas() {
@@ -4811,7 +4873,8 @@ export function App() {
           onDragOver={(event) => event.preventDefault()}
           onDrop={(event) => {
             event.preventDefault();
-            const file = event.dataTransfer.files[0];
+            event.stopPropagation();
+            const file = getFirstSupportedMediaFile(event.dataTransfer.files);
 
             if (file) {
               void addAssetNodeFromFile(file, getCanvasPointFromClient(event.clientX, event.clientY));
