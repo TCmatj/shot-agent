@@ -72,7 +72,13 @@ export async function persistWorkspaceToFolder(
   state: CanvasWorkspaceState,
 ): Promise<CanvasWorkspaceState> {
   const canvasesWithPersistedAssets = await Promise.all(
-    state.canvases.map((canvas) => persistCanvasAssets(rootHandle, canvas)),
+    state.canvases.map(async (canvas) => {
+      const persistedCanvas = await persistCanvasAssets(rootHandle, canvas);
+      return {
+        ...persistedCanvas,
+        storageFolderName: persistedCanvas.storageFolderName ?? getCanvasFolderName(persistedCanvas),
+      };
+    }),
   );
   const persistableState: CanvasWorkspaceState = {
     ...state,
@@ -103,7 +109,7 @@ export async function persistWorkspaceToFolder(
     }),
   );
 
-  return persistableState;
+  return hydrateWorkspaceAssetUrls(rootHandle, persistableState);
 }
 
 export async function readWorkspaceFromFolder(
@@ -440,7 +446,7 @@ async function getCanvasDirectory(
 }
 
 function getCanvasFolderName(canvas: CanvasView): string {
-  return `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+  return canvas.storageFolderName ?? `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
 }
 
 async function ensureProjectDirectories(canvasDir: FileSystemDirectoryHandle): Promise<void> {

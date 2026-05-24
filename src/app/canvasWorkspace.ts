@@ -84,6 +84,7 @@ export type CanvasSelectionRect = {
 export type CanvasView = {
   id: string;
   name: string;
+  storageFolderName?: string;
   updatedAt: string;
   nodes: CanvasNodeView[];
   edges: CanvasEdgeView[];
@@ -110,6 +111,9 @@ export type CanvasWorkspaceState = {
   storage: CanvasStorageConfig;
   generationHistory: GenerationRecord[];
 };
+
+const canvasNodeBaseWidth = 320;
+const canvasNodeMaxWidth = canvasNodeBaseWidth * 3;
 
 const storageVersion = 1;
 const canvasExportVersion = 1;
@@ -507,9 +511,29 @@ function isCanvasNameTaken(
 
 export function getNodeCenter(node: CanvasNodeView): { x: number; y: number } {
   return {
-    x: node.x + 160,
+    x: node.x + getCanvasNodeWidth(node) / 2,
     y: node.y + 88,
   };
+}
+
+export function getCanvasNodeWidth(node: CanvasNodeView): number {
+  if (node.kind === 'textAsset' || node.kind === 'imageAsset' || node.kind === 'videoAsset' || node.kind === 'audioAsset') {
+    return canvasNodeBaseWidth;
+  }
+
+  const prompt = node.prompt?.trim() ?? '';
+  if (!prompt) {
+    return canvasNodeBaseWidth;
+  }
+
+  const lines = prompt.split(/\r?\n/);
+  const longestLineLength = lines.reduce((max, line) => Math.max(max, line.length), 0);
+  const estimatedWidth = Math.max(
+    canvasNodeBaseWidth,
+    220 + Math.max(prompt.length * 2.6, longestLineLength * 9),
+  );
+
+  return Math.min(canvasNodeMaxWidth, Math.round(estimatedWidth));
 }
 
 export function getNodeInputPoint(
@@ -536,7 +560,7 @@ export function getNodeInputPoint(
 
 export function getNodeOutputPoint(node: CanvasNodeView): { x: number; y: number } {
   return {
-    x: node.x + 320,
+    x: node.x + getCanvasNodeWidth(node),
     y: node.y + 88,
   };
 }

@@ -67,7 +67,13 @@ export const desktopWorkspaceStore: WorkspaceStore = {
     }
 
     const canvasesWithPersistedAssets = await Promise.all(
-      state.canvases.map((canvas) => persistCanvasAssets(handle.path, canvas)),
+      state.canvases.map(async (canvas) => {
+        const persistedCanvas = await persistCanvasAssets(handle.path, canvas);
+        return {
+          ...persistedCanvas,
+          storageFolderName: persistedCanvas.storageFolderName ?? getCanvasFolderName(persistedCanvas),
+        };
+      }),
     );
     const persistableState: CanvasWorkspaceState = {
       ...state,
@@ -96,7 +102,7 @@ export const desktopWorkspaceStore: WorkspaceStore = {
       }),
     );
 
-    return persistableState;
+    return hydrateWorkspaceAssetUrls(handle.path, persistableState);
   },
   async readWorkspaceFromFolder(handle, fallback) {
     if (handle.kind !== 'desktop-directory') {
@@ -330,7 +336,7 @@ async function getCanvasDirectory(rootPath: string, canvas: CanvasView, create: 
 }
 
 function getCanvasFolderName(canvas: CanvasView): string {
-  return `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+  return canvas.storageFolderName ?? `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
 }
 
 function sanitizeFolderName(name: string): string {

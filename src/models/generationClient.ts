@@ -839,8 +839,8 @@ function collectSeedanceScenarioAssets(
       type: 'image_url',
       image_url: {
         url: asset.content,
-        role: 'first_frame',
       },
+      role: 'first_frame',
     }));
   }
 
@@ -849,8 +849,8 @@ function collectSeedanceScenarioAssets(
       type: 'image_url',
       image_url: {
         url: asset.content,
-        role: index === 0 ? 'first_frame' : 'last_frame',
       },
+      role: index === 0 ? 'first_frame' : 'last_frame',
     }));
   }
 
@@ -860,15 +860,15 @@ function collectSeedanceScenarioAssets(
         type: 'image_url',
         image_url: {
           url: asset.content,
-          role: 'reference_image',
         },
+        role: 'reference_image',
       })),
       ...videoAssets.map((asset) => ({
         type: 'video_url',
         video_url: {
           url: asset.content,
-          role: 'reference_video',
         },
+        role: 'reference_video',
       })),
     ];
   }
@@ -878,15 +878,15 @@ function collectSeedanceScenarioAssets(
       type: 'image_url',
       image_url: {
         url: asset.content,
-        role: 'reference_image',
       },
+      role: 'reference_image',
     })),
     ...videoAssets.map((asset) => ({
       type: 'video_url',
       video_url: {
         url: asset.content,
-        role: 'reference_video',
       },
+      role: 'reference_video',
     })),
   ];
 }
@@ -954,8 +954,8 @@ function collectRoleBasedSeedanceAssets(
         type: 'image_url',
         image_url: {
           url: asset.content,
-          role: 'first_frame',
         },
+        role: 'first_frame',
       }];
     }
 
@@ -964,8 +964,8 @@ function collectRoleBasedSeedanceAssets(
         type: 'image_url',
         image_url: {
           url: asset.content,
-          role: 'last_frame',
         },
+        role: 'last_frame',
       }];
     }
 
@@ -974,8 +974,8 @@ function collectRoleBasedSeedanceAssets(
         type: 'image_url',
         image_url: {
           url: asset.content,
-          role: 'reference_image',
         },
+        role: 'reference_image',
       }];
     }
 
@@ -984,8 +984,8 @@ function collectRoleBasedSeedanceAssets(
         type: 'video_url',
         video_url: {
           url: asset.content,
-          role: 'reference_video',
         },
+        role: 'reference_video',
       }];
     }
 
@@ -994,8 +994,8 @@ function collectRoleBasedSeedanceAssets(
         type: 'audio_url',
         audio_url: {
           url: asset.content,
-          role: 'reference_audio',
         },
+        role: 'reference_audio',
       }];
     }
 
@@ -1122,7 +1122,10 @@ function renderPromptForModel(
   canvas: CanvasView,
   inputAssets: InputAsset[],
 ): string {
-  const labelQueues = buildPromptReferenceLabelQueues(inputAssets);
+  const labelQueues = buildPromptReferenceLabelQueues(
+    inputAssets,
+    node.kind === 'video' ? 'seedance' : 'chinese',
+  );
 
   return replacePromptReferences(
     prompt,
@@ -1144,7 +1147,10 @@ function renderPromptForModel(
   );
 }
 
-function buildPromptReferenceLabelQueues(inputAssets: InputAsset[]): Map<string, string[]> {
+function buildPromptReferenceLabelQueues(
+  inputAssets: InputAsset[],
+  style: 'chinese' | 'seedance',
+): Map<string, string[]> {
   const kindCounts: Record<'image' | 'video' | 'audio', number> = {
     image: 0,
     video: 0,
@@ -1159,7 +1165,7 @@ function buildPromptReferenceLabelQueues(inputAssets: InputAsset[]): Map<string,
     }
 
     kindCounts[kind] += 1;
-    const label = getReferenceLabel(kind, kindCounts[kind]);
+    const label = getReferenceLabel(kind, kindCounts[kind], style);
     const key = getPromptReferenceKey(kind, asset.node.id, asset.token);
     const queue = queues.get(key) ?? [];
 
@@ -1190,7 +1196,11 @@ function getPromptReferenceKey(kind: string, assetId: string, token?: string): s
   return `${kind}:${assetId}:${token ?? ''}`;
 }
 
-function getReferenceLabel(kind: 'image' | 'video' | 'audio' | 'text', index: number): string {
+function getReferenceLabel(
+  kind: 'image' | 'video' | 'audio' | 'text',
+  index: number,
+  style: 'chinese' | 'seedance',
+): string {
   const prefix =
     kind === 'image'
       ? '图片'
@@ -1199,6 +1209,10 @@ function getReferenceLabel(kind: 'image' | 'video' | 'audio' | 'text', index: nu
         : kind === 'audio'
           ? '音频'
           : '文本';
+
+  if (style === 'seedance') {
+    return `「${prefix} ${index}」`;
+  }
 
   return `${prefix}${formatChineseIndex(index)}`;
 }

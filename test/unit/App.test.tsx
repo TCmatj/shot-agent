@@ -24,6 +24,24 @@ async function openNodeInspectorByTitle(title: string) {
   return nodeCard!;
 }
 
+function setPromptEditorValue(editor: HTMLDivElement, value: string) {
+  editor.focus();
+  editor.textContent = value;
+
+  const selection = window.getSelection();
+  const range = document.createRange();
+  if (editor.firstChild) {
+    range.setStart(editor.firstChild, value.length);
+  } else {
+    range.selectNodeContents(editor);
+  }
+  range.collapse(true);
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+
+  fireEvent.input(editor);
+}
+
 describe('App image preview', () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -247,6 +265,40 @@ describe('App video node inspector', () => {
     expect(within(badgeRegion!).getByText('24fps')).toBeTruthy();
   });
 
+  it('shows saved video storage status on the node card and in the inspector', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_video_storage',
+          name: '视频存储画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'video_1',
+              title: '视频生成',
+              modelId: 'seedance2.0',
+              kind: 'video',
+              x: 0,
+              y: 0,
+              outputUrl: 'https://example.com/video.mp4',
+              outputPath: 'assets/videos/task_1.mp4',
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    expect(screen.getByText('已保存到本地')).toBeTruthy();
+
+    await openNodeInspectorByTitle('视频生成');
+    expect(screen.getByText('保存状态：已保存到本地 · assets/videos/task_1.mp4')).toBeTruthy();
+  });
+
   it('shows role-based input ports for first-last-frame mode', async () => {
     render(<App />);
 
@@ -347,6 +399,205 @@ describe('App video node inspector', () => {
 
     expect(document.querySelector('.node-inspector')).toBeTruthy();
     expect(screen.getByLabelText('类型')).toBeTruthy();
+  });
+
+  it('defaults to multimodal mode when creating a Seedance node from an image connection', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_add_video',
+          name: '新增视频节点',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'image_asset_1',
+              title: '图片素材',
+              modelId: 'asset-image',
+              kind: 'imageAsset',
+              x: 0,
+              y: 0,
+              assetName: 'input.png',
+              assetDataUrl: 'data:image/png;base64,aW1hZ2U=',
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    const { container } = render(<App />);
+    const canvas = container.querySelector('.infinite-canvas') as HTMLDivElement | null;
+    const imageNode = screen.getByRole('heading', { name: '图片素材' }).closest('article');
+
+    expect(canvas).toBeTruthy();
+    expect(imageNode).toBeTruthy();
+
+    fireEvent.pointerDown(within(imageNode!).getByRole('button', { name: '从此节点连线' }), {
+      button: 0,
+      pointerId: 1,
+      clientX: 180,
+      clientY: 120,
+    });
+    fireEvent.pointerMove(canvas!, {
+      pointerId: 1,
+      clientX: 360,
+      clientY: 180,
+    });
+    fireEvent.pointerUp(canvas!, {
+      pointerId: 1,
+      clientX: 360,
+      clientY: 180,
+    });
+
+    await userEvent.click(await screen.findByRole('button', { name: 'seedance2.0 生成节点' }));
+    await openNodeInspectorByTitle('视频生成');
+
+    expect((screen.getByLabelText('类型') as HTMLSelectElement).value).toBe(
+      'multimodal_reference_video',
+    );
+  });
+
+  it('grows model node width with prompt length and caps it at three times the base width', () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_node_width',
+          name: '节点宽度',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'image_short',
+              title: '短提示图片节点',
+              modelId: 'gpt-image-2',
+              kind: 'image',
+              x: 0,
+              y: 0,
+              prompt: '短提示',
+            },
+            {
+              id: 'image_long',
+              title: '长提示图片节点',
+              modelId: 'gpt-image-2',
+              kind: 'image',
+              x: 360,
+              y: 0,
+              prompt: '这是一个很长的提示词 '.repeat(40),
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    const shortNode = screen.getByRole('heading', { name: '短提示图片节点' }).closest('article');
+    const longNode = screen.getByRole('heading', { name: '长提示图片节点' }).closest('article');
+
+    expect(shortNode).toBeTruthy();
+    expect(longNode).toBeTruthy();
+
+    const shortWidth = Number.parseFloat(shortNode!.style.width);
+    const longWidth = Number.parseFloat(longNode!.style.width);
+
+    expect(shortWidth).toBe(320);
+    expect(longWidth).toBeGreaterThan(shortWidth);
+    expect(longWidth).toBeLessThanOrEqual(960);
+  });
+
+  it('supports wheel and keyboard selection in the @ reference menu', async () => {
+    const scrollIntoViewMock = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_reference_menu',
+          name: '引用菜单',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'text_1',
+              title: '文本素材',
+              modelId: 'asset-text',
+              kind: 'textAsset',
+              x: 0,
+              y: 0,
+              textContent: '这是一段可引用文本',
+            },
+            {
+              id: 'image_asset_1',
+              title: '图片素材',
+              modelId: 'asset-image',
+              kind: 'imageAsset',
+              x: 0,
+              y: 180,
+              assetName: 'reference.png',
+              assetDataUrl: 'data:image/png;base64,aW1hZ2U=',
+            },
+            {
+              id: 'chat_1',
+              title: '提示词整理',
+              modelId: 'gpt-5.4-mini',
+              kind: 'chat',
+              x: 360,
+              y: 60,
+              prompt: '',
+            },
+          ],
+          edges: [
+            createCanvasEdge('text_1', 'chat_1'),
+            createCanvasEdge('image_asset_1', 'chat_1'),
+          ],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+    await openNodeInspectorByTitle('提示词整理');
+
+    const editor = document.querySelector(
+      '.node-inspector .prompt-reference-editor',
+    ) as HTMLDivElement | null;
+    expect(editor).toBeTruthy();
+
+    setPromptEditorValue(editor!, '@');
+
+    const menu = document.querySelector('.prompt-reference-menu') as HTMLDivElement | null;
+    expect(menu).toBeTruthy();
+
+    const buttons = within(menu!).getAllByRole('button');
+    expect(buttons[0].className).toContain('is-active');
+    expect(screen.getByText('100%')).toBeTruthy();
+
+    fireEvent.wheel(menu!, { deltaY: 48 });
+    expect(buttons[1].className).toContain('is-active');
+    expect(screen.getByText('100%')).toBeTruthy();
+    expect(scrollIntoViewMock).toHaveBeenCalled();
+
+    fireEvent.keyDown(editor!, { key: 'ArrowUp' });
+    fireEvent.keyUp(editor!, { key: 'ArrowUp' });
+    expect(buttons[0].className).toContain('is-active');
+
+    fireEvent.keyDown(editor!, { key: 'ArrowDown' });
+    fireEvent.keyUp(editor!, { key: 'ArrowDown' });
+    expect(buttons[1].className).toContain('is-active');
+
+    fireEvent.mouseEnter(buttons[0]);
+    expect(buttons[1].className).toContain('is-active');
+
+    fireEvent.pointerMove(menu!);
+    fireEvent.mouseEnter(buttons[0]);
+    expect(buttons[0].className).toContain('is-active');
+
+    fireEvent.keyDown(editor!, { key: 'Enter' });
+    expect(document.querySelector('.prompt-reference-menu')).toBeNull();
+    expect(editor!.querySelector('.prompt-reference-token')).toBeTruthy();
   });
 });
 

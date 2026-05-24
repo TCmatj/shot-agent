@@ -1,6 +1,24 @@
-# shot-agent
+<p align="center">
+  <img src="public/shot-agent-logo.svg" alt="shot-agent logo" width="124" />
+</p>
 
-[中文](README.md)
+<h1 align="center">shot-agent</h1>
+
+<p align="center">A clean infinite canvas for AI image and video workflows.</p>
+
+<p align="center">
+  <a href="README.md">简体中文</a>
+  |
+  English
+  |
+  <a href="#browser-build">Browser Build</a>
+  |
+  <a href="#desktop-build">Desktop Build</a>
+  |
+  <a href="#current-capabilities">Current Capabilities</a>
+  |
+  <a href="#license">License</a>
+</p>
 
 `shot-agent` aims to provide a clean, minimal infinite canvas for visual creation.
 
@@ -47,6 +65,13 @@ The first phase focuses on integrating:
 - Prompt `@` reference parsing
 - Generation history and retry rules
 - Local canvas storage interfaces
+
+## Design Direction
+
+- Black-first visual language with dotted canvas texture
+- One workspace for image, video, chat, and asset nodes
+- Dual runtime support for browser and desktop
+- Provider management, model mapping, and local workspace files
 
 ## Environment Setup
 

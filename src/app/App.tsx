@@ -118,6 +118,7 @@ import {
   deleteCanvas,
   exportCanvas,
   findNodesInSelectionRect,
+  getCanvasNodeWidth,
   getNextAvailableCanvasName,
   getUpstreamNodeIds,
   getNodeInputPoint,
@@ -1005,9 +1006,12 @@ function PromptTextarea({
   onChange(value: string): void;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const isComposingRef = useRef(false);
+  const suggestionInteractionModeRef = useRef<'pointer' | 'keyboard'>('pointer');
   const [trigger, setTrigger] = useState<ReturnType<typeof getPromptReferenceTrigger>>(null);
   const [previewImage, setPreviewImage] = useState<ImagePreviewState | null>(null);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const suggestions = getPromptReferenceSuggestions(canvas, node.id);
   const referencePreviews = getPromptReferencePreviews(canvas, node.id, node.prompt ?? '');
   const visibleSuggestions = trigger
@@ -1060,7 +1064,10 @@ function PromptTextarea({
     }
 
     const value = serializePromptEditor(target);
-    setTrigger(getPromptReferenceTrigger(value, getPromptEditorCaretOffset(target)));
+    const nextTrigger = getPromptReferenceTrigger(value, getPromptEditorCaretOffset(target));
+    setTrigger(nextTrigger);
+    suggestionInteractionModeRef.current = 'pointer';
+    setActiveSuggestionIndex(0);
   }
 
   function handleEditorInput(target: HTMLElement) {
@@ -1101,6 +1108,36 @@ function PromptTextarea({
       return;
     }
 
+    if (trigger && visibleSuggestions.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        suggestionInteractionModeRef.current = 'keyboard';
+        setActiveSuggestionIndex((current) => (current + 1) % visibleSuggestions.length);
+        return;
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        suggestionInteractionModeRef.current = 'keyboard';
+        setActiveSuggestionIndex((current) =>
+          current === 0 ? visibleSuggestions.length - 1 : current - 1,
+        );
+        return;
+      }
+
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        insertSuggestion(visibleSuggestions[activeSuggestionIndex] ?? visibleSuggestions[0]);
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setTrigger(null);
+        return;
+      }
+    }
+
     if (event.key !== 'Backspace' && event.key !== 'Delete') {
       return;
     }
@@ -1138,6 +1175,45 @@ function PromptTextarea({
     handleEditorInput(event.currentTarget);
   }
 
+  function handleEditorKeyUp(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.nativeEvent.isComposing || isComposingRef.current) {
+      return;
+    }
+
+    if (
+      trigger &&
+      visibleSuggestions.length > 0 &&
+      ['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)
+    ) {
+      return;
+    }
+
+    refreshTrigger(event.currentTarget);
+  }
+
+  useEffect(() => {
+    if (visibleSuggestions.length === 0) {
+      setActiveSuggestionIndex(0);
+      return;
+    }
+
+    if (activeSuggestionIndex >= visibleSuggestions.length) {
+      setActiveSuggestionIndex(visibleSuggestions.length - 1);
+    }
+  }, [activeSuggestionIndex, visibleSuggestions.length]);
+
+  useEffect(() => {
+    const menu = menuRef.current;
+    if (!menu || visibleSuggestions.length === 0) {
+      return;
+    }
+
+    const activeButton = menu.querySelector<HTMLButtonElement>('button.is-active');
+    activeButton?.scrollIntoView({
+      block: 'nearest',
+    });
+  }, [activeSuggestionIndex, visibleSuggestions.length]);
+
   return (
     <div className="prompt-reference-field">
       <div
@@ -1151,19 +1227,55 @@ function PromptTextarea({
         onPointerDown={stopPointerDown ? (event) => event.stopPropagation() : undefined}
         onBlur={() => window.setTimeout(() => setTrigger(null), 120)}
         onClick={(event) => refreshTrigger(event.currentTarget)}
-        onKeyUp={(event) => refreshTrigger(event.currentTarget)}
+        onKeyUp={handleEditorKeyUp}
         onKeyDown={handleEditorKeyDown}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
         onInput={(event) => handleEditorInput(event.currentTarget)}
       />
       {visibleSuggestions.length > 0 ? (
-        <div className="prompt-reference-menu">
-          {visibleSuggestions.map((suggestion) => (
+        <div
+          ref={menuRef}
+          className="prompt-reference-menu"
+          role="listbox"
+          onPointerMove={() => {
+            suggestionInteractionModeRef.current = 'pointer';
+          }}
+          onWheel={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (visibleSuggestions.length <= 1) {
+              return;
+            }
+
+            suggestionInteractionModeRef.current = 'pointer';
+            setActiveSuggestionIndex((current) => {
+              if (event.deltaY > 0) {
+                return Math.min(visibleSuggestions.length - 1, current + 1);
+              }
+
+              if (event.deltaY < 0) {
+                return Math.max(0, current - 1);
+              }
+
+              return current;
+            });
+          }}
+        >
+          {visibleSuggestions.map((suggestion, index) => (
             <button
               key={`${suggestion.token}:${suggestion.subtitle}`}
               type="button"
+              className={index === activeSuggestionIndex ? 'is-active' : undefined}
+              aria-selected={index === activeSuggestionIndex}
               onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => {
+                if (suggestionInteractionModeRef.current !== 'pointer') {
+                  return;
+                }
+
+                setActiveSuggestionIndex(index);
+              }}
               onClick={() => insertSuggestion(suggestion)}
             >
               {suggestion.imageUrl ? (
@@ -1344,6 +1456,34 @@ function getVideoNodeSettingBadges(node: CanvasNodeView): string[] {
   const frameRate = node.videoFramesPerSecond ?? capabilities.fixedFrameRate;
 
   return [resolution, ratio === 'adaptive' ? 'Adaptive' : ratio, durationLabel, `${frameRate}fps`];
+}
+
+function getVideoOutputStorageStatus(node: CanvasNodeView): {
+  summary: string;
+  detail?: string;
+  tone: 'local' | 'remote';
+} | null {
+  if (node.kind !== 'video') {
+    return null;
+  }
+
+  if (node.outputPath) {
+    return {
+      summary: '已保存到本地',
+      detail: node.outputPath,
+      tone: 'local',
+    };
+  }
+
+  if (node.outputUrl || node.outputDataUrl) {
+    return {
+      summary: '仅远程结果',
+      detail: '当前结果尚未写入画布文件夹',
+      tone: 'remote',
+    };
+  }
+
+  return null;
 }
 
 function getEstimatedVideoDurationSeconds(node: CanvasNodeView): number {
@@ -2469,6 +2609,24 @@ export function App() {
       ?.id;
   }
 
+  function getDefaultVideoScenarioForSource(fromNode?: CanvasNodeView): SeedanceScenario {
+    if (!fromNode) {
+      return 'text_to_video';
+    }
+
+    if (
+      fromNode.kind === 'image' ||
+      fromNode.kind === 'imageAsset' ||
+      fromNode.kind === 'video' ||
+      fromNode.kind === 'videoAsset' ||
+      fromNode.kind === 'audioAsset'
+    ) {
+      return 'multimodal_reference_video';
+    }
+
+    return 'text_to_video';
+  }
+
   function addNode(template: NodeTemplate) {
     if (!activeCanvas) {
       return;
@@ -2476,6 +2634,11 @@ export function App() {
 
     const point = addMenu?.canvasPoint ?? screenToCanvasPoint({ x: 260, y: 180 }, viewport);
     const nodeId = `node_${template.kind}_${Date.now()}`;
+    const fromNode = addMenu?.fromNodeId
+      ? activeCanvas.nodes.find((node) => node.id === addMenu.fromNodeId)
+      : undefined;
+    const defaultVideoScenario =
+      template.kind === 'video' ? getDefaultVideoScenarioForSource(fromNode) : undefined;
 
     updateActiveCanvasNodes((nodes) => [
       ...nodes,
@@ -2498,12 +2661,20 @@ export function App() {
           template.kind === 'video'
             ? getSeedanceCapabilities(template.modelId as SeedanceModelId).fixedFrameRate
             : undefined,
+        seedanceScenario: defaultVideoScenario,
         textContent: template.kind === 'textAsset' ? '在这里输入文本' : undefined,
       },
     ]);
     if (addMenu?.fromNodeId && !template.outputOnly) {
-      const fromNode = activeCanvas.nodes.find((node) => node.id === addMenu.fromNodeId);
-      const toNode = { id: nodeId, title: template.title, modelId: template.modelId, kind: template.kind, x: point.x, y: point.y };
+      const toNode = {
+        id: nodeId,
+        title: template.title,
+        modelId: template.modelId,
+        kind: template.kind,
+        x: point.x,
+        y: point.y,
+        ...(defaultVideoScenario ? { seedanceScenario: defaultVideoScenario } : {}),
+      };
 
       if (fromNode && canConnectCanvasNodes(fromNode, toNode)) {
         updateActiveCanvasEdges((edges) =>
@@ -2512,7 +2683,7 @@ export function App() {
             addMenu.fromNodeId!,
             nodeId,
             toNode.kind === 'video'
-              ? getDefaultVideoInputPort(fromNode, 'text_to_video')
+              ? getDefaultVideoInputPort(fromNode, defaultVideoScenario ?? 'text_to_video')
               : undefined,
           ),
         );
@@ -4756,6 +4927,8 @@ export function App() {
               const effectiveOutputText = getEffectiveNodeOutputText(node);
               const isLongOutput =
                 effectiveOutputText !== undefined && shouldCollapseMarkdown(effectiveOutputText);
+              const videoOutputStorageStatus =
+                node.kind === 'video' ? getVideoOutputStorageStatus(node) : null;
               const videoInputPorts =
                 node.kind === 'video'
                   ? getVideoInputPorts(node.seedanceScenario ?? 'text_to_video')
@@ -4769,7 +4942,11 @@ export function App() {
                       ? 'is-selected'
                       : ''
                   }`}
-                  style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
+                  style={{
+                    transform: `translate(${node.x}px, ${node.y}px)`,
+                    width: `${getCanvasNodeWidth(node)}px`,
+                    maxWidth: `${canvasNodeSize.width * 3}px`,
+                  }}
                   onPointerDown={(event) => {
                     event.stopPropagation();
                     selectSingleNode(node.id, { preserveInspector: true });
@@ -5086,11 +5263,21 @@ export function App() {
                         ) : null}
                         {node.outputDataUrl || node.outputUrl ? (
                           node.kind === 'video' ? (
-                            <video
-                              className="asset-preview"
-                              src={node.outputDataUrl ?? node.outputUrl}
-                              controls
-                            />
+                            <>
+                              <video
+                                className="asset-preview"
+                                src={node.outputDataUrl ?? node.outputUrl}
+                                controls
+                              />
+                              {videoOutputStorageStatus ? (
+                                <p
+                                  className={`node-storage-status is-${videoOutputStorageStatus.tone}`}
+                                  title={videoOutputStorageStatus.detail}
+                                >
+                                  {videoOutputStorageStatus.summary}
+                                </p>
+                              ) : null}
+                            </>
                           ) : (
                             <img
                               className="asset-preview"
@@ -5452,6 +5639,19 @@ export function App() {
                       ? `${selectedNode.settledCompletionTokens} completion tokens / ${selectedNode.settledTotalTokens} total tokens`
                       : '等待官方结算'}
                   </p>
+                  {getVideoOutputStorageStatus(selectedNode) ? (
+                    <p
+                      className={`video-usage-line node-storage-status is-${
+                        getVideoOutputStorageStatus(selectedNode)?.tone
+                      }`}
+                      title={getVideoOutputStorageStatus(selectedNode)?.detail}
+                    >
+                      保存状态：{getVideoOutputStorageStatus(selectedNode)?.summary}
+                      {getVideoOutputStorageStatus(selectedNode)?.detail
+                        ? ` · ${getVideoOutputStorageStatus(selectedNode)?.detail}`
+                        : ''}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
               <label>

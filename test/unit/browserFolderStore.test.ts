@@ -103,10 +103,10 @@ describe('browser folder store', () => {
     const canvas = migrated.canvases[0];
     expect(canvas.nodes[0]).toMatchObject({
       assetPath: 'assets/images/input.png',
-      assetDataUrl: undefined,
     });
+    expect(canvas.nodes[0].assetDataUrl).toMatch(/^data:image\/png;base64,/);
     expect(canvas.nodes[1].outputPath).toMatch(/^assets\/images\/node_image_output-\d+\.png$/);
-    expect(canvas.nodes[1].outputDataUrl).toBeUndefined();
+    expect(canvas.nodes[1].outputDataUrl).toMatch(/^data:image\/png;base64,/);
 
     const canvasDir = root.directories.get('素材画布__canvas_assets');
     const imageDir = canvasDir?.directories.get('assets')?.directories.get('images');
@@ -168,5 +168,35 @@ describe('browser folder store', () => {
     expect(result.assetPath).toBe('assets/audios/voice.mp3');
     const canvasDir = root.directories.get('Canvas__canvas_1');
     expect(canvasDir?.directories.get('assets')?.directories.get('audios')?.files.has('voice.mp3')).toBe(true);
+  });
+
+  it('keeps using the original canvas folder after renaming the canvas', async () => {
+    const root = new MemoryDirectoryHandle('Shot Agent');
+    const initialState = createWorkspaceState([
+      { id: 'canvas_1', name: '旧画布名', updatedAt: 'now', nodes: [], edges: [] },
+    ]);
+
+    const firstPersisted = await persistWorkspaceToFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      initialState,
+    );
+
+    const renamedState = {
+      ...firstPersisted,
+      canvases: firstPersisted.canvases.map((canvas) =>
+        canvas.id === 'canvas_1'
+          ? { ...canvas, name: '新画布名', updatedAt: '刚刚' }
+          : canvas,
+      ),
+    };
+
+    const secondPersisted = await persistWorkspaceToFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      renamedState,
+    );
+
+    expect(root.directories.has('旧画布名__canvas_1')).toBe(true);
+    expect(root.directories.has('新画布名__canvas_1')).toBe(false);
+    expect(secondPersisted.canvases[0].storageFolderName).toBe('旧画布名__canvas_1');
   });
 });

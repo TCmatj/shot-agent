@@ -390,13 +390,13 @@ describe('generation client request building', () => {
       model: 'doubao-seedance-2-0-260128',
       ratio: '16:9',
       content: [
-        { type: 'text', text: 'Slow camera orbit 图片一' },
+        { type: 'text', text: 'Slow camera orbit 「图片 1」' },
         {
           type: 'image_url',
           image_url: {
             url: 'data:image/png;base64,aW1hZ2U=',
-            role: 'reference_image',
           },
+          role: 'reference_image',
         },
       ],
     });
@@ -444,14 +444,16 @@ describe('generation client request building', () => {
       resolution: '720p',
       duration: 5,
       content: [
-        { type: 'text', text: 'Keep the camera slow 图片一 图片二' },
+        { type: 'text', text: 'Keep the camera slow 「图片 1」 「图片 2」' },
         {
           type: 'image_url',
-          image_url: { role: 'first_frame', url: 'data:image/png;base64,c2Vjb25k' },
+          image_url: { url: 'data:image/png;base64,c2Vjb25k' },
+          role: 'first_frame',
         },
         {
           type: 'image_url',
-          image_url: { role: 'last_frame', url: 'data:image/png;base64,aW1hZ2U=' },
+          image_url: { url: 'data:image/png;base64,aW1hZ2U=' },
+          role: 'last_frame',
         },
       ],
     });
@@ -576,10 +578,11 @@ describe('generation client request building', () => {
     });
 
     expect(result.ok && JSON.parse(result.request.body as string).content).toEqual([
-      { type: 'text', text: '视频一 做运动参考' },
+      { type: 'text', text: '「视频 1」 做运动参考' },
       {
         type: 'video_url',
-        video_url: { role: 'reference_video', url: 'https://example.com/remote.mp4' },
+        video_url: { url: 'https://example.com/remote.mp4' },
+        role: 'reference_video',
       },
     ]);
   });
@@ -619,10 +622,11 @@ describe('generation client request building', () => {
     });
 
     expect(result.ok && JSON.parse(result.request.body as string).content).toEqual([
-      { type: 'text', text: 'Make it cinematic 音频一' },
+      { type: 'text', text: 'Make it cinematic 「音频 1」' },
       {
         type: 'audio_url',
-        audio_url: { role: 'reference_audio', url: 'data:audio/mpeg;base64,YXVkaW8=' },
+        audio_url: { url: 'data:audio/mpeg;base64,YXVkaW8=' },
+        role: 'reference_audio',
       },
     ]);
   });
@@ -677,14 +681,16 @@ describe('generation client request building', () => {
 
     expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
       content: [
-        { type: 'text', text: 'Make it cinematic 图片一 视频一' },
+        { type: 'text', text: 'Make it cinematic 「图片 1」 「视频 1」' },
         {
           type: 'image_url',
-          image_url: { role: 'reference_image', url: 'data:image/png;base64,aW1hZ2U=' },
+          image_url: { url: 'data:image/png;base64,aW1hZ2U=' },
+          role: 'reference_image',
         },
         {
           type: 'video_url',
-          video_url: { role: 'reference_video', url: 'data:video/mp4;base64,dmlkZW8=' },
+          video_url: { url: 'data:video/mp4;base64,dmlkZW8=' },
+          role: 'reference_video',
         },
       ],
     });
@@ -743,10 +749,11 @@ describe('generation client request building', () => {
       model: 'doubao-seedance-2-0-260128',
       ratio: '16:9',
       content: [
-        { type: 'text', text: 'Make it cinematic 图片一' },
+        { type: 'text', text: 'Make it cinematic 「图片 1」' },
         {
           type: 'image_url',
-          image_url: { role: 'reference_image', url: 'data:image/png;base64,aW1hZ2U=' },
+          image_url: { url: 'data:image/png;base64,aW1hZ2U=' },
+          role: 'reference_image',
         },
       ],
     });
@@ -804,20 +811,20 @@ describe('generation client request building', () => {
     });
 
     expect(result.ok && JSON.parse(result.request.body as string).content).toEqual([
-      { type: 'text', text: '图片一 是主体，图片二 做背景参考' },
+      { type: 'text', text: '「图片 1」 是主体，「图片 2」 做背景参考' },
       {
         type: 'image_url',
         image_url: {
           url: 'data:image/png;base64,aW1hZ2U=',
-          role: 'reference_image',
         },
+        role: 'reference_image',
       },
       {
         type: 'image_url',
         image_url: {
           url: 'data:image/png;base64,c2Vjb25k',
-          role: 'reference_image',
         },
+        role: 'reference_image',
       },
     ]);
   });
@@ -858,7 +865,7 @@ describe('generation client request building', () => {
 
     expect(result.ok && JSON.parse(result.request.body as string).content[0]).toEqual({
       type: 'text',
-      text: '图片一 是人，图片二 场景换到室内，人吃菠萝蜜的场景描述。',
+      text: '「图片 1」 是人，「图片 2」 场景换到室内，人吃菠萝蜜的场景描述。',
     });
   });
 

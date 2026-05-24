@@ -1062,8 +1062,13 @@ button:disabled {
   padding: 6px;
   position: absolute;
   right: 0;
+  scrollbar-width: none;
   top: calc(100% + 6px);
   z-index: 30;
+}
+
+.prompt-reference-menu::-webkit-scrollbar {
+  display: none;
 }
 
 .prompt-reference-menu button {
@@ -1159,6 +1164,24 @@ audio.asset-preview {
   cursor: zoom-in;
 }
 
+.node-storage-status {
+  color: #9aa6b5;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 6px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-storage-status.is-local {
+  color: #cfd7e0;
+}
+
+.node-storage-status.is-remote {
+  color: #8d98a7;
+}
+
 .asset-upload {
   align-items: center;
   background: #171a1f;
@@ -1179,6 +1202,11 @@ audio.asset-preview {
 
 .asset-upload input {
   display: none;
+}
+
+.prompt-reference-menu button.is-active {
+  background: #242b34;
+  border-color: #607086;
 }
 
 .canvas-tip,
