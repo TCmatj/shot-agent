@@ -3835,26 +3835,25 @@ export function App() {
     let localCoverUrl: string | undefined;
     const saveWarnings: string[] = [];
 
-    if (rootDirectoryHandle && folderStorageReady && activeCanvas) {
+    const targetCanvas =
+      workspaceStateRef.current.canvases.find((canvas) =>
+        canvas.nodes.some((currentNode) => currentNode.id === node.id),
+      ) ?? activeCanvas;
+
+    if (rootDirectoryHandle && folderStorageReady && targetCanvas) {
       if (task.videoUrl) {
         try {
-          const videoResponse = await fetch(task.videoUrl);
-          if (!videoResponse.ok) {
-            throw new Error(`HTTP ${videoResponse.status}`);
-          }
-
-          const videoBlob = await videoResponse.blob();
-          const savedVideo = await workspaceStore.saveGeneratedMediaBlobToCanvasFolder(
+          const savedVideo = await workspaceStore.saveGeneratedMediaUrlToCanvasFolder(
             rootDirectoryHandle,
-            activeCanvas,
+            targetCanvas,
             {
-              blob: videoBlob,
               fileName: `${task.taskId ?? node.id}.mp4`,
               kind: 'video',
+              url: task.videoUrl,
             },
           );
           savedVideoPath = savedVideo.assetPath;
-          localVideoUrl = URL.createObjectURL(videoBlob);
+          localVideoUrl = savedVideo.assetDataUrl;
         } catch (error) {
           saveWarnings.push(
             `视频结果未能保存到本地文件夹：${error instanceof Error ? error.message : '未知错误'}`,
@@ -3864,23 +3863,17 @@ export function App() {
 
       if (task.lastFrameUrl) {
         try {
-          const coverResponse = await fetch(task.lastFrameUrl);
-          if (!coverResponse.ok) {
-            throw new Error(`HTTP ${coverResponse.status}`);
-          }
-
-          const coverBlob = await coverResponse.blob();
-          const savedCover = await workspaceStore.saveGeneratedMediaBlobToCanvasFolder(
+          const savedCover = await workspaceStore.saveGeneratedMediaUrlToCanvasFolder(
             rootDirectoryHandle,
-            activeCanvas,
+            targetCanvas,
             {
-              blob: coverBlob,
               fileName: `${task.taskId ?? node.id}.png`,
               kind: 'cover',
+              url: task.lastFrameUrl,
             },
           );
           savedCoverPath = savedCover.assetPath;
-          localCoverUrl = URL.createObjectURL(coverBlob);
+          localCoverUrl = savedCover.assetDataUrl;
         } catch (error) {
           saveWarnings.push(
             `视频封面未能保存到本地文件夹：${error instanceof Error ? error.message : '未知错误'}`,

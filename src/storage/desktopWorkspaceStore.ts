@@ -210,6 +210,28 @@ export const desktopWorkspaceStore: WorkspaceStore = {
       mimeType: input.blob.type,
     };
   },
+  async saveGeneratedMediaUrlToCanvasFolder(handle, canvas, input) {
+    if (handle.kind !== 'desktop-directory') {
+      throw new Error('Desktop storage only supports local folder paths');
+    }
+
+    const saved = await invoke<{
+      assetName: string;
+      assetPath: string;
+      mimeType: string;
+    }>('download_generated_media_to_canvas_folder', {
+      rootPath: handle.path,
+      canvasFolderName: getCanvasFolderName(canvas),
+      url: input.url,
+      fileName: input.fileName,
+      kind: input.kind,
+    });
+
+    return {
+      ...saved,
+      assetDataUrl: await readAssetObjectUrl(handle.path, canvas, saved.assetPath, saved.mimeType),
+    };
+  },
 };
 
 async function authorizeWorkspaceDirectory(path: string): Promise<void> {

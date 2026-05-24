@@ -143,4 +143,47 @@ describe('desktop workspace store permissions', () => {
     expect(result.assetDataUrl).toMatch(/^data:image\/png;base64,/);
     expect(result.assetDataUrl).not.toContain('blob:');
   });
+
+  it('downloads generated video urls through the desktop backend into canvas assets', async () => {
+    const { desktopWorkspaceStore } = await import('../../src/storage/desktopWorkspaceStore');
+    const canvas = createWorkspaceState([
+      { id: 'canvas_1', name: 'Canvas', updatedAt: 'now', nodes: [], edges: [] },
+    ]).canvases[0];
+
+    invokeMock.mockResolvedValue({
+      assetName: 'task_1.mp4',
+      assetPath: 'assets/videos/task_1.mp4',
+      mimeType: 'video/mp4',
+    });
+    vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(readFile).mockResolvedValue(new Uint8Array([1, 2, 3]));
+
+    const result = await desktopWorkspaceStore.saveGeneratedMediaUrlToCanvasFolder(
+      {
+        kind: 'desktop-directory',
+        name: 'Workspace',
+        path: 'D:\\Workspace',
+      },
+      canvas,
+      {
+        url: 'https://example.com/video.mp4',
+        fileName: 'task_1.mp4',
+        kind: 'video',
+      },
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith('download_generated_media_to_canvas_folder', {
+      rootPath: 'D:\\Workspace',
+      canvasFolderName: 'Canvas__canvas_1',
+      url: 'https://example.com/video.mp4',
+      fileName: 'task_1.mp4',
+      kind: 'video',
+    });
+    expect(result).toMatchObject({
+      assetName: 'task_1.mp4',
+      assetPath: 'assets/videos/task_1.mp4',
+      mimeType: 'video/mp4',
+    });
+    expect(result.assetDataUrl).toMatch(/^data:video\/mp4;base64,/);
+  });
 });

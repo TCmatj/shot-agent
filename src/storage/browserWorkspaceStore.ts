@@ -114,4 +114,30 @@ export const browserWorkspaceStore: WorkspaceStore = {
       input,
     );
   },
+  async saveGeneratedMediaUrlToCanvasFolder(handle, canvas, input) {
+    if (handle.kind !== 'browser-directory') {
+      throw new Error('Browser storage only supports browser directory handles');
+    }
+
+    const response = await fetch(input.url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    const saved = await saveGeneratedMediaBlobToBrowserCanvasFolder(
+      handle.directoryHandle as ShotAgentDirectoryHandle,
+      canvas,
+      {
+        blob,
+        fileName: input.fileName,
+        kind: input.kind,
+      },
+    );
+
+    return {
+      ...saved,
+      assetDataUrl: URL.createObjectURL(blob),
+    };
+  },
 };

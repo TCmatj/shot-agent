@@ -27,6 +27,7 @@ export type SavedGeneratedMedia = {
   assetName: string;
   assetPath: string;
   mimeType: string;
+  assetDataUrl?: string;
 };
 
 export type WorkspaceStore = {
@@ -70,6 +71,15 @@ export type WorkspaceStore = {
     canvas: CanvasView,
     input: {
       blob: Blob;
+      fileName: string;
+      kind: 'image' | 'video' | 'cover';
+    },
+  ): Promise<SavedGeneratedMedia>;
+  saveGeneratedMediaUrlToCanvasFolder(
+    handle: WorkspaceRootHandle,
+    canvas: CanvasView,
+    input: {
+      url: string;
       fileName: string;
       kind: 'image' | 'video' | 'cover';
     },

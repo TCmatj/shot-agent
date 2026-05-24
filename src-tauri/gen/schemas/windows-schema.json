@@ -2175,6 +2175,12 @@
           "markdownDescription": "Enables the authorize_workspace_directory command without any pre-configured scope."
         },
         {
+          "description": "Enables the download_generated_media_to_canvas_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-download-generated-media-to-canvas-folder",
+          "markdownDescription": "Enables the download_generated_media_to_canvas_folder command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_default_workspace_directory command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-default-workspace-directory",
@@ -2185,6 +2191,12 @@
           "type": "string",
           "const": "deny-authorize-workspace-directory",
           "markdownDescription": "Denies the authorize_workspace_directory command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the download_generated_media_to_canvas_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-download-generated-media-to-canvas-folder",
+          "markdownDescription": "Denies the download_generated_media_to_canvas_folder command without any pre-configured scope."
         },
         {
           "description": "Denies the get_default_workspace_directory command without any pre-configured scope.",
