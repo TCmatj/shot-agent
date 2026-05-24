@@ -66,9 +66,13 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "shot-agent ${{ github.ref_name }}"
           releaseBody: |
-            自动构建的桌面应用发布包。
+            桌面版安装包已自动构建完成。
 
-            当前默认采用无签名发布流程，可直接用于内部测试与功能验证。
-            若后续需要 macOS 公证、Windows 代码签名或 Tauri 自动更新签名，再补充对应 GitHub Secrets。
+            下载对应系统的安装包后即可使用：
+            - macOS：下载 `.dmg` 或 `.app.tar.gz`
+            - Windows：下载 `.msi` 或 `.exe`
+            - Linux：下载 `.AppImage` 或 `.deb`
+
+            首次启动会自动使用系统默认应用数据目录下的 `shotAgent` 文件夹保存画布和素材，也可以在应用内重新选择存储目录。
           releaseDraft: true
           prerelease: false

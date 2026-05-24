@@ -1,5 +1,6 @@
 import {
   ensureDirectoryPermission as ensureBrowserDirectoryPermission,
+  deleteCanvasFolder as deleteCanvasFolderFromBrowserFolder,
   getStoredRootDirectoryHandle as getStoredBrowserRootDirectoryHandle,
   persistWorkspaceToFolder as persistWorkspaceToBrowserFolder,
   readWorkspaceFromFolder as readWorkspaceFromBrowserFolder,
@@ -75,6 +76,13 @@ export const browserWorkspaceStore: WorkspaceStore = {
     }
 
     return readWorkspaceFromBrowserFolder(handle.directoryHandle as ShotAgentDirectoryHandle, fallback);
+  },
+  async deleteCanvasFolder(handle, canvas) {
+    if (handle.kind !== 'browser-directory') {
+      return;
+    }
+
+    await deleteCanvasFolderFromBrowserFolder(handle.directoryHandle as ShotAgentDirectoryHandle, canvas);
   },
   async saveAssetFileToCanvasFolder(handle, canvas, file) {
     if (handle.kind !== 'browser-directory') {

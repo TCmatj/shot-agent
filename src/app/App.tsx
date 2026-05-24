@@ -392,60 +392,7 @@ const nodeTemplates: NodeTemplate[] = [
   },
 ];
 
-const initialCanvases: CanvasView[] = [
-  {
-    id: 'canvas_first',
-    name: '默认画布',
-    updatedAt: '刚刚',
-    nodes: [
-      {
-        id: 'node_image_1',
-        title: '图片生成',
-        modelId: 'gpt-image-2',
-        kind: 'image',
-        x: 120,
-        y: 120,
-        imageResolutionTier: defaultImageResolutionTier,
-        imageAspectRatio: defaultImageAspectRatio,
-        imageQuality: defaultImageQuality,
-      },
-      {
-        id: 'node_video_1',
-        title: '视频生成',
-        modelId: 'seedance2.0',
-        kind: 'video',
-        x: 520,
-        y: 240,
-        seedanceScenario: 'image_to_video_first_frame',
-        videoRatio: getDefaultSeedanceRatio('seedance2.0'),
-        videoFramesPerSecond: getSeedanceCapabilities('seedance2.0').fixedFrameRate,
-      },
-      {
-        id: 'node_chat_1',
-        title: '提示词整理',
-        modelId: 'gpt-5.4-mini',
-        kind: 'chat',
-        x: 320,
-        y: -40,
-      },
-    ],
-    edges: [
-      {
-        id: 'edge_image_video',
-        fromNodeId: 'node_image_1',
-        toNodeId: 'node_video_1',
-        toPortId: 'first_frame_image',
-      },
-    ],
-  },
-  {
-    id: 'canvas_second',
-    name: '产品短片',
-    updatedAt: '示例',
-    nodes: [],
-    edges: [],
-  },
-];
+const initialCanvases: CanvasView[] = [];
 const initialWorkspaceState = createWorkspaceState(initialCanvases);
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
 const providerStorageKey = 'shot-agent:providers';
@@ -3001,10 +2948,11 @@ export function App() {
   }
 
   function deleteActiveCanvas() {
-    if (!activeCanvasId) {
+    if (!activeCanvasId || !activeCanvas) {
       return;
     }
 
+    void deletePersistedCanvasFolder(activeCanvas);
     setWorkspaceStateWithHistory((current) => deleteCanvas(current, current.activeCanvasId));
     clearSelection();
     setAddMenu(null);
@@ -3013,11 +2961,28 @@ export function App() {
   }
 
   function deleteCanvasById(canvasId: string) {
+    const canvasToDelete = workspaceStateRef.current.canvases.find((canvas) => canvas.id === canvasId);
+    if (canvasToDelete) {
+      void deletePersistedCanvasFolder(canvasToDelete);
+    }
+
     setWorkspaceStateWithHistory((current) => deleteCanvas(current, canvasId));
     clearSelection();
     setAddMenu(null);
     setEditingCanvasId(null);
     setViewport(defaultViewport);
+  }
+
+  async function deletePersistedCanvasFolder(canvas: CanvasView) {
+    if (!rootDirectoryHandle || !folderStorageReady) {
+      return;
+    }
+
+    try {
+      await workspaceStore.deleteCanvasFolder(rootDirectoryHandle, canvas);
+    } catch {
+      setCanvasMessage('删除画布文件夹失败，请检查存储目录权限。');
+    }
   }
 
   function startRenameCanvasFromList(canvas: CanvasView) {

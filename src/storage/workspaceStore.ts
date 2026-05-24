@@ -47,6 +47,10 @@ export type WorkspaceStore = {
     handle: WorkspaceRootHandle,
     fallback: CanvasWorkspaceState,
   ): Promise<CanvasWorkspaceState>;
+  deleteCanvasFolder(
+    handle: WorkspaceRootHandle,
+    canvas: CanvasView,
+  ): Promise<void>;
   saveAssetFileToCanvasFolder(
     handle: WorkspaceRootHandle,
     canvas: CanvasView,

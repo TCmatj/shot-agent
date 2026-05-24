@@ -30,6 +30,9 @@ const unsupportedWorkspaceStore: WorkspaceStore = {
   async readWorkspaceFromFolder(_handle, fallback) {
     return fallback;
   },
+  async deleteCanvasFolder() {
+    return undefined;
+  },
   async saveAssetFileToCanvasFolder() {
     throw new Error('当前运行环境不支持工作区存储');
   },

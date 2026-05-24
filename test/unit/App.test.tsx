@@ -11,6 +11,36 @@ import {
 
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
 
+function createDefaultVideoWorkspaceState(): CanvasWorkspaceState {
+  return {
+    ...createWorkspaceState([
+      {
+        id: 'canvas_default_video',
+        name: '默认画布',
+        updatedAt: '刚刚',
+        nodes: [
+          {
+            id: 'node_video_1',
+            title: '视频生成',
+            modelId: 'seedance2.0',
+            kind: 'video',
+            x: 520,
+            y: 240,
+          },
+        ],
+        edges: [],
+      },
+    ]),
+  };
+}
+
+function seedDefaultVideoWorkspace() {
+  window.localStorage.setItem(
+    workspaceStorageKey,
+    serializeWorkspaceState(createDefaultVideoWorkspaceState()),
+  );
+}
+
 async function openNodeInspectorByTitle(title: string) {
   const headings = await screen.findAllByRole('heading', { name: title });
   const canvasHeading = headings.find((heading) => heading.closest('article'));
@@ -127,9 +157,32 @@ describe('App image preview', () => {
   });
 });
 
+describe('App empty startup', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      },
+    );
+  });
+
+  it('starts without a default canvas for new users', () => {
+    render(<App />);
+
+    expect(screen.getAllByText('暂无画布').length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: /新建画布/ }).length).toBeGreaterThan(0);
+    expect(screen.queryByText('默认画布')).toBeNull();
+  });
+});
+
 describe('App video node inspector', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    seedDefaultVideoWorkspace();
 
     vi.stubGlobal(
       'ResizeObserver',

@@ -127,6 +127,13 @@ export async function readWorkspaceFromFolder(
   }
 }
 
+export async function deleteCanvasFolder(
+  rootHandle: ShotAgentDirectoryHandle,
+  canvas: CanvasView,
+): Promise<void> {
+  await rootHandle.removeEntry(getCanvasFolderName(canvas), { recursive: true });
+}
+
 export async function saveAssetFileToCanvasFolder(
   rootHandle: ShotAgentDirectoryHandle,
   canvas: CanvasView,

@@ -460,6 +460,27 @@ describe('generation client request building', () => {
     expect(result.ok && JSON.parse(result.request.body as string).framespersecond).toBeUndefined();
   });
 
+  it('rejects Seedance blob URLs before sending the provider request', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'image_asset_1'
+            ? { ...node, assetDataUrl: 'blob:http://localhost/local-image' }
+            : node,
+        ),
+      },
+      nodeId: 'video_1',
+      provider: seedanceProvider,
+      token: 'token',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: '视频生成的上游素材不能使用 blob: 临时地址，请重新导入素材或重新打开画布后再试。',
+    });
+  });
+
   it('rejects Seedance durations outside the official range', () => {
     const result = buildGenerationRequest({
       canvas: {

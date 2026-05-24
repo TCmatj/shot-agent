@@ -11,6 +11,7 @@ describe('Tauri desktop window configuration', () => {
     expect(defaultCapability.permissions).toContain('fs:read-all');
     expect(defaultCapability.permissions).toContain('fs:write-all');
     expect(defaultCapability.permissions).toContain('allow-authorize-workspace-directory');
+    expect(defaultCapability.permissions).toContain('allow-get-default-workspace-directory');
     expect(defaultCapability.permissions).not.toContainEqual({
       identifier: 'fs:scope',
       allow: ['**'],

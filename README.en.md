@@ -37,7 +37,7 @@ The first phase focuses on integrating:
 - React + TypeScript + Vite application scaffold
 - Black dotted infinite canvas interface
 - Node dragging, canvas panning, and zooming
-- Open the first canvas by default with a canvas list in the sidebar
+- New users start with an empty canvas state and a canvas list in the sidebar
 - Collapsible left sidebar
 - Rename and delete canvases directly from the sidebar canvas list
 - Small `+` create button beside the canvas list title
@@ -55,6 +55,7 @@ The first phase focuses on integrating:
 - Inspect selected node details and configuration entry points
 - Delete selected nodes or edges with `Delete` / `Backspace`
 - Save the canvas list, active canvas, and node positions locally in the browser
+- Desktop builds save canvases and assets to the `shotAgent` folder under the system app data directory by default
 - Configure a custom canvas storage folder, with direct folder picking when the browser supports it
 - Canvas project domain model
 - Workflow node and edge domain operations
@@ -65,6 +66,14 @@ The first phase focuses on integrating:
 - Prompt `@` reference parsing
 - Generation history and retry rules
 - Local canvas storage interfaces
+
+## Default Storage Paths
+
+Desktop builds create and use these default folders on first launch:
+
+- Windows: `%APPDATA%\shotAgent`
+- macOS: `~/Library/Application Support/shotAgent`
+- Linux: `$XDG_DATA_HOME/shotAgent`; when `XDG_DATA_HOME` is not set, this is usually `~/.local/share/shotAgent`
 
 ## Design Direction
 

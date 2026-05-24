@@ -10,6 +10,7 @@
     "fs:read-all",
     "fs:write-all",
     "allow-authorize-workspace-directory",
+    "allow-get-default-workspace-directory",
     "opener:default"
   ]
 }

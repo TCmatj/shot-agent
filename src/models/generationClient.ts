@@ -238,7 +238,7 @@ export function buildGenerationRequest(
   }
 
   if (node.kind === 'video' && input.provider.protocol === 'volcengine') {
-    const validationError = validateSeedanceVideoNode(node);
+    const validationError = validateSeedanceVideoNode(node, input.canvas);
     if (validationError) {
       return { ok: false, error: validationError };
     }
@@ -751,7 +751,7 @@ function buildSeedanceVideoTaskRequest(
   };
 }
 
-function validateSeedanceVideoNode(node: CanvasNodeView): string | null {
+function validateSeedanceVideoNode(node: CanvasNodeView, canvas: CanvasView): string | null {
   const modelId = node.modelId as SeedanceModelId;
   const resolution = node.videoResolution ?? '720p';
   const capabilities = getSeedanceCapabilities(modelId);
@@ -781,6 +781,10 @@ function validateSeedanceVideoNode(node: CanvasNodeView): string | null {
           : `${capabilities.durationRangeSeconds.min}~${capabilities.durationRangeSeconds.max}`
       } 秒`;
     }
+  }
+
+  if (collectConnectedSeedanceAssets(node, canvas).some((asset) => asset.content.startsWith('blob:'))) {
+    return '视频生成的上游素材不能使用 blob: 临时地址，请重新导入素材或重新打开画布后再试。';
   }
 
   return null;
@@ -835,59 +839,29 @@ function collectSeedanceScenarioAssets(
   const videoAssets = assets.filter((asset) => asset.node.kind === 'video' || asset.node.kind === 'videoAsset');
 
   if (scenario === 'image_to_video_first_frame') {
-    return imageAssets.slice(0, 1).map((asset) => ({
-      type: 'image_url',
-      image_url: {
-        url: asset.content,
-      },
-      role: 'first_frame',
-    }));
+    return imageAssets
+      .slice(0, 1)
+      .map((asset) => createSeedanceImageContent(asset.content, 'first_frame'));
   }
 
   if (scenario === 'image_to_video_first_last_frame') {
-    return imageAssets.slice(0, 2).map((asset, index) => ({
-      type: 'image_url',
-      image_url: {
-        url: asset.content,
-      },
-      role: index === 0 ? 'first_frame' : 'last_frame',
-    }));
+    return imageAssets
+      .slice(0, 2)
+      .map((asset, index) =>
+        createSeedanceImageContent(asset.content, index === 0 ? 'first_frame' : 'last_frame'),
+      );
   }
 
   if (scenario === 'multimodal_reference_video') {
     return [
-      ...imageAssets.map((asset) => ({
-        type: 'image_url',
-        image_url: {
-          url: asset.content,
-        },
-        role: 'reference_image',
-      })),
-      ...videoAssets.map((asset) => ({
-        type: 'video_url',
-        video_url: {
-          url: asset.content,
-        },
-        role: 'reference_video',
-      })),
+      ...imageAssets.map((asset) => createSeedanceImageContent(asset.content, 'reference_image')),
+      ...videoAssets.map((asset) => createSeedanceVideoContent(asset.content, 'reference_video')),
     ];
   }
 
   return [
-    ...imageAssets.map((asset) => ({
-      type: 'image_url',
-      image_url: {
-        url: asset.content,
-      },
-      role: 'reference_image',
-    })),
-    ...videoAssets.map((asset) => ({
-      type: 'video_url',
-      video_url: {
-        url: asset.content,
-      },
-      role: 'reference_video',
-    })),
+    ...imageAssets.map((asset) => createSeedanceImageContent(asset.content, 'reference_image')),
+    ...videoAssets.map((asset) => createSeedanceVideoContent(asset.content, 'reference_video')),
   ];
 }
 
@@ -950,57 +924,60 @@ function collectRoleBasedSeedanceAssets(
 ): Array<Record<string, unknown>> {
   return assets.flatMap<Record<string, unknown>>((asset) => {
     if (asset.portId === 'first_frame_image') {
-      return [{
-        type: 'image_url',
-        image_url: {
-          url: asset.content,
-        },
-        role: 'first_frame',
-      }];
+      return [createSeedanceImageContent(asset.content, 'first_frame')];
     }
 
     if (asset.portId === 'last_frame_image') {
-      return [{
-        type: 'image_url',
-        image_url: {
-          url: asset.content,
-        },
-        role: 'last_frame',
-      }];
+      return [createSeedanceImageContent(asset.content, 'last_frame')];
     }
 
     if (asset.portId === 'reference_image') {
-      return [{
-        type: 'image_url',
-        image_url: {
-          url: asset.content,
-        },
-        role: 'reference_image',
-      }];
+      return [createSeedanceImageContent(asset.content, 'reference_image')];
     }
 
     if (asset.portId === 'reference_video') {
-      return [{
-        type: 'video_url',
-        video_url: {
-          url: asset.content,
-        },
-        role: 'reference_video',
-      }];
+      return [createSeedanceVideoContent(asset.content, 'reference_video')];
     }
 
     if (asset.portId === 'reference_audio') {
-      return [{
-        type: 'audio_url',
-        audio_url: {
-          url: asset.content,
-        },
-        role: 'reference_audio',
-      }];
+      return [createSeedanceAudioContent(asset.content, 'reference_audio')];
     }
 
     return [];
   });
+}
+
+function createSeedanceImageContent(
+  url: string,
+  role: 'first_frame' | 'last_frame' | 'reference_image',
+): Record<string, unknown> {
+  return {
+    type: 'image_url',
+    image_url: { url },
+    role,
+  };
+}
+
+function createSeedanceVideoContent(
+  url: string,
+  role: 'reference_video',
+): Record<string, unknown> {
+  return {
+    type: 'video_url',
+    video_url: { url },
+    role,
+  };
+}
+
+function createSeedanceAudioContent(
+  url: string,
+  role: 'reference_audio',
+): Record<string, unknown> {
+  return {
+    type: 'audio_url',
+    audio_url: { url },
+    role,
+  };
 }
 
 function collectConnectedSeedanceAssets(node: CanvasNodeView, canvas: CanvasView): SeedanceConnectedAsset[] {
