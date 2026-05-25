@@ -34,8 +34,10 @@ import {
   Import,
   MessageSquare,
   Minus,
+  Maximize2,
   Music,
   Move,
+  Minimize2,
   Pencil,
   Play,
   Plus,
@@ -103,12 +105,20 @@ import {
 import {
   collectGenerationInputAssetIds,
   getEffectiveNodeOutputText,
+  listVideoGenerationTasks,
   queryGenerationTask,
   resolveProviderToken,
   streamChatGenerationNode,
   submitGenerationNode,
+  type VideoGenerationHistoryItem,
 } from '../models/generationClient';
 import { renderMarkdownToHtml, shouldCollapseMarkdown } from '../lib/markdown';
+import {
+  clampPreviewImageZoom,
+  getNextPreviewImageZoom,
+  getPreviewZoomedScrollPosition,
+  previewImageZoomStep,
+} from './imagePreview';
 import {
   addCanvasEdge,
   canConnectCanvasNodes,
@@ -830,24 +840,243 @@ function ImagePreviewModal({
   preview: ImagePreviewState | null;
   onClose: () => void;
 }) {
+  const modalRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [zoomPercent, setZoomPercent] = useState(100);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [dragState, setDragState] = useState<{
+    pointerId: number;
+    lastX: number;
+    lastY: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (preview) {
+      setZoomPercent(100);
+      setDragState(null);
+    }
+  }, [preview]);
+
+  useEffect(() => {
+    function handleFullscreenChange() {
+      setIsFullscreen(document.fullscreenElement === modalRef.current);
+    }
+
+    handleFullscreenChange();
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   if (!preview) {
     return null;
+  }
+
+  function updateZoom(nextZoom: number, anchor?: { x: number; y: number }) {
+    setZoomPercent((current) => {
+      const resolvedZoom = clampPreviewImageZoom(nextZoom);
+      if (resolvedZoom === current) {
+        return current;
+      }
+
+      const stage = stageRef.current;
+      if (stage && anchor) {
+        const nextScroll = getPreviewZoomedScrollPosition({
+          currentZoom: current,
+          nextZoom: resolvedZoom,
+          scrollLeft: stage.scrollLeft,
+          scrollTop: stage.scrollTop,
+          anchorX: anchor.x,
+          anchorY: anchor.y,
+        });
+
+        requestAnimationFrame(() => {
+          if (stageRef.current) {
+            stageRef.current.scrollLeft = nextScroll.scrollLeft;
+            stageRef.current.scrollTop = nextScroll.scrollTop;
+          }
+        });
+      }
+
+      return resolvedZoom;
+    });
+  }
+
+  function adjustZoom(delta: number, anchor?: { x: number; y: number }) {
+    const stage = stageRef.current;
+    const fallbackAnchor = stage
+      ? {
+          x: stage.clientWidth / 2,
+          y: stage.clientHeight / 2,
+        }
+      : undefined;
+
+    setZoomPercent((current) => {
+      const resolvedZoom = getNextPreviewImageZoom(current, delta);
+      const resolvedAnchor = anchor ?? fallbackAnchor;
+      if (resolvedZoom === current) {
+        return current;
+      }
+
+      if (stage && resolvedAnchor) {
+        const nextScroll = getPreviewZoomedScrollPosition({
+          currentZoom: current,
+          nextZoom: resolvedZoom,
+          scrollLeft: stage.scrollLeft,
+          scrollTop: stage.scrollTop,
+          anchorX: resolvedAnchor.x,
+          anchorY: resolvedAnchor.y,
+        });
+
+        requestAnimationFrame(() => {
+          if (stageRef.current) {
+            stageRef.current.scrollLeft = nextScroll.scrollLeft;
+            stageRef.current.scrollTop = nextScroll.scrollTop;
+          }
+        });
+      }
+
+      return resolvedZoom;
+    });
+  }
+
+  function handleWheel(event: WheelEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    adjustZoom(event.deltaY < 0 ? previewImageZoomStep : -previewImageZoomStep, {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    });
+  }
+
+  async function toggleFullscreen() {
+    const modal = modalRef.current;
+    if (!modal) {
+      return;
+    }
+
+    if (document.fullscreenElement === modal) {
+      await document.exitFullscreen?.();
+      return;
+    }
+
+    await modal.requestFullscreen?.();
+  }
+
+  function handleStagePointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (zoomPercent <= 100 || event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragState({
+      pointerId: event.pointerId,
+      lastX: event.clientX,
+      lastY: event.clientY,
+    });
+  }
+
+  function handleStagePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (!dragState || dragState.pointerId !== event.pointerId || !stageRef.current) {
+      return;
+    }
+
+    stageRef.current.scrollLeft -= event.clientX - dragState.lastX;
+    stageRef.current.scrollTop -= event.clientY - dragState.lastY;
+    setDragState({
+      pointerId: dragState.pointerId,
+      lastX: event.clientX,
+      lastY: event.clientY,
+    });
+  }
+
+  function finishStageDrag(event: PointerEvent<HTMLDivElement>) {
+    if (dragState?.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    setDragState(null);
   }
 
   return createPortal(
     <div className="prompt-reference-image-backdrop" onPointerDown={onClose}>
       <div
+        ref={modalRef}
         className="prompt-reference-image-modal"
         onPointerDown={(event) => event.stopPropagation()}
       >
         <header>
           <strong>{preview.title}</strong>
-          <button type="button" onClick={onClose}>
-            <X size={16} />
-            关闭
-          </button>
+          <div className="prompt-reference-image-toolbar">
+            <div className="prompt-reference-image-zoom-controls">
+              <button
+                type="button"
+                aria-label="缩小图片"
+                title="缩小图片"
+                onClick={() => adjustZoom(-previewImageZoomStep)}
+              >
+                <Minus size={16} />
+              </button>
+              <button
+                type="button"
+                className="zoom-value"
+                aria-label={`当前缩放 ${zoomPercent}%`}
+                onClick={() => updateZoom(100)}
+              >
+                {zoomPercent}%
+              </button>
+              <button
+                type="button"
+                aria-label="放大图片"
+                title="放大图片"
+                onClick={() => adjustZoom(previewImageZoomStep)}
+              >
+                <Plus size={16} />
+              </button>
+              <button
+                type="button"
+                aria-label="重置图片缩放"
+                title="重置图片缩放"
+                onClick={() => updateZoom(100)}
+              >
+                <RotateCcw size={16} />
+              </button>
+              <button
+                type="button"
+                aria-label={isFullscreen ? '退出全屏查看图片' : '全屏查看图片'}
+                title={isFullscreen ? '退出全屏查看图片' : '全屏查看图片'}
+                onClick={() => void toggleFullscreen()}
+              >
+                {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+              </button>
+            </div>
+            <button type="button" onClick={onClose}>
+              <X size={16} />
+              关闭
+            </button>
+          </div>
         </header>
-        <img src={preview.imageUrl} alt={preview.title} />
+        <div
+          ref={stageRef}
+          className={`prompt-reference-image-stage ${zoomPercent > 100 ? 'is-pannable' : ''} ${dragState ? 'is-dragging' : ''}`}
+          onWheel={handleWheel}
+          onPointerDown={handleStagePointerDown}
+          onPointerMove={handleStagePointerMove}
+          onPointerUp={finishStageDrag}
+          onPointerCancel={finishStageDrag}
+        >
+          <div className="prompt-reference-image-surface">
+            <img
+              className="prompt-reference-image-preview"
+              src={preview.imageUrl}
+              alt={preview.title}
+              style={{ width: `${zoomPercent}%` }}
+              draggable={false}
+            />
+          </div>
+        </div>
       </div>
     </div>,
     document.body,
@@ -1289,29 +1518,7 @@ function PromptTextarea({
           ))}
         </div>
       ) : null}
-      {previewImage?.imageUrl
-        ? createPortal(
-            <div
-              className="prompt-reference-image-backdrop"
-              onPointerDown={() => setPreviewImage(null)}
-            >
-              <div
-                className="prompt-reference-image-modal"
-                onPointerDown={(event) => event.stopPropagation()}
-              >
-                <header>
-                  <strong>{previewImage.title}</strong>
-                  <button type="button" onClick={() => setPreviewImage(null)}>
-                    <X size={16} />
-                    关闭
-                  </button>
-                </header>
-                <img src={previewImage.imageUrl} alt={previewImage.title} />
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
+      <ImagePreviewModal preview={previewImage} onClose={() => setPreviewImage(null)} />
     </div>
   );
 }
@@ -1575,6 +1782,24 @@ function getProviderInitial(providerName: string): string {
   return latinInitials || compactName.slice(0, 2).toUpperCase();
 }
 
+function formatProviderHistoryDate(value?: string): string {
+  if (!value) {
+    return '—';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
 type ProviderBrandIconConfig = {
   Icon: typeof OpenAIIcon;
   background: string;
@@ -1695,6 +1920,15 @@ export function App() {
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderConfig>>({});
   const [editingProviderIds, setEditingProviderIds] = useState<string[]>([]);
   const [fetchingProviderModelIds, setFetchingProviderModelIds] = useState<string[]>([]);
+  const [providerVideoHistoryItems, setProviderVideoHistoryItems] = useState<
+    VideoGenerationHistoryItem[]
+  >([]);
+  const [providerVideoHistoryLoading, setProviderVideoHistoryLoading] = useState(false);
+  const [providerVideoHistoryError, setProviderVideoHistoryError] = useState<string | null>(null);
+  const [providerVideoHistoryPage, setProviderVideoHistoryPage] = useState(1);
+  const [providerVideoHistoryPageSize, setProviderVideoHistoryPageSize] = useState(20);
+  const [providerVideoHistoryTotal, setProviderVideoHistoryTotal] = useState(0);
+  const providerVideoHistoryRequestIdRef = useRef(0);
   const [showProviderManager, setShowProviderManager] = useState(false);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [providerSearchQuery, setProviderSearchQuery] = useState('');
@@ -1906,6 +2140,11 @@ export function App() {
   const selectedProviderHasDraft = selectedProvider
     ? Boolean(providerDrafts[selectedProvider.id])
     : false;
+  const selectedProviderSupportsVideoHistory = selectedProviderView?.protocol === 'volcengine';
+  const providerVideoHistoryPageCount = Math.max(
+    1,
+    Math.ceil(providerVideoHistoryTotal / providerVideoHistoryPageSize) || 1,
+  );
   const minimapBounds = getCanvasContentBounds(renderedCanvasNodes, canvasNodeSize);
   const minimapScale = Math.min(
     minimapSize.width / minimapBounds.width,
@@ -2198,6 +2437,23 @@ export function App() {
       setSelectedProviderId(providerRows[0].id);
     }
   }, [providerRows, selectedProviderId, showProviderManager]);
+
+  useEffect(() => {
+    setProviderVideoHistoryPage(1);
+  }, [selectedProvider?.id]);
+
+  useEffect(() => {
+    if (!showProviderManager || !selectedProvider?.id) {
+      return;
+    }
+
+    void refreshSelectedProviderVideoHistory();
+  }, [
+    providerVideoHistoryPage,
+    providerVideoHistoryPageSize,
+    selectedProvider?.id,
+    showProviderManager,
+  ]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2920,8 +3176,66 @@ export function App() {
     );
   }
 
-  function renameActiveCanvas(name: string) {
-    setWorkspaceStateWithHistory((current) => renameCanvas(current, current.activeCanvasId, name));
+  async function renameCanvasWithFolderSync(canvasId: string, name: string) {
+    const nextName = name.trim();
+    if (!nextName) {
+      return;
+    }
+
+    const currentState = workspaceStateRef.current;
+    const targetCanvas = currentState.canvases.find((canvas) => canvas.id === canvasId);
+    if (!targetCanvas) {
+      return;
+    }
+
+    const renamedState = renameCanvas(currentState, canvasId, nextName);
+    if (renamedState === currentState) {
+      return;
+    }
+
+    let nextState = renamedState;
+
+    if (rootDirectoryHandle && folderStorageReady) {
+      try {
+        const renamedFolder = await workspaceStore.renameCanvasFolder(
+          rootDirectoryHandle,
+          targetCanvas,
+          nextName,
+        );
+        nextState = {
+          ...renamedState,
+          canvases: renamedState.canvases.map((canvas) =>
+            canvas.id === canvasId
+              ? {
+                  ...canvas,
+                  ...renamedFolder,
+                }
+              : canvas,
+          ),
+        };
+      } catch (error) {
+        setCanvasMessage(
+          `同步修改画布文件夹名称失败：${error instanceof Error ? error.message : '未知错误'}`,
+        );
+        return;
+      }
+    }
+
+    setWorkspaceStateWithHistory(() => nextState);
+    workspaceStateRef.current = nextState;
+
+    if (rootDirectoryHandle && folderStorageReady) {
+      try {
+        const persistedState = await workspaceStore.persistWorkspaceToFolder(
+          rootDirectoryHandle,
+          nextState,
+        );
+        workspaceStateRef.current = persistedState;
+        setWorkspaceState(persistedState);
+      } catch {
+        setCanvasMessage('画布改名后写入文件夹失败，请检查文件夹权限后重试。');
+      }
+    }
   }
 
   function startRenameActiveCanvas() {
@@ -2934,7 +3248,7 @@ export function App() {
   }
 
   function commitRenameActiveCanvas() {
-    renameActiveCanvas(draftCanvasName);
+    void renameCanvasWithFolderSync(activeCanvasId, draftCanvasName);
     setIsRenamingCanvas(false);
   }
 
@@ -2964,7 +3278,7 @@ export function App() {
   }
 
   function commitRenameCanvasFromList(canvasId: string) {
-    setWorkspaceStateWithHistory((current) => renameCanvas(current, canvasId, draftListCanvasName));
+    void renameCanvasWithFolderSync(canvasId, draftListCanvasName);
     setEditingCanvasId(null);
   }
 
@@ -3589,6 +3903,62 @@ export function App() {
     } finally {
       setFetchingProviderModelIds((current) => current.filter((id) => id !== providerId));
     }
+  }
+
+  async function refreshSelectedProviderVideoHistory() {
+    if (!selectedProviderView) {
+      setProviderVideoHistoryLoading(false);
+      setProviderVideoHistoryItems([]);
+      setProviderVideoHistoryTotal(0);
+      setProviderVideoHistoryError(null);
+      return;
+    }
+
+    if (selectedProviderView.protocol !== 'volcengine') {
+      setProviderVideoHistoryLoading(false);
+      setProviderVideoHistoryItems([]);
+      setProviderVideoHistoryTotal(0);
+      setProviderVideoHistoryError('当前供应商不支持视频生成历史查询，仅火山方舟可用。');
+      return;
+    }
+
+    const token = resolveProviderToken(selectedProviderView);
+    if (!token) {
+      setProviderVideoHistoryLoading(false);
+      setProviderVideoHistoryItems([]);
+      setProviderVideoHistoryTotal(0);
+      setProviderVideoHistoryError(`请先配置 ${selectedProviderView.name} 的 API Key。`);
+      return;
+    }
+
+    const requestId = providerVideoHistoryRequestIdRef.current + 1;
+    providerVideoHistoryRequestIdRef.current = requestId;
+    setProviderVideoHistoryLoading(true);
+    setProviderVideoHistoryError(null);
+
+    const result = await listVideoGenerationTasks({
+      provider: selectedProviderView,
+      token,
+      pageIndex: providerVideoHistoryPage,
+      pageSize: providerVideoHistoryPageSize,
+      status: 'succeeded',
+    });
+
+    if (providerVideoHistoryRequestIdRef.current !== requestId) {
+      return;
+    }
+
+    if (!result.ok) {
+      setProviderVideoHistoryItems([]);
+      setProviderVideoHistoryTotal(0);
+      setProviderVideoHistoryError(result.error);
+      setProviderVideoHistoryLoading(false);
+      return;
+    }
+
+    setProviderVideoHistoryItems(result.items);
+    setProviderVideoHistoryTotal(result.total);
+    setProviderVideoHistoryLoading(false);
   }
 
   function updateProviderDraft(
@@ -4767,6 +5137,123 @@ export function App() {
                             </div>
                           ) : null}
                         </div>
+                      </section>
+                      <section className="provider-form-section">
+                        <div className="provider-section-heading">
+                          <h3>视频生成历史</h3>
+                          <p>读取当前供应商历史调用成功的视频生成任务，支持分页浏览。</p>
+                        </div>
+                        <div className="provider-history-toolbar">
+                          <label>
+                            每页展示
+                            <select
+                              value={providerVideoHistoryPageSize}
+                              onChange={(event) => {
+                                setProviderVideoHistoryPageSize(Number(event.target.value));
+                                setProviderVideoHistoryPage(1);
+                              }}
+                            >
+                              {[10, 20, 50, 100].map((size) => (
+                                <option key={size} value={size}>
+                                  {size}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="provider-history-toolbar-actions">
+                            <span className="provider-history-summary">
+                              {selectedProviderSupportsVideoHistory
+                                ? `共 ${providerVideoHistoryTotal} 条成功任务`
+                                : '仅火山方舟供应商支持此能力'}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={!selectedProviderSupportsVideoHistory || providerVideoHistoryLoading}
+                              onClick={() => void refreshSelectedProviderVideoHistory()}
+                            >
+                              <RefreshCw size={16} />
+                              {providerVideoHistoryLoading ? '刷新中' : '刷新'}
+                            </button>
+                          </div>
+                        </div>
+                        {providerVideoHistoryError ? (
+                          <div className="provider-empty-state">{providerVideoHistoryError}</div>
+                        ) : providerVideoHistoryItems.length === 0 ? (
+                          <div className="provider-empty-state">
+                            {providerVideoHistoryLoading ? '正在读取视频生成历史...' : '暂无成功的视频生成记录。'}
+                          </div>
+                        ) : (
+                          <>
+                            <div className="provider-history-list">
+                              {providerVideoHistoryItems.map((item) => (
+                                <article className="provider-history-item" key={item.taskId}>
+                                  <div className="provider-history-item-main">
+                                    <div className="provider-history-item-head">
+                                      <strong>{item.model ?? '未返回模型 ID'}</strong>
+                                      <span>{item.status ?? 'succeeded'}</span>
+                                    </div>
+                                    <div className="provider-history-item-meta">
+                                      <span>任务 ID：{item.taskId}</span>
+                                      <span>创建：{formatProviderHistoryDate(item.createdAt)}</span>
+                                      <span>更新：{formatProviderHistoryDate(item.updatedAt)}</span>
+                                      <span>完成：{formatProviderHistoryDate(item.succeededAt)}</span>
+                                      <span>比例：{item.ratio ?? '—'}</span>
+                                      <span>时长：{item.durationSeconds ? `${item.durationSeconds}s` : '—'}</span>
+                                      <span>
+                                        Tokens：
+                                        {typeof item.completionTokens === 'number'
+                                          ? item.completionTokens
+                                          : typeof item.totalTokens === 'number'
+                                            ? item.totalTokens
+                                            : '—'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="provider-history-item-links">
+                                    {item.videoUrl ? (
+                                      <a href={item.videoUrl} target="_blank" rel="noreferrer">
+                                        打开视频
+                                      </a>
+                                    ) : null}
+                                    {item.lastFrameUrl ? (
+                                      <a href={item.lastFrameUrl} target="_blank" rel="noreferrer">
+                                        查看尾帧
+                                      </a>
+                                    ) : null}
+                                  </div>
+                                </article>
+                              ))}
+                            </div>
+                            <div className="provider-history-pagination">
+                              <button
+                                type="button"
+                                disabled={providerVideoHistoryPage <= 1 || providerVideoHistoryLoading}
+                                onClick={() =>
+                                  setProviderVideoHistoryPage((current) => Math.max(1, current - 1))
+                                }
+                              >
+                                上一页
+                              </button>
+                              <span>
+                                第 {providerVideoHistoryPage} / {providerVideoHistoryPageCount} 页
+                              </span>
+                              <button
+                                type="button"
+                                disabled={
+                                  providerVideoHistoryPage >= providerVideoHistoryPageCount ||
+                                  providerVideoHistoryLoading
+                                }
+                                onClick={() =>
+                                  setProviderVideoHistoryPage((current) =>
+                                    Math.min(providerVideoHistoryPageCount, current + 1),
+                                  )
+                                }
+                              >
+                                下一页
+                              </button>
+                            </div>
+                          </>
+                        )}
                       </section>
                     </div>
                     <footer className="provider-detail-footer">

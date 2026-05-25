@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   persistWorkspaceToFolder,
+  renameCanvasFolder,
   saveAssetFileToCanvasFolder,
   saveGeneratedMediaBlobToCanvasFolder,
 } from '../../src/storage/browserFolderStore';
@@ -59,6 +60,43 @@ class MemoryDirectoryHandle {
     }
 
     return new MemoryFileHandle(name, this.files);
+  }
+
+  async removeEntry(name: string, options?: { recursive?: boolean }) {
+    if (this.files.has(name)) {
+      this.files.delete(name);
+      return;
+    }
+
+    const existingDir = this.directories.get(name);
+    if (!existingDir) {
+      throw new DOMException('Not found', 'NotFoundError');
+    }
+
+    if (!options?.recursive && (existingDir.directories.size > 0 || existingDir.files.size > 0)) {
+      throw new DOMException('Directory not empty', 'InvalidModificationError');
+    }
+
+    this.directories.delete(name);
+  }
+
+  async *values() {
+    for (const directory of this.directories.values()) {
+      yield Object.assign(directory, { kind: 'directory' as const });
+    }
+
+    for (const fileName of this.files.keys()) {
+      yield {
+        kind: 'file' as const,
+        name: fileName,
+        getFile: async () => {
+          const value = this.files.get(fileName) ?? '';
+          return value instanceof Blob
+            ? new File([value], fileName, { type: value.type })
+            : new File([value], fileName);
+        },
+      };
+    }
   }
 }
 
@@ -198,5 +236,51 @@ describe('browser folder store', () => {
     expect(root.directories.has('旧画布名__canvas_1')).toBe(true);
     expect(root.directories.has('新画布名__canvas_1')).toBe(false);
     expect(secondPersisted.canvases[0].storageFolderName).toBe('旧画布名__canvas_1');
+  });
+
+  it('renames the canvas folder to the new canvas name', async () => {
+    const root = new MemoryDirectoryHandle('Shot Agent');
+    const initialState = createWorkspaceState([
+      {
+        id: 'canvas_1',
+        name: '旧画布名',
+        updatedAt: 'now',
+        nodes: [
+          {
+            id: 'image_asset_1',
+            title: '图片',
+            modelId: 'asset-image',
+            kind: 'imageAsset',
+            x: 0,
+            y: 0,
+            assetName: 'input.png',
+            assetDataUrl: 'data:image/png;base64,aW1hZ2U=',
+            assetMimeType: 'image/png',
+          },
+        ],
+        edges: [],
+      },
+    ]);
+
+    const persisted = await persistWorkspaceToFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      initialState,
+    );
+    const renamed = await renameCanvasFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      persisted.canvases[0],
+      '新画布名',
+    );
+
+    expect(renamed.storageFolderName).toBe('新画布名__canvas_1');
+    expect(root.directories.has('旧画布名__canvas_1')).toBe(false);
+    expect(root.directories.has('新画布名__canvas_1')).toBe(true);
+    expect(
+      root.directories
+        .get('新画布名__canvas_1')
+        ?.directories.get('assets')
+        ?.directories.get('images')
+        ?.files.has('input.png'),
+    ).toBe(true);
   });
 });

@@ -3,6 +3,7 @@ import {
   getStoredRootDirectoryHandle as getStoredBrowserRootDirectoryHandle,
   persistWorkspaceToFolder as persistWorkspaceToBrowserFolder,
   readWorkspaceFromFolder as readWorkspaceFromBrowserFolder,
+  renameCanvasFolder as renameBrowserCanvasFolder,
   saveAssetFileToCanvasFolder as saveAssetFileToBrowserCanvasFolder,
   saveDataUrlOutputToCanvasFolder as saveDataUrlOutputToBrowserCanvasFolder,
   saveGeneratedMediaBlobToCanvasFolder as saveGeneratedMediaBlobToBrowserCanvasFolder,
@@ -104,6 +105,17 @@ export const browserWorkspaceStore: WorkspaceStore = {
       handle.directoryHandle as ShotAgentDirectoryHandle,
       canvas,
       input,
+    );
+  },
+  async renameCanvasFolder(handle, canvas, nextName) {
+    if (handle.kind !== 'browser-directory') {
+      throw new Error('浏览器存储仅支持浏览器目录句柄');
+    }
+
+    return renameBrowserCanvasFolder(
+      handle.directoryHandle as ShotAgentDirectoryHandle,
+      canvas,
+      nextName,
     );
   },
 };

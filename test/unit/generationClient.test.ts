@@ -5,6 +5,7 @@ import {
   buildGenerationRequest,
   collectGenerationInputAssetIds,
   getEffectiveNodeOutputText,
+  listVideoGenerationTasks,
   parseAnthropicStreamTextDelta,
   parseOpenAIStreamTextDelta,
   queryGenerationTask,
@@ -147,6 +148,88 @@ describe('generation client request building', () => {
         apiTokenRef: 'sk-test-direct-token',
       }),
     ).toBe('sk-test-direct-token');
+  });
+
+  it('lists succeeded video generation tasks from volcengine with pagination', async () => {
+    const fetcher: GenerationFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        total: 25,
+        items: [
+          {
+            id: 'task_1',
+            model: 'doubao-seedance-2-0-260128',
+            status: 'succeeded',
+            created_at: 1_717_799_003,
+            updated_at: 1_717_799_123,
+            content: {
+              video_url: 'https://example.com/video.mp4',
+              last_frame_url: 'https://example.com/cover.png',
+            },
+            usage: {
+              completion_tokens: 3456,
+              total_tokens: 3456,
+            },
+            ratio: '16:9',
+            duration: 5,
+          },
+        ],
+      }),
+    });
+
+    const result = await listVideoGenerationTasks({
+      provider: seedanceProvider,
+      token: 'token',
+      pageIndex: 2,
+      pageSize: 20,
+      fetcher,
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks?page_num=2&page_size=20&filter.status=succeeded',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer token',
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      total: 25,
+      pageIndex: 2,
+      pageSize: 20,
+      items: [
+        {
+          taskId: 'task_1',
+          model: 'doubao-seedance-2-0-260128',
+          status: 'succeeded',
+          videoUrl: 'https://example.com/video.mp4',
+          lastFrameUrl: 'https://example.com/cover.png',
+          completionTokens: 3456,
+          totalTokens: 3456,
+          ratio: '16:9',
+          durationSeconds: 5,
+        },
+      ],
+    });
+    if (result.ok) {
+      expect(result.items[0].createdAt).toBe('2024-06-07T22:23:23.000Z');
+      expect(result.items[0].updatedAt).toBe('2024-06-07T22:25:23.000Z');
+    }
+  });
+
+  it('rejects history queries for non-volcengine providers', async () => {
+    await expect(
+      listVideoGenerationTasks({
+        provider: openaiProvider,
+        token: 'token',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: '当前供应商不支持历史任务查询：openai-compatible',
+    });
   });
 
   it('resolves provider token references from environment variables', () => {

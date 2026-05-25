@@ -1128,22 +1128,89 @@ button:disabled {
   box-shadow: 0 26px 80px rgba(0, 0, 0, 0.54);
   display: grid;
   gap: 12px;
-  max-height: min(760px, calc(100vh - 48px));
+  height: min(calc(100vh - 24px), 1080px);
+  max-height: calc(100vh - 24px);
   padding: 14px;
-  width: min(880px, calc(100vw - 48px));
+  width: min(calc(100vw - 24px), 1600px);
+}
+
+.prompt-reference-image-modal:fullscreen {
+  border-radius: 0;
+  height: 100vh;
+  max-height: none;
+  padding: 16px;
+  width: 100vw;
 }
 
 .prompt-reference-image-modal header {
   align-items: center;
   display: flex;
   justify-content: space-between;
+  gap: 16px;
+  min-height: 36px;
 }
 
-.prompt-reference-image-modal img {
+.prompt-reference-image-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.prompt-reference-image-zoom-controls {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.prompt-reference-image-zoom-controls button {
+  align-items: center;
+  background: #11151b;
+  border: 1px solid #303640;
   border-radius: 6px;
-  max-height: calc(100vh - 150px);
-  object-fit: contain;
-  width: 100%;
+  color: #f3f5f7;
+  cursor: pointer;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  min-width: 30px;
+  padding: 0 8px;
+}
+
+.prompt-reference-image-zoom-controls .zoom-value {
+  font-size: 12px;
+  min-width: 58px;
+}
+
+.prompt-reference-image-stage {
+  background: #05070a;
+  border-radius: 6px;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.prompt-reference-image-stage.is-pannable {
+  cursor: grab;
+}
+
+.prompt-reference-image-stage.is-dragging {
+  cursor: grabbing;
+}
+
+.prompt-reference-image-surface {
+  align-items: flex-start;
+  display: flex;
+  justify-content: center;
+  min-height: 100%;
+  min-width: 100%;
+}
+
+.prompt-reference-image-preview {
+  border-radius: 6px;
+  display: block;
+  flex: none;
+  height: auto;
+  max-width: none;
 }
 
 .asset-preview {
@@ -2108,6 +2175,124 @@ audio.asset-preview {
   gap: 9px;
 }
 
+.provider-history-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.provider-history-toolbar label {
+  align-items: center;
+  color: #aeb8c5;
+  display: inline-flex;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.provider-history-toolbar select {
+  background: #07090c;
+  border: 1px solid #303640;
+  border-radius: 7px;
+  color: #eef2f5;
+  font: inherit;
+  min-height: 34px;
+  padding: 6px 10px;
+}
+
+.provider-history-toolbar-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.provider-history-summary {
+  color: #8793a2;
+  font-size: 12px;
+}
+
+.provider-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.provider-history-item {
+  align-items: center;
+  background: #07090c;
+  border: 1px solid #232933;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 14px;
+}
+
+.provider-history-item-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.provider-history-item-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.provider-history-item-head strong {
+  color: #eef2f5;
+  font-size: 14px;
+}
+
+.provider-history-item-head span {
+  background: #15191e;
+  border: 1px solid #2b323b;
+  border-radius: 999px;
+  color: #aeb8c5;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.provider-history-item-meta {
+  color: #8b96a5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 12px;
+}
+
+.provider-history-item-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.provider-history-item-links a {
+  color: #eef2f5;
+  text-decoration: none;
+}
+
+.provider-history-item-links a:hover {
+  color: #ffffff;
+  text-decoration: underline;
+}
+
+.provider-history-pagination {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.provider-history-pagination span {
+  color: #8d98a7;
+  font-size: 12px;
+}
+
 .provider-model-item {
   align-items: end;
   background: #07090c;
@@ -2173,7 +2358,8 @@ audio.asset-preview {
   }
 
   .provider-form-grid,
-  .provider-model-item {
+  .provider-model-item,
+  .provider-history-item {
     grid-template-columns: minmax(0, 1fr);
   }
 

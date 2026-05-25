@@ -10,6 +10,7 @@ import {
 } from '../../src/app/canvasWorkspace';
 
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
+const providerStorageKey = 'shot-agent:providers';
 
 async function openNodeInspectorByTitle(title: string) {
   const headings = await screen.findAllByRole('heading', { name: title });
@@ -47,6 +48,14 @@ describe('App image preview', () => {
     window.localStorage.clear();
     HTMLElement.prototype.setPointerCapture = vi.fn();
     HTMLElement.prototype.releasePointerCapture = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(undefined),
+    });
+    Object.defineProperty(document, 'exitFullscreen', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(undefined),
+    });
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0);
       return 1;
@@ -124,6 +133,206 @@ describe('App image preview', () => {
       'data:image/png;base64,b3V0cHV0',
     );
     expect(screen.getByRole('button', { name: '关闭' })).toBeTruthy();
+  });
+
+  it('supports zooming the preview image with wheel and toolbar controls', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_images',
+          name: '图片画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'asset_1',
+              title: '素材图',
+              modelId: 'asset-image',
+              kind: 'imageAsset',
+              x: 0,
+              y: 0,
+              assetName: 'input.png',
+              assetDataUrl: 'data:image/png;base64,aW1hZ2U=',
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    fireEvent.doubleClick(await screen.findByAltText('input.png'));
+
+    const zoomOutButton = screen.getByRole('button', { name: '缩小图片' });
+    const zoomInButton = screen.getByRole('button', { name: '放大图片' });
+    const resetZoomButton = screen.getByRole('button', { name: '重置图片缩放' });
+    const previewStage = document.querySelector('.prompt-reference-image-stage') as HTMLDivElement;
+    const previewImage = document.querySelector('.prompt-reference-image-preview') as HTMLImageElement;
+    vi.spyOn(previewStage, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 400,
+      bottom: 300,
+      width: 400,
+      height: 300,
+      toJSON: () => ({}),
+    } as DOMRect);
+    Object.defineProperty(previewStage, 'clientWidth', { configurable: true, value: 400 });
+    Object.defineProperty(previewStage, 'clientHeight', { configurable: true, value: 300 });
+    previewStage.scrollLeft = 20;
+    previewStage.scrollTop = 10;
+
+    expect(screen.getByRole('button', { name: '当前缩放 100%' })).toBeTruthy();
+    expect(previewImage.style.width).toBe('100%');
+
+    fireEvent.wheel(previewStage, { deltaY: -48, clientX: 100, clientY: 50 });
+    expect(screen.getByRole('button', { name: '当前缩放 110%' })).toBeTruthy();
+    expect(previewImage.style.width).toBe('110%');
+    expect(previewStage.scrollLeft).toBe(32);
+    expect(previewStage.scrollTop).toBe(16);
+
+    await userEvent.click(zoomInButton);
+    expect(screen.getByRole('button', { name: '当前缩放 120%' })).toBeTruthy();
+
+    await userEvent.click(zoomOutButton);
+    expect(screen.getByRole('button', { name: '当前缩放 110%' })).toBeTruthy();
+
+    for (let index = 0; index < 60; index += 1) {
+      fireEvent.wheel(previewStage!, { deltaY: -48 });
+    }
+    expect(screen.getByRole('button', { name: '当前缩放 500%' })).toBeTruthy();
+    expect(previewImage.style.width).toBe('500%');
+
+    for (let index = 0; index < 80; index += 1) {
+      fireEvent.wheel(previewStage!, { deltaY: 48 });
+    }
+    expect(screen.getByRole('button', { name: '当前缩放 50%' })).toBeTruthy();
+    expect(previewImage.style.width).toBe('50%');
+
+    await userEvent.click(resetZoomButton);
+    expect(screen.getByRole('button', { name: '当前缩放 100%' })).toBeTruthy();
+    expect(previewImage.style.width).toBe('100%');
+  });
+
+  it('supports dragging a zoomed image and requesting fullscreen preview', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_images',
+          name: '图片画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'asset_1',
+              title: '素材图',
+              modelId: 'asset-image',
+              kind: 'imageAsset',
+              x: 0,
+              y: 0,
+              assetName: 'input.png',
+              assetDataUrl: 'data:image/png;base64,aW1hZ2U=',
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    fireEvent.doubleClick(await screen.findByAltText('input.png'));
+
+    const previewStage = document.querySelector('.prompt-reference-image-stage') as HTMLDivElement;
+    Object.defineProperty(previewStage, 'clientWidth', { configurable: true, value: 400 });
+    Object.defineProperty(previewStage, 'clientHeight', { configurable: true, value: 300 });
+
+    await userEvent.click(screen.getByRole('button', { name: '放大图片' }));
+    await userEvent.click(screen.getByRole('button', { name: '放大图片' }));
+
+    previewStage.scrollLeft = 120;
+    previewStage.scrollTop = 80;
+
+    fireEvent.pointerDown(previewStage, { pointerId: 1, button: 0, clientX: 120, clientY: 80 });
+    fireEvent.pointerMove(previewStage, { pointerId: 1, clientX: 90, clientY: 60 });
+
+    expect(previewStage.scrollLeft).toBe(150);
+    expect(previewStage.scrollTop).toBe(100);
+
+    fireEvent.pointerUp(previewStage, { pointerId: 1, clientX: 90, clientY: 60 });
+
+    await userEvent.click(screen.getByRole('button', { name: '全屏查看图片' }));
+    expect(HTMLElement.prototype.requestFullscreen).toHaveBeenCalled();
+  });
+
+  it('shows succeeded video generation history in provider manager for volcengine providers', async () => {
+    window.localStorage.setItem(
+      providerStorageKey,
+      JSON.stringify([
+        {
+          id: 'provider_seedance',
+          name: '火山方舟',
+          protocol: 'volcengine',
+          baseURL: 'https://ark.cn-beijing.volces.com',
+          apiTokenRef: 'sk-test-seedance',
+          enabled: true,
+          models: [
+            {
+              providerModelId: 'doubao-seedance-2-0-260128',
+              canonicalModelId: 'seedance2.0',
+              enabled: true,
+            },
+          ],
+        },
+      ]),
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: {
+            total: 1,
+            tasks: [
+              {
+                id: 'task_history_1',
+                model: 'doubao-seedance-2-0-260128',
+                status: 'succeeded',
+                created_at: 1_717_799_003,
+                updated_at: 1_717_799_123,
+                content: {
+                  video_url: 'https://example.com/history.mp4',
+                  last_frame_url: 'https://example.com/history.png',
+                },
+                usage: {
+                  completion_tokens: 3456,
+                },
+                ratio: '16:9',
+                duration: 5,
+              },
+            ],
+          },
+        }),
+      }),
+    );
+
+    render(<App />);
+
+    await userEvent.click(screen.getByRole('button', { name: '供应商管理' }));
+
+    expect(await screen.findByText('视频生成历史')).toBeTruthy();
+    expect(await screen.findByText('共 1 条成功任务')).toBeTruthy();
+    expect(await screen.findByText(/task_history_1/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: '打开视频' }).getAttribute('href')).toBe(
+      'https://example.com/history.mp4',
+    );
+    expect(screen.getByText('第 1 / 1 页')).toBeTruthy();
   });
 });
 

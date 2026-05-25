@@ -70,4 +70,9 @@ export type WorkspaceStore = {
       kind: 'image' | 'video' | 'cover';
     },
   ): Promise<SavedGeneratedMedia>;
+  renameCanvasFolder(
+    handle: WorkspaceRootHandle,
+    canvas: CanvasView,
+    nextName: string,
+  ): Promise<Pick<CanvasView, 'storageFolderName'>>;
 };

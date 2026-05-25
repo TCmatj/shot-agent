@@ -39,6 +39,9 @@ const unsupportedWorkspaceStore: WorkspaceStore = {
   async saveGeneratedMediaBlobToCanvasFolder() {
     throw new Error('当前运行环境不支持工作区存储');
   },
+  async renameCanvasFolder() {
+    throw new Error('当前运行环境不支持工作区存储');
+  },
 };
 
 export function getWorkspaceStore(): WorkspaceStore {

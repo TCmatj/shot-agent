@@ -113,6 +113,47 @@ export type QueryGenerationTaskResult =
       rawResponse?: unknown;
     };
 
+export type VideoGenerationHistoryItem = {
+  taskId: string;
+  status?: string;
+  model?: string;
+  videoUrl?: string;
+  lastFrameUrl?: string;
+  completionTokens?: number;
+  totalTokens?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  succeededAt?: string;
+  durationSeconds?: number;
+  ratio?: string;
+  rawRecord: unknown;
+};
+
+export type ListVideoGenerationTasksInput = {
+  provider: ProviderConfig;
+  token?: string;
+  pageIndex?: number;
+  pageSize?: number;
+  status?: 'queued' | 'running' | 'succeeded' | 'failed';
+  fetcher?: GenerationFetch;
+};
+
+export type ListVideoGenerationTasksResult =
+  | {
+      ok: true;
+      items: VideoGenerationHistoryItem[];
+      pageIndex: number;
+      pageSize: number;
+      total: number;
+      rawResponse: unknown;
+    }
+  | {
+      ok: false;
+      error: string;
+      status?: number;
+      rawResponse?: unknown;
+    };
+
 export type StreamGenerationNodeInput = BuildGenerationRequestInput & {
   fetcher?: typeof fetch;
   onDelta(delta: string, fullText: string): void;
@@ -427,6 +468,67 @@ export async function queryGenerationTask(
   }
 
   return { ok: true, output: normalized.output };
+}
+
+export async function listVideoGenerationTasks(
+  input: ListVideoGenerationTasksInput,
+): Promise<ListVideoGenerationTasksResult> {
+  if (!input.token?.trim()) {
+    return { ok: false, error: `缺少供应商密钥：${input.provider.apiTokenRef}` };
+  }
+
+  if (input.provider.protocol !== 'volcengine') {
+    return { ok: false, error: `当前供应商不支持历史任务查询：${input.provider.protocol}` };
+  }
+
+  const pageIndex = Math.max(1, Math.floor(input.pageIndex ?? 1));
+  const pageSize = Math.max(1, Math.floor(input.pageSize ?? 20));
+  const status = input.status ?? 'succeeded';
+  const fetcher = input.fetcher ?? fetch;
+  const query = new URLSearchParams({
+    page_num: String(pageIndex),
+    page_size: String(pageSize),
+    'filter.status': status,
+  });
+
+  let response: Awaited<ReturnType<GenerationFetch>>;
+
+  try {
+    response = await fetcher(
+      `${normalizeBaseURL(input.provider.baseURL, false)}/api/v3/contents/generations/tasks?${query.toString()}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${input.token}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : '查询视频生成历史失败',
+    };
+  }
+
+  const rawResponse = await readResponse(response);
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: extractErrorMessage(rawResponse) ?? `请求失败（${response.status}）`,
+      status: response.status,
+      rawResponse,
+    };
+  }
+
+  return {
+    ok: true,
+    items: normalizeVideoTaskHistoryItems(rawResponse),
+    pageIndex,
+    pageSize,
+    total: readVideoTaskHistoryTotal(rawResponse),
+    rawResponse,
+  };
 }
 
 export async function streamChatGenerationNode(
@@ -1519,6 +1621,104 @@ function videoTask(rawResponse: unknown): {
   };
 }
 
+function normalizeVideoTaskHistoryItems(rawResponse: unknown): VideoGenerationHistoryItem[] {
+  const records = readVideoTaskHistoryRecords(rawResponse);
+
+  return records.flatMap<VideoGenerationHistoryItem>((record) => {
+    const task = videoTask(record);
+    const taskId = task.taskId;
+
+    if (!taskId) {
+      return [];
+    }
+
+    return [
+      {
+        taskId,
+        status: task.status,
+        model: stringField(record, ['model', 'model_id']),
+        videoUrl: task.videoUrl,
+        lastFrameUrl: task.lastFrameUrl,
+        completionTokens: task.completionTokens,
+        totalTokens: task.totalTokens,
+        createdAt: readIsoDate(record, ['created_at', 'create_time']),
+        updatedAt: readIsoDate(record, ['updated_at', 'update_time']),
+        succeededAt: readIsoDate(record, ['finished_at', 'completed_at', 'succeeded_at']),
+        durationSeconds: numberField(record, ['duration', 'duration_seconds']),
+        ratio: stringField(record, ['ratio']),
+        rawRecord: record,
+      },
+    ];
+  });
+}
+
+function readVideoTaskHistoryRecords(rawResponse: unknown): Array<Record<string, unknown>> {
+  if (!isRecord(rawResponse)) {
+    return [];
+  }
+
+  if (Array.isArray(rawResponse.items)) {
+    return rawResponse.items.filter(isRecord);
+  }
+
+  if (Array.isArray(rawResponse.data)) {
+    return rawResponse.data.filter(isRecord);
+  }
+
+  if (isRecord(rawResponse.data)) {
+    const data = rawResponse.data;
+
+    if (Array.isArray(data.items)) {
+      return data.items.filter(isRecord);
+    }
+
+    if (Array.isArray(data.tasks)) {
+      return data.tasks.filter(isRecord);
+    }
+
+    if (Array.isArray(data.list)) {
+      return data.list.filter(isRecord);
+    }
+  }
+
+  if (Array.isArray(rawResponse.tasks)) {
+    return rawResponse.tasks.filter(isRecord);
+  }
+
+  if (Array.isArray(rawResponse.list)) {
+    return rawResponse.list.filter(isRecord);
+  }
+
+  return [];
+}
+
+function readVideoTaskHistoryTotal(rawResponse: unknown): number {
+  if (!isRecord(rawResponse)) {
+    return 0;
+  }
+
+  const direct = numberField(rawResponse, ['total', 'total_count']);
+  if (typeof direct === 'number') {
+    return direct;
+  }
+
+  if (isRecord(rawResponse.data)) {
+    const nested = numberField(rawResponse.data, ['total', 'total_count']);
+    if (typeof nested === 'number') {
+      return nested;
+    }
+
+    if (isRecord(rawResponse.data.pagination)) {
+      return (
+        numberField(rawResponse.data.pagination, ['total', 'total_count']) ??
+        readVideoTaskHistoryRecords(rawResponse).length
+      );
+    }
+  }
+
+  return readVideoTaskHistoryRecords(rawResponse).length;
+}
+
 async function readResponse(response: Awaited<ReturnType<GenerationFetch>>): Promise<unknown> {
   try {
     return await response.json();
@@ -1560,6 +1760,32 @@ function stringField(record: Record<string, unknown>, fields: string[]): string 
   for (const field of fields) {
     if (typeof record[field] === 'string') {
       return record[field];
+    }
+  }
+
+  return undefined;
+}
+
+function numberField(record: Record<string, unknown>, fields: string[]): number | undefined {
+  for (const field of fields) {
+    if (typeof record[field] === 'number' && Number.isFinite(record[field])) {
+      return record[field];
+    }
+  }
+
+  return undefined;
+}
+
+function readIsoDate(record: Record<string, unknown>, fields: string[]): string | undefined {
+  for (const field of fields) {
+    const value = record[field];
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const milliseconds = value > 1_000_000_000_000 ? value : value * 1000;
+      return new Date(milliseconds).toISOString();
     }
   }
 

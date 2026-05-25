@@ -1,6 +1,6 @@
 import { basename, join } from '@tauri-apps/api/path';
 import { open } from '@tauri-apps/plugin-dialog';
-import { exists, mkdir, readFile, readTextFile, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readFile, readTextFile, rename, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import {
   parseWorkspaceState,
   serializeWorkspaceState,
@@ -189,6 +189,30 @@ export const desktopWorkspaceStore: WorkspaceStore = {
       assetName,
       assetPath: `assets/${mediaDirName}/${assetName}`,
       mimeType: input.blob.type,
+    };
+  },
+  async renameCanvasFolder(handle, canvas, nextName) {
+    if (handle.kind !== 'desktop-directory') {
+      throw new Error('桌面存储仅支持本地文件夹路径');
+    }
+
+    const currentDir = await getCanvasDirectory(handle.path, canvas, false);
+    const nextFolderName = `${sanitizeFolderName(nextName)}__${sanitizeFolderName(canvas.id)}`;
+    const nextDir = await join(handle.path, nextFolderName);
+
+    if (currentDir === nextDir) {
+      return {
+        storageFolderName: nextFolderName,
+      };
+    }
+
+    if (await exists(nextDir)) {
+      throw new Error('目标画布文件夹已存在');
+    }
+
+    await rename(currentDir, nextDir);
+    return {
+      storageFolderName: nextFolderName,
     };
   },
 };

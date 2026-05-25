@@ -221,6 +221,39 @@ export async function saveGeneratedMediaBlobToCanvasFolder(
   };
 }
 
+export async function renameCanvasFolder(
+  rootHandle: ShotAgentDirectoryHandle,
+  canvas: CanvasView,
+  nextName: string,
+): Promise<Pick<CanvasView, 'storageFolderName'>> {
+  const currentDir = await getCanvasDirectory(rootHandle, canvas, false);
+  const nextFolderName = `${sanitizeFolderName(nextName)}__${sanitizeFolderName(canvas.id)}`;
+  const currentFolderName = getCanvasFolderName(canvas);
+
+  if (currentFolderName === nextFolderName) {
+    return {
+      storageFolderName: nextFolderName,
+    };
+  }
+
+  try {
+    await rootHandle.getDirectoryHandle(nextFolderName);
+    throw new Error('目标画布文件夹已存在');
+  } catch (error) {
+    if (!(error instanceof DOMException) || error.name !== 'NotFoundError') {
+      throw error;
+    }
+  }
+
+  const nextDir = await rootHandle.getDirectoryHandle(nextFolderName, { create: true });
+  await copyDirectoryContents(currentDir, nextDir);
+  await rootHandle.removeEntry(currentFolderName, { recursive: true });
+
+  return {
+    storageFolderName: nextFolderName,
+  };
+}
+
 async function hydrateWorkspaceAssetUrls(
   rootHandle: ShotAgentDirectoryHandle,
   state: CanvasWorkspaceState,
@@ -447,6 +480,62 @@ async function getCanvasDirectory(
 
 function getCanvasFolderName(canvas: CanvasView): string {
   return canvas.storageFolderName ?? `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+}
+
+type DirectoryFileHandle = FileSystemFileHandle;
+type DirectoryEntryHandle = FileSystemDirectoryHandle | DirectoryFileHandle;
+
+type IterableDirectoryHandle = FileSystemDirectoryHandle & {
+  values?: () => AsyncIterable<DirectoryEntryHandle>;
+  entries?: () => AsyncIterable<[string, DirectoryEntryHandle]>;
+  [Symbol.asyncIterator]?: () => AsyncIterable<DirectoryEntryHandle>;
+};
+
+async function copyDirectoryContents(
+  fromDir: FileSystemDirectoryHandle,
+  toDir: FileSystemDirectoryHandle,
+): Promise<void> {
+  for await (const entry of iterateDirectoryEntries(fromDir)) {
+    if (entry.kind === 'directory') {
+      const sourceDir = entry as FileSystemDirectoryHandle;
+      const nextDir = await toDir.getDirectoryHandle(sourceDir.name, { create: true });
+      await copyDirectoryContents(sourceDir, nextDir);
+      continue;
+    }
+
+    const sourceFileHandle = entry as DirectoryFileHandle;
+    const sourceFile = await sourceFileHandle.getFile();
+    const nextFile = await toDir.getFileHandle(sourceFileHandle.name, { create: true });
+    const writable = await nextFile.createWritable();
+    await writable.write(sourceFile);
+    await writable.close();
+  }
+}
+
+async function* iterateDirectoryEntries(
+  directory: FileSystemDirectoryHandle,
+): AsyncGenerator<DirectoryEntryHandle, void, void> {
+  const iterableDirectory = directory as IterableDirectoryHandle;
+
+  if (typeof iterableDirectory.values === 'function') {
+    yield* iterableDirectory.values();
+    return;
+  }
+
+  if (typeof iterableDirectory.entries === 'function') {
+    for await (const [, entry] of iterableDirectory.entries()) {
+      yield entry;
+    }
+    return;
+  }
+
+  const iterator = iterableDirectory[Symbol.asyncIterator];
+  if (typeof iterator === 'function') {
+    yield* iterator.call(iterableDirectory);
+    return;
+  }
+
+  throw new Error('当前浏览器不支持遍历目录内容');
 }
 
 async function ensureProjectDirectories(canvasDir: FileSystemDirectoryHandle): Promise<void> {
