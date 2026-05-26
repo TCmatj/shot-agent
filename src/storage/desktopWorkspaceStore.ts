@@ -1,7 +1,8 @@
 import { basename, join } from '@tauri-apps/api/path';
 import { open } from '@tauri-apps/plugin-dialog';
-import { exists, mkdir, readFile, readTextFile, rename, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readDir, readFile, readTextFile, rename, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import {
+  createWorkspaceState,
   parseWorkspaceState,
   serializeWorkspaceState,
   stripTransientAssetData,
@@ -109,13 +110,23 @@ export const desktopWorkspaceStore: WorkspaceStore = {
       return fallback;
     }
 
+    let restoredState: CanvasWorkspaceState | null = null;
+
     try {
       const workspaceText = await readTextFile(await join(handle.path, 'workspace.json'));
-      const parsed = parseWorkspaceState(workspaceText, fallback);
-      return hydrateWorkspaceAssetUrls(handle.path, parsed);
+      restoredState = parseWorkspaceState(workspaceText, createWorkspaceState([]));
     } catch {
+      restoredState = null;
+    }
+
+    const discoveredCanvases = await discoverCanvasFolders(handle.path);
+    const mergedState = mergeDiscoveredCanvases(restoredState, discoveredCanvases, fallback);
+
+    if (!mergedState) {
       return fallback;
     }
+
+    return hydrateWorkspaceAssetUrls(handle.path, mergedState);
   },
   async saveAssetFileToCanvasFolder(handle, canvas, file) {
     if (handle.kind !== 'desktop-directory') {
@@ -361,6 +372,126 @@ async function getCanvasDirectory(rootPath: string, canvas: CanvasView, create: 
 
 function getCanvasFolderName(canvas: CanvasView): string {
   return canvas.storageFolderName ?? `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+}
+
+function mergeDiscoveredCanvases(
+  restoredState: CanvasWorkspaceState | null,
+  discoveredCanvases: CanvasView[],
+  fallback: CanvasWorkspaceState,
+): CanvasWorkspaceState | null {
+  if (!restoredState && discoveredCanvases.length === 0) {
+    return null;
+  }
+
+  const baseState = restoredState ?? createWorkspaceState([]);
+  const existingIds = new Set(baseState.canvases.map((canvas) => canvas.id));
+  const mergedCanvases = [
+    ...baseState.canvases,
+    ...discoveredCanvases.filter((canvas) => !existingIds.has(canvas.id)),
+  ];
+
+  if (mergedCanvases.length === 0) {
+    return fallback;
+  }
+
+  const activeCanvasId = mergedCanvases.some((canvas) => canvas.id === baseState.activeCanvasId)
+    ? baseState.activeCanvasId
+    : mergedCanvases[0]?.id ?? '';
+
+  return {
+    ...baseState,
+    activeCanvasId,
+    canvases: mergedCanvases,
+  };
+}
+
+async function discoverCanvasFolders(rootPath: string): Promise<CanvasView[]> {
+  const entries = await readDir(rootPath);
+  const canvases = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory)
+      .map(async (entry) => restoreCanvasFromDirectory(await join(rootPath, entry.name), entry.name)),
+  );
+
+  return canvases.filter((canvas): canvas is CanvasView => Boolean(canvas));
+}
+
+async function restoreCanvasFromDirectory(
+  directoryPath: string,
+  directoryName: string,
+): Promise<CanvasView | null> {
+  const canvasText = await readTextFileIfExists(await join(directoryPath, 'canvas.json'));
+  const workflowText = await readTextFileIfExists(await join(directoryPath, 'workflow.json'));
+  const canvasFromFile = canvasText ? parseCanvasFromText(canvasText) : null;
+
+  if (canvasFromFile) {
+    return {
+      ...canvasFromFile,
+      storageFolderName: canvasFromFile.storageFolderName ?? directoryName,
+    };
+  }
+
+  if (!workflowText) {
+    return null;
+  }
+
+  return parseCanvasFromWorkflowText(workflowText, directoryName);
+}
+
+async function readTextFileIfExists(path: string): Promise<string | null> {
+  try {
+    return await readTextFile(path);
+  } catch {
+    return null;
+  }
+}
+
+function parseCanvasFromText(text: string): CanvasView | null {
+  try {
+    const parsed = JSON.parse(text);
+    const state = parseWorkspaceState(
+      JSON.stringify({
+        version: 1,
+        activeCanvasId: 'canvas_from_folder',
+        canvases: [parsed],
+        storage: { mode: 'custom-folder' },
+        generationHistory: [],
+      }),
+      createWorkspaceState([]),
+    );
+
+    return state.canvases[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCanvasFromWorkflowText(
+  text: string,
+  directoryName: string,
+): CanvasView | null {
+  try {
+    const parsed = JSON.parse(text) as {
+      canvasId?: unknown;
+      nodes?: unknown;
+      edges?: unknown;
+    };
+    const synthesizedCanvas = {
+      id:
+        typeof parsed.canvasId === 'string' && parsed.canvasId.trim()
+          ? parsed.canvasId
+          : directoryName,
+      name: directoryName.split('__')[0] || directoryName,
+      storageFolderName: directoryName,
+      updatedAt: '已发现',
+      nodes: Array.isArray(parsed.nodes) ? parsed.nodes : [],
+      edges: Array.isArray(parsed.edges) ? parsed.edges : [],
+    };
+
+    return parseCanvasFromText(JSON.stringify(synthesizedCanvas));
+  } catch {
+    return null;
+  }
 }
 
 function sanitizeFolderName(name: string): string {

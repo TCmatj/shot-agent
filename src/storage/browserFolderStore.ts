@@ -1,4 +1,5 @@
 import {
+  createWorkspaceState,
   parseWorkspaceState,
   serializeWorkspaceState,
   stripTransientAssetData,
@@ -116,15 +117,24 @@ export async function readWorkspaceFromFolder(
   rootHandle: ShotAgentDirectoryHandle,
   fallback: CanvasWorkspaceState,
 ): Promise<CanvasWorkspaceState> {
+  let restoredState: CanvasWorkspaceState | null = null;
+
   try {
     const workspaceFile = await rootHandle.getFileHandle('workspace.json');
-    const workspaceText = await (await workspaceFile.getFile()).text();
-    const parsed = parseWorkspaceState(workspaceText, fallback);
-
-    return hydrateWorkspaceAssetUrls(rootHandle, parsed);
+    const workspaceText = await readBlobAsText(await workspaceFile.getFile());
+    restoredState = parseWorkspaceState(workspaceText, createWorkspaceState([]));
   } catch {
+    restoredState = null;
+  }
+
+  const discoveredCanvases = await discoverCanvasFolders(rootHandle);
+  const mergedState = mergeDiscoveredCanvases(restoredState, discoveredCanvases, fallback);
+
+  if (!mergedState) {
     return fallback;
   }
+
+  return hydrateWorkspaceAssetUrls(rootHandle, mergedState);
 }
 
 export async function saveAssetFileToCanvasFolder(
@@ -482,6 +492,135 @@ function getCanvasFolderName(canvas: CanvasView): string {
   return canvas.storageFolderName ?? `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
 }
 
+function mergeDiscoveredCanvases(
+  restoredState: CanvasWorkspaceState | null,
+  discoveredCanvases: CanvasView[],
+  fallback: CanvasWorkspaceState,
+): CanvasWorkspaceState | null {
+  if (!restoredState && discoveredCanvases.length === 0) {
+    return null;
+  }
+
+  const baseState = restoredState ?? createWorkspaceState([]);
+  const existingIds = new Set(baseState.canvases.map((canvas) => canvas.id));
+  const mergedCanvases = [
+    ...baseState.canvases,
+    ...discoveredCanvases.filter((canvas) => !existingIds.has(canvas.id)),
+  ];
+
+  if (mergedCanvases.length === 0) {
+    return fallback;
+  }
+
+  const activeCanvasId = mergedCanvases.some((canvas) => canvas.id === baseState.activeCanvasId)
+    ? baseState.activeCanvasId
+    : mergedCanvases[0]?.id ?? '';
+
+  return {
+    ...baseState,
+    activeCanvasId,
+    canvases: mergedCanvases,
+  };
+}
+
+async function discoverCanvasFolders(rootHandle: ShotAgentDirectoryHandle): Promise<CanvasView[]> {
+  const canvases: CanvasView[] = [];
+
+  for await (const entry of iterateDirectoryEntries(rootHandle)) {
+    if (entry.kind !== 'directory') {
+      continue;
+    }
+
+    const canvas = await restoreCanvasFromDirectory(entry as FileSystemDirectoryHandle);
+    if (canvas) {
+      canvases.push(canvas);
+    }
+  }
+
+  return canvases;
+}
+
+async function restoreCanvasFromDirectory(
+  directory: FileSystemDirectoryHandle,
+): Promise<CanvasView | null> {
+  const canvasText = await readTextFileIfExists(directory, 'canvas.json');
+  const workflowText = await readTextFileIfExists(directory, 'workflow.json');
+  const canvasFromFile = canvasText ? parseCanvasFromText(canvasText) : null;
+
+  if (canvasFromFile) {
+    return {
+      ...canvasFromFile,
+      storageFolderName: canvasFromFile.storageFolderName ?? directory.name,
+    };
+  }
+
+  if (!workflowText) {
+    return null;
+  }
+
+  return parseCanvasFromWorkflowText(workflowText, directory.name);
+}
+
+async function readTextFileIfExists(
+  directory: FileSystemDirectoryHandle,
+  fileName: string,
+): Promise<string | null> {
+  try {
+    const fileHandle = await directory.getFileHandle(fileName);
+    return await readBlobAsText(await fileHandle.getFile());
+  } catch {
+    return null;
+  }
+}
+
+function parseCanvasFromText(text: string): CanvasView | null {
+  try {
+    const parsed = JSON.parse(text);
+    const state = parseWorkspaceState(
+      JSON.stringify({
+        version: 1,
+        activeCanvasId: 'canvas_from_folder',
+        canvases: [parsed],
+        storage: { mode: 'custom-folder' },
+        generationHistory: [],
+      }),
+      createWorkspaceState([]),
+    );
+
+    return state.canvases[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCanvasFromWorkflowText(
+  text: string,
+  directoryName: string,
+): CanvasView | null {
+  try {
+    const parsed = JSON.parse(text) as {
+      canvasId?: unknown;
+      nodes?: unknown;
+      edges?: unknown;
+    };
+    const synthesizedCanvas = {
+      id:
+        typeof parsed.canvasId === 'string' && parsed.canvasId.trim()
+          ? parsed.canvasId
+          : directoryName,
+      name: directoryName.split('__')[0] || directoryName,
+      storageFolderName: directoryName,
+      updatedAt: '已发现',
+      nodes: Array.isArray(parsed.nodes) ? parsed.nodes : [],
+      edges: Array.isArray(parsed.edges) ? parsed.edges : [],
+    };
+
+    return parseCanvasFromText(JSON.stringify(synthesizedCanvas));
+  } catch {
+    return null;
+  }
+}
+
 type DirectoryFileHandle = FileSystemFileHandle;
 type DirectoryEntryHandle = FileSystemDirectoryHandle | DirectoryFileHandle;
 
@@ -617,6 +756,20 @@ function fileToDataUrl(file: Blob): Promise<string> {
     reader.addEventListener('load', () => resolve(String(reader.result)));
     reader.addEventListener('error', () => reject(reader.error));
     reader.readAsDataURL(file);
+  });
+}
+
+function readBlobAsText(file: Blob): Promise<string> {
+  if (typeof file.text === 'function') {
+    return file.text();
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.addEventListener('load', () => resolve(String(reader.result ?? '')));
+    reader.addEventListener('error', () => reject(reader.error));
+    reader.readAsText(file);
   });
 }
 

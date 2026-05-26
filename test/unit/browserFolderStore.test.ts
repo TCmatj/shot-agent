@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   persistWorkspaceToFolder,
+  readWorkspaceFromFolder,
   renameCanvasFolder,
   saveAssetFileToCanvasFolder,
   saveGeneratedMediaBlobToCanvasFolder,
@@ -282,5 +283,76 @@ describe('browser folder store', () => {
         ?.directories.get('images')
         ?.files.has('input.png'),
     ).toBe(true);
+  });
+
+  it('loads canvases from subfolders when workspace.json is missing', async () => {
+    const root = new MemoryDirectoryHandle('Shot Agent');
+    const canvasDir = await root.getDirectoryHandle('外部画布__canvas_external', { create: true });
+
+    root.files.delete('workspace.json');
+    canvasDir.files.set(
+      'canvas.json',
+      JSON.stringify({
+        id: 'canvas_external',
+        name: '外部画布',
+        storageFolderName: '外部画布__canvas_external',
+        updatedAt: '刚刚',
+        nodes: [],
+        edges: [],
+      }),
+    );
+    canvasDir.files.set(
+      'workflow.json',
+      JSON.stringify({
+        canvasId: 'canvas_external',
+        nodes: [],
+        edges: [],
+      }),
+    );
+
+    const restored = await readWorkspaceFromFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      createWorkspaceState([{ id: 'fallback', name: 'Fallback', updatedAt: 'now', nodes: [], edges: [] }]),
+    );
+
+    expect(restored.canvases.map((canvas) => canvas.id)).toEqual(['canvas_external']);
+    expect(restored.activeCanvasId).toBe('canvas_external');
+  });
+
+  it('merges missing canvases from subfolders even when workspace.json exists', async () => {
+    const root = new MemoryDirectoryHandle('Shot Agent');
+    const workspaceState = createWorkspaceState([
+      { id: 'canvas_saved', name: '已保存画布', updatedAt: 'now', nodes: [], edges: [] },
+    ]);
+
+    await persistWorkspaceToFolder(root as unknown as FileSystemDirectoryHandle, workspaceState);
+
+    const extraCanvasDir = await root.getDirectoryHandle('额外画布__canvas_extra', { create: true });
+    extraCanvasDir.files.set(
+      'canvas.json',
+      JSON.stringify({
+        id: 'canvas_extra',
+        name: '额外画布',
+        storageFolderName: '额外画布__canvas_extra',
+        updatedAt: '刚刚',
+        nodes: [],
+        edges: [],
+      }),
+    );
+    extraCanvasDir.files.set(
+      'workflow.json',
+      JSON.stringify({
+        canvasId: 'canvas_extra',
+        nodes: [],
+        edges: [],
+      }),
+    );
+
+    const restored = await readWorkspaceFromFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      createWorkspaceState([]),
+    );
+
+    expect(restored.canvases.map((canvas) => canvas.id)).toEqual(['canvas_saved', 'canvas_extra']);
   });
 });

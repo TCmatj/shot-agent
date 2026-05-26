@@ -112,6 +112,10 @@ import {
   submitGenerationNode,
   type VideoGenerationHistoryItem,
 } from '../models/generationClient';
+import {
+  applyUploadedSeedanceAssetUrls,
+  collectSeedanceUploadCandidates,
+} from '../models/seedanceReferenceAssets';
 import { renderMarkdownToHtml, shouldCollapseMarkdown } from '../lib/markdown';
 import {
   clampPreviewImageZoom,
@@ -147,6 +151,7 @@ import {
   type CanvasNodeView,
   type CanvasView,
   type CanvasClipboardPayload,
+  type CanvasWorkspaceState,
 } from './canvasWorkspace';
 import {
   getCanvasContentBounds,
@@ -176,6 +181,14 @@ import { shouldApplyPersistedWorkspaceState } from './workspacePersistence';
 import {
   getWorkspaceStore,
 } from '../storage';
+import {
+  createObjectStorageConfig,
+  isObjectStorageConfigured,
+  parseObjectStorageConfig,
+  readAssetSourceAsBlob,
+  uploadBlobToR2,
+  type ObjectStorageConfig,
+} from '../storage/objectStorage';
 import type { WorkspaceRootHandle } from '../storage/workspaceStore';
 import { createSeedanceTaskTracker } from '../models/seedanceTaskTracker';
 
@@ -461,7 +474,9 @@ const workspaceStorageKey = 'shot-agent:canvas-workspace';
 const providerStorageKey = 'shot-agent:providers';
 const deletedProviderStorageKey = 'shot-agent:deleted-providers';
 const canvasViewportStorageKey = 'shot-agent:canvas-viewports';
+const objectStorageConfigKey = 'shot-agent:object-storage-config';
 const canvasNodeSize = { width: 320, height: 220 };
+const edgeHandleHitSize = 18;
 const minimapSize = { width: 220, height: 150 };
 const defaultViewport: CanvasViewport = { x: 80, y: 72, scale: 1 };
 
@@ -1567,6 +1582,76 @@ function loadProviders(): ProviderConfig[] {
   }
 }
 
+function loadObjectStorageConfig(): ObjectStorageConfig {
+  if (typeof window === 'undefined') {
+    return createObjectStorageConfig();
+  }
+
+  return parseObjectStorageConfig(window.localStorage.getItem(objectStorageConfigKey));
+}
+
+function buildSeedanceReferenceObjectKey(
+  canvas: CanvasView,
+  node: CanvasNodeView,
+  candidate: {
+    nodeId: string;
+    kind: 'image' | 'video' | 'audio';
+  },
+  mimeType?: string,
+): string {
+  const extension = getMediaExtensionFromMimeType(mimeType, candidate.kind);
+
+  return [
+    'canvases',
+    sanitizeObjectKeySegment(canvas.id),
+    'seedance-references',
+    `${sanitizeObjectKeySegment(node.id)}-${sanitizeObjectKeySegment(candidate.nodeId)}-${Date.now()}${extension}`,
+  ].join('/');
+}
+
+function sanitizeObjectKeySegment(value: string): string {
+  return value.trim().replace(/[^a-zA-Z0-9._-]+/g, '-');
+}
+
+function getMediaExtensionFromMimeType(
+  mimeType: string | undefined,
+  kind: 'image' | 'video' | 'audio',
+): string {
+  if (!mimeType) {
+    return kind === 'image' ? '.png' : kind === 'video' ? '.mp4' : '.mp3';
+  }
+
+  if (mimeType.includes('png')) {
+    return '.png';
+  }
+
+  if (mimeType.includes('jpeg') || mimeType.includes('jpg')) {
+    return '.jpg';
+  }
+
+  if (mimeType.includes('webp')) {
+    return '.webp';
+  }
+
+  if (mimeType.includes('mp4')) {
+    return '.mp4';
+  }
+
+  if (mimeType.includes('quicktime')) {
+    return '.mov';
+  }
+
+  if (mimeType.includes('mpeg')) {
+    return '.mp3';
+  }
+
+  if (mimeType.includes('wav')) {
+    return '.wav';
+  }
+
+  return kind === 'image' ? '.png' : kind === 'video' ? '.mp4' : '.mp3';
+}
+
 function parseDeletedProviderIds(value: string | null): Set<string> {
   if (!value) {
     return new Set();
@@ -1800,6 +1885,25 @@ function formatProviderHistoryDate(value?: string): string {
   }).format(date);
 }
 
+function mergeWorkspaceStateForDirectory(
+  currentState: CanvasWorkspaceState,
+  discoveredState: CanvasWorkspaceState,
+): CanvasWorkspaceState {
+  const existingIds = new Set(currentState.canvases.map((canvas) => canvas.id));
+  const mergedCanvases = [
+    ...currentState.canvases,
+    ...discoveredState.canvases.filter((canvas) => !existingIds.has(canvas.id)),
+  ];
+
+  return {
+    ...currentState,
+    activeCanvasId: mergedCanvases.some((canvas) => canvas.id === currentState.activeCanvasId)
+      ? currentState.activeCanvasId
+      : mergedCanvases[0]?.id ?? '',
+    canvases: mergedCanvases,
+  };
+}
+
 type ProviderBrandIconConfig = {
   Icon: typeof OpenAIIcon;
   background: string;
@@ -1917,6 +2021,9 @@ export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>(loadProviders);
+  const [objectStorageConfig, setObjectStorageConfig] = useState<ObjectStorageConfig>(
+    loadObjectStorageConfig,
+  );
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderConfig>>({});
   const [editingProviderIds, setEditingProviderIds] = useState<string[]>([]);
   const [fetchingProviderModelIds, setFetchingProviderModelIds] = useState<string[]>([]);
@@ -2422,6 +2529,17 @@ export function App() {
       setCanvasMessage(getLocalStorageErrorMessage(error));
     }
   }, [providers]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        objectStorageConfigKey,
+        JSON.stringify(objectStorageConfig),
+      );
+    } catch (error) {
+      setCanvasMessage(getLocalStorageErrorMessage(error));
+    }
+  }, [objectStorageConfig]);
 
   useEffect(() => {
     if (!showProviderManager) {
@@ -3124,11 +3242,16 @@ export function App() {
       await workspaceStore.storeRootDirectoryHandle(directory);
       setRootDirectoryHandle(directory);
       setFolderStorageReady(true);
-      const nextState = updateWorkspaceStorage(workspaceStateRef.current, {
+      const currentStateWithStorage = updateWorkspaceStorage(workspaceStateRef.current, {
         mode: 'custom-folder',
         folderName: directory.name,
         folderPath: directory.kind === 'desktop-directory' ? directory.path : directory.name,
       });
+      const discoveredState = await workspaceStore.readWorkspaceFromFolder(
+        directory,
+        createWorkspaceState([]),
+      );
+      const nextState = mergeWorkspaceStateForDirectory(currentStateWithStorage, discoveredState);
 
       setWorkspaceStateWithHistory(() => nextState);
       const persistedState = await workspaceStore.persistWorkspaceToFolder(directory, nextState);
@@ -3174,6 +3297,73 @@ export function App() {
         folderPath: folderValue,
       }),
     );
+  }
+
+  function updateObjectStorageField(
+    field: keyof ObjectStorageConfig,
+    value: string,
+  ) {
+    setObjectStorageConfig((current) =>
+      createObjectStorageConfig({
+        ...current,
+        [field]: value,
+      }),
+    );
+  }
+
+  async function prepareSeedanceCanvasForSubmission(
+    canvas: CanvasView,
+    node: CanvasNodeView,
+  ): Promise<
+    | { ok: true; canvas: CanvasView; uploadedUrls: Map<string, string> }
+    | { ok: false; error: string }
+  > {
+    const inputAssetIds = collectGenerationInputAssetIds({
+      canvas,
+      nodeId: node.id,
+    });
+    const uploadCandidates = collectSeedanceUploadCandidates(canvas, inputAssetIds);
+
+    if (uploadCandidates.length === 0) {
+      return { ok: true, canvas, uploadedUrls: new Map() };
+    }
+
+    if (!isObjectStorageConfigured(objectStorageConfig)) {
+      return {
+        ok: false,
+        error: 'Seedance 引用中包含本地图片、视频或音频，请先在左侧存储区配置 Cloudflare R2。',
+      };
+    }
+
+    const uploadedUrls = new Map<string, string>();
+
+    try {
+      await Promise.all(
+        uploadCandidates.map(async (candidate) => {
+          const sourceBlob = await readAssetSourceAsBlob(candidate.content);
+          const uploadUrl = await uploadBlobToR2({
+            config: objectStorageConfig,
+            key: buildSeedanceReferenceObjectKey(canvas, node, candidate, sourceBlob.type),
+            blob: sourceBlob,
+          });
+          uploadedUrls.set(candidate.nodeId, uploadUrl);
+        }),
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : '上传参考素材到 Cloudflare R2 失败',
+      };
+    }
+
+    return {
+      ok: true,
+      canvas: applyUploadedSeedanceAssetUrls(canvas, uploadedUrls),
+      uploadedUrls,
+    };
   }
 
   async function renameCanvasWithFolderSync(canvasId: string, name: string) {
@@ -4468,8 +4658,41 @@ export function App() {
       return;
     }
 
+    let generationCanvas = activeCanvas;
+
+    if (node.kind === 'video' && provider.protocol === 'volcengine') {
+      const prepared = await prepareSeedanceCanvasForSubmission(activeCanvas, node);
+
+      if (!prepared.ok) {
+        markNodeGenerationFailed(node.id, prepared.error);
+        updateGenerationHistoryRecord(generationRecordId, (record) => ({
+          ...record,
+          status: 'failed',
+          errorMessage: prepared.error,
+          endedAt: new Date().toISOString(),
+        }));
+        return;
+      }
+
+      generationCanvas = prepared.canvas;
+
+      if (prepared.uploadedUrls.size > 0) {
+        updateActiveCanvasNodes(
+          (nodes) =>
+            applyUploadedSeedanceAssetUrls(
+              {
+                ...activeCanvas,
+                nodes,
+              },
+              prepared.uploadedUrls,
+            ).nodes,
+          { history: false },
+        );
+      }
+    }
+
     const result = await submitGenerationNode({
-      canvas: activeCanvas,
+      canvas: generationCanvas,
       nodeId: node.id,
       provider,
       token,
@@ -4719,12 +4942,61 @@ export function App() {
               onChange={(event) => updateCanvasStorageFolder(event.target.value)}
             />
           </label>
-          <p>
-            {folderStorageReady && rootDirectoryHandle
-              ? `当前：${rootDirectoryHandle.name} / 每个画布独立文件夹`
-              : '当前：未连接存储文件夹，无法保存素材'}
-          </p>
-        </section>
+            <p>
+              {folderStorageReady && rootDirectoryHandle
+                ? `当前：${rootDirectoryHandle.name} / 每个画布独立文件夹`
+                : '当前：未连接存储文件夹，无法保存素材'}
+            </p>
+            <div className="storage-cloud-fields">
+              <h3>Cloudflare R2</h3>
+              <label>
+                Endpoint
+                <input
+                  value={objectStorageConfig.endpoint}
+                  placeholder="https://<account>.r2.cloudflarestorage.com"
+                  onChange={(event) => updateObjectStorageField('endpoint', event.target.value)}
+                />
+              </label>
+              <label>
+                Bucket
+                <input
+                  value={objectStorageConfig.bucket}
+                  placeholder="shot-agent"
+                  onChange={(event) => updateObjectStorageField('bucket', event.target.value)}
+                />
+              </label>
+              <label>
+                公网 Base URL
+                <input
+                  value={objectStorageConfig.publicBaseURL}
+                  placeholder="https://assets.example.com"
+                  onChange={(event) => updateObjectStorageField('publicBaseURL', event.target.value)}
+                />
+              </label>
+              <label>
+                Access Key ID
+                <input
+                  value={objectStorageConfig.accessKeyId}
+                  placeholder="R2 Access Key ID"
+                  onChange={(event) => updateObjectStorageField('accessKeyId', event.target.value)}
+                />
+              </label>
+              <label>
+                Secret Access Key
+                <input
+                  type="password"
+                  value={objectStorageConfig.secretAccessKey}
+                  placeholder="R2 Secret Access Key"
+                  onChange={(event) => updateObjectStorageField('secretAccessKey', event.target.value)}
+                />
+              </label>
+              <p>
+                {isObjectStorageConfigured(objectStorageConfig)
+                  ? '已配置：本地参考图片、视频、音频会先上传到 R2，再传给 Seedance。'
+                  : '未配置：本地参考图片、视频、音频暂时无法直接提交给 Seedance。'}
+              </p>
+            </div>
+          </section>
         <section className="panel">
           <div className="panel-title-row">
             <h2>画布</h2>
@@ -5449,6 +5721,12 @@ export function App() {
                             type="button"
                             className="edge-handle edge-handle-input"
                             aria-label={`连接到${port.label}`}
+                            style={{
+                              width: `${edgeHandleHitSize}px`,
+                              height: `${edgeHandleHitSize}px`,
+                              minHeight: `${edgeHandleHitSize}px`,
+                              right: `${-edgeHandleHitSize / 2}px`,
+                            }}
                             onPointerUp={(event) => completeEdgeDraft(event, node.id, port.id)}
                             onPointerDown={(event) => event.stopPropagation()}
                           />
@@ -5460,6 +5738,12 @@ export function App() {
                       type="button"
                       className="edge-handle edge-handle-input"
                       aria-label="连接到此节点"
+                      style={{
+                        width: `${edgeHandleHitSize}px`,
+                        height: `${edgeHandleHitSize}px`,
+                        minHeight: `${edgeHandleHitSize}px`,
+                        left: `${-edgeHandleHitSize / 2}px`,
+                      }}
                       onPointerUp={(event) => completeEdgeDraft(event, node.id)}
                       onPointerDown={(event) => event.stopPropagation()}
                     />
@@ -5806,6 +6090,12 @@ export function App() {
                     type="button"
                     className="edge-handle edge-handle-output"
                     aria-label="从此节点连线"
+                    style={{
+                      width: `${edgeHandleHitSize}px`,
+                      height: `${edgeHandleHitSize}px`,
+                      minHeight: `${edgeHandleHitSize}px`,
+                      right: `${-edgeHandleHitSize / 2}px`,
+                    }}
                     onPointerDown={(event) => startEdgeDraft(event, node)}
                   />
                 </article>
