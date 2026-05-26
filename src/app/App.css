@@ -103,6 +103,15 @@ button:disabled {
   gap: 10px;
 }
 
+.sidebar nav button {
+  justify-content: flex-start;
+}
+
+.sidebar nav button.is-active {
+  background: #20252d;
+  border-color: #4a5461;
+}
+
 .panel h2 {
   color: #aeb8c5;
   font-size: 13px;
@@ -375,6 +384,11 @@ button:disabled {
   cursor: grabbing;
 }
 
+.infinite-canvas.is-edge-snapping,
+.infinite-canvas.is-edge-snapping .canvas-plane {
+  cursor: pointer;
+}
+
 .canvas-plane {
   height: 1px;
   left: 0;
@@ -476,6 +490,14 @@ button:disabled {
 .edge-handle:hover {
   background: #85c7ff;
   border-color: #d6efff;
+}
+
+.edge-handle.is-snap-target {
+  background: #85c7ff;
+  border-color: #d6efff;
+  box-shadow:
+    0 0 0 5px rgba(133, 199, 255, 0.18),
+    0 0 18px rgba(133, 199, 255, 0.55);
 }
 
 .edge-handle-input {
@@ -2141,6 +2163,24 @@ audio.asset-preview {
   background: #f2f4f7;
   border-color: #f2f4f7;
   color: #0d1116;
+}
+
+.cloudflare-settings-detail {
+  background: #050607;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.cloudflare-detail-body {
+  max-width: 980px;
+  width: 100%;
+}
+
+.cloudflare-avatar {
+  background: #f48120;
+  color: #111111;
 }
 
 .provider-empty-state,

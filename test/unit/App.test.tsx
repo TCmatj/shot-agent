@@ -157,6 +157,44 @@ describe('App image preview', () => {
   });
 });
 
+describe('App Cloudflare settings', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    HTMLElement.prototype.setPointerCapture = vi.fn();
+    HTMLElement.prototype.releasePointerCapture = vi.fn();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      },
+    );
+  });
+
+  it('opens Cloudflare configuration from the sidebar under provider management', async () => {
+    render(<App />);
+
+    const providerButton = screen.getByRole('button', { name: '供应商管理' });
+    const cloudflareButton = screen.getByRole('button', { name: 'Cloudflare 配置' });
+
+    expect(
+      providerButton.compareDocumentPosition(cloudflareButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await userEvent.click(cloudflareButton);
+
+    expect(screen.getByRole('heading', { name: 'Cloudflare R2 配置' })).toBeTruthy();
+    expect(screen.getByLabelText('Bucket 名称')).toBeTruthy();
+  });
+});
+
 describe('App empty startup', () => {
   beforeEach(() => {
     window.localStorage.clear();

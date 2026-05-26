@@ -1,7 +1,7 @@
 import { basename, join } from '@tauri-apps/api/path';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { exists, mkdir, readFile, readTextFile, remove, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readFile, readTextFile, remove, rename, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import {
   parseWorkspaceState,
   serializeWorkspaceState,
@@ -79,10 +79,11 @@ export const desktopWorkspaceStore: WorkspaceStore = {
 
     const canvasesWithPersistedAssets = await Promise.all(
       state.canvases.map(async (canvas) => {
-        const persistedCanvas = await persistCanvasAssets(handle.path, canvas);
+        const canvasWithSyncedFolder = await syncCanvasFolderName(handle.path, canvas);
+        const persistedCanvas = await persistCanvasAssets(handle.path, canvasWithSyncedFolder);
         return {
           ...persistedCanvas,
-          storageFolderName: persistedCanvas.storageFolderName ?? getCanvasFolderName(persistedCanvas),
+          storageFolderName: getCanvasFolderName(persistedCanvas),
         };
       }),
     );
@@ -386,6 +387,37 @@ async function getCanvasDirectory(rootPath: string, canvas: CanvasView, create: 
 
 function getCanvasFolderName(canvas: CanvasView): string {
   return canvas.storageFolderName ?? `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+}
+
+function getExpectedCanvasFolderName(canvas: CanvasView): string {
+  return `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+}
+
+async function syncCanvasFolderName(rootPath: string, canvas: CanvasView): Promise<CanvasView> {
+  const expectedFolderName = getExpectedCanvasFolderName(canvas);
+
+  if (!canvas.storageFolderName || canvas.storageFolderName === expectedFolderName) {
+    return {
+      ...canvas,
+      storageFolderName: expectedFolderName,
+    };
+  }
+
+  const oldPath = await join(rootPath, canvas.storageFolderName);
+  const newPath = await join(rootPath, expectedFolderName);
+
+  try {
+    if ((await exists(oldPath)) && !(await exists(newPath))) {
+      await rename(oldPath, newPath);
+    }
+  } catch {
+    // If the old folder cannot be moved, continue with the deterministic new folder name.
+  }
+
+  return {
+    ...canvas,
+    storageFolderName: expectedFolderName,
+  };
 }
 
 function sanitizeFolderName(name: string): string {

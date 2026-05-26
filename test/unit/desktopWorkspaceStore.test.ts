@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { exists, mkdir, readFile, readTextFile, remove, writeFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readFile, readTextFile, remove, rename, writeFile } from '@tauri-apps/plugin-fs';
 import { createWorkspaceState } from '../../src/app/canvasWorkspace';
 
 const openMock = vi.fn();
@@ -24,6 +24,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   readFile: vi.fn(),
   readTextFile: vi.fn(),
   remove: vi.fn(),
+  rename: vi.fn(),
   writeFile: vi.fn(),
   writeTextFile: vi.fn(),
 }));
@@ -37,6 +38,7 @@ describe('desktop workspace store permissions', () => {
     vi.mocked(readFile).mockReset();
     vi.mocked(readTextFile).mockReset();
     vi.mocked(remove).mockReset();
+    vi.mocked(rename).mockReset();
     vi.mocked(writeFile).mockReset();
     window.localStorage.clear();
   });
@@ -115,6 +117,40 @@ describe('desktop workspace store permissions', () => {
     );
 
     expect(remove).toHaveBeenCalledWith('D:\\Workspace/Canvas__canvas_1', { recursive: true });
+  });
+
+  it('renames the persisted folder when a canvas name changes', async () => {
+    const { desktopWorkspaceStore } = await import('../../src/storage/desktopWorkspaceStore');
+    vi.mocked(exists).mockImplementation(async (path) =>
+      String(path) === 'D:\\Workspace/Old Canvas__canvas_1',
+    );
+    vi.mocked(rename).mockResolvedValue(undefined);
+    vi.mocked(writeFile).mockResolvedValue(undefined);
+    const state = createWorkspaceState([
+      {
+        id: 'canvas_1',
+        name: 'New Canvas',
+        updatedAt: 'now',
+        storageFolderName: 'Old Canvas__canvas_1',
+        nodes: [],
+        edges: [],
+      },
+    ]);
+
+    const persisted = await desktopWorkspaceStore.persistWorkspaceToFolder(
+      {
+        kind: 'desktop-directory',
+        name: 'Workspace',
+        path: 'D:\\Workspace',
+      },
+      state,
+    );
+
+    expect(rename).toHaveBeenCalledWith(
+      'D:\\Workspace/Old Canvas__canvas_1',
+      'D:\\Workspace/New Canvas__canvas_1',
+    );
+    expect(persisted.canvases[0].storageFolderName).toBe('New Canvas__canvas_1');
   });
 
   it('returns a data URL for imported desktop assets so model requests do not receive blob URLs', async () => {

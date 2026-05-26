@@ -25,6 +25,7 @@ import VolcengineIcon from '@lobehub/icons/es/Volcengine/components/Mono';
 import XAIIcon from '@lobehub/icons/es/XAI/components/Mono';
 import {
   BoxSelect,
+  Cloud,
   FilePlus2,
   FileText,
   FolderPlus,
@@ -186,10 +187,16 @@ type AddMenuState = {
   fromNodeId?: string;
 } | null;
 
+type EdgeSnapTarget = {
+  nodeId: string;
+  portId?: SeedanceInputPortId | 'default';
+};
+
 type EdgeDraft = {
   fromNodeId: string;
   from: Point;
   to: Point;
+  snapTarget?: EdgeSnapTarget;
 } | null;
 
 type DragState =
@@ -396,11 +403,33 @@ const initialCanvases: CanvasView[] = [];
 const initialWorkspaceState = createWorkspaceState(initialCanvases);
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
 const providerStorageKey = 'shot-agent:providers';
+const cloudflareStorageKey = 'shot-agent:cloudflare-r2';
 const deletedProviderStorageKey = 'shot-agent:deleted-providers';
 const canvasViewportStorageKey = 'shot-agent:canvas-viewports';
 const canvasNodeSize = { width: 320, height: 220 };
 const minimapSize = { width: 220, height: 150 };
 const defaultViewport: CanvasViewport = { x: 80, y: 72, scale: 1 };
+const edgeSnapRadius = 52;
+
+type ProviderSettingsView = 'providers' | 'cloudflare';
+
+type CloudflareR2Config = {
+  accountId: string;
+  bucketName: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  endpoint: string;
+  publicBaseUrl: string;
+};
+
+const emptyCloudflareR2Config: CloudflareR2Config = {
+  accountId: '',
+  bucketName: '',
+  accessKeyId: '',
+  secretAccessKey: '',
+  endpoint: '',
+  publicBaseUrl: '',
+};
 
 function summarizeOutputText(value: string, maxLength = 160): string {
   const summary = value
@@ -1307,6 +1336,42 @@ function loadProviders(): ProviderConfig[] {
   }
 }
 
+function loadCloudflareR2Config(): CloudflareR2Config {
+  if (typeof window === 'undefined') {
+    return emptyCloudflareR2Config;
+  }
+
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(cloudflareStorageKey) ?? '');
+
+    if (!parsed || typeof parsed !== 'object') {
+      return emptyCloudflareR2Config;
+    }
+
+    const record = parsed as Partial<Record<keyof CloudflareR2Config, unknown>>;
+
+    return {
+      accountId: typeof record.accountId === 'string' ? record.accountId : '',
+      bucketName: typeof record.bucketName === 'string' ? record.bucketName : '',
+      accessKeyId: typeof record.accessKeyId === 'string' ? record.accessKeyId : '',
+      secretAccessKey: typeof record.secretAccessKey === 'string' ? record.secretAccessKey : '',
+      endpoint: typeof record.endpoint === 'string' ? record.endpoint : '',
+      publicBaseUrl: typeof record.publicBaseUrl === 'string' ? record.publicBaseUrl : '',
+    };
+  } catch {
+    return emptyCloudflareR2Config;
+  }
+}
+
+function isCloudflareR2Configured(config: CloudflareR2Config): boolean {
+  return Boolean(
+    config.accountId.trim() &&
+      config.bucketName.trim() &&
+      config.accessKeyId.trim() &&
+      config.secretAccessKey.trim(),
+  );
+}
+
 function parseDeletedProviderIds(value: string | null): Set<string> {
   if (!value) {
     return new Set();
@@ -1643,8 +1708,12 @@ export function App() {
   const [editingProviderIds, setEditingProviderIds] = useState<string[]>([]);
   const [fetchingProviderModelIds, setFetchingProviderModelIds] = useState<string[]>([]);
   const [showProviderManager, setShowProviderManager] = useState(false);
+  const [providerSettingsView, setProviderSettingsView] = useState<ProviderSettingsView>('providers');
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [providerSearchQuery, setProviderSearchQuery] = useState('');
+  const [cloudflareConfig, setCloudflareConfig] = useState<CloudflareR2Config>(loadCloudflareR2Config);
+  const [cloudflareConfigDraft, setCloudflareConfigDraft] =
+    useState<CloudflareR2Config>(cloudflareConfig);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [workspaceState, setWorkspaceStateRaw] = useState(() => {
     if (typeof window === 'undefined') {
@@ -1853,6 +1922,9 @@ export function App() {
   const selectedProviderHasDraft = selectedProvider
     ? Boolean(providerDrafts[selectedProvider.id])
     : false;
+  const cloudflareConfigIsDirty =
+    JSON.stringify(cloudflareConfigDraft) !== JSON.stringify(cloudflareConfig);
+  const cloudflareConfigIsConfigured = isCloudflareR2Configured(cloudflareConfigDraft);
   const minimapBounds = getCanvasContentBounds(renderedCanvasNodes, canvasNodeSize);
   const minimapScale = Math.min(
     minimapSize.width / minimapBounds.width,
@@ -2136,6 +2208,10 @@ export function App() {
       return;
     }
 
+    if (providerSettingsView !== 'providers') {
+      return;
+    }
+
     if (providerRows.length === 0) {
       setSelectedProviderId(null);
       return;
@@ -2144,7 +2220,7 @@ export function App() {
     if (!selectedProviderId || !providerRows.some((provider) => provider.id === selectedProviderId)) {
       setSelectedProviderId(providerRows[0].id);
     }
-  }, [providerRows, selectedProviderId, showProviderManager]);
+  }, [providerRows, providerSettingsView, selectedProviderId, showProviderManager]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2485,6 +2561,11 @@ export function App() {
 
   function returnToCanvas() {
     setShowProviderManager(false);
+  }
+
+  function openProviderSettingsView(view: ProviderSettingsView) {
+    setProviderSettingsView(view);
+    setShowProviderManager(true);
   }
 
   function selectCanvasFromSidebar(canvasId: string) {
@@ -3094,9 +3175,18 @@ export function App() {
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
     if (edgeDraft) {
+      const to = getCanvasPointFromClient(event.clientX, event.clientY);
+      const snapTarget = findNearestEdgeDraftTarget(to);
+
       setEdgeDraft({
         ...edgeDraft,
-        to: getCanvasPointFromClient(event.clientX, event.clientY),
+        to,
+        snapTarget: snapTarget
+          ? {
+              nodeId: snapTarget.nodeId,
+              portId: snapTarget.portId,
+            }
+          : undefined,
       });
       return;
     }
@@ -3227,6 +3317,13 @@ export function App() {
   ) {
     event.stopPropagation();
 
+    completeEdgeDraftToTarget(toNodeId, toPortId);
+  }
+
+  function completeEdgeDraftToTarget(
+    toNodeId: string,
+    toPortId?: SeedanceInputPortId | 'default',
+  ) {
     if (!edgeDraft) {
       return;
     }
@@ -3286,8 +3383,93 @@ export function App() {
     setEdgeDraft(null);
   }
 
+  function findNearestEdgeDraftTarget(point: { x: number; y: number }) {
+    if (!activeCanvas || !edgeDraft) {
+      return null;
+    }
+
+    const fromNode = activeCanvas.nodes.find((node) => node.id === edgeDraft.fromNodeId);
+
+    if (!fromNode) {
+      return null;
+    }
+
+    let nearest:
+      | {
+          distance: number;
+          nodeId: string;
+          portId?: SeedanceInputPortId | 'default';
+        }
+      | null = null;
+
+    for (const node of activeCanvas.nodes) {
+      if (node.id === edgeDraft.fromNodeId) {
+        continue;
+      }
+
+      if (!canConnectCanvasNodes(fromNode, node)) {
+        continue;
+      }
+
+      const portIds =
+        node.kind === 'video'
+          ? getVideoInputPorts(node.seedanceScenario ?? 'text_to_video').map((port) => port.id)
+          : [undefined];
+
+      for (const portId of portIds) {
+        if (node.kind === 'video') {
+          if (!portId) {
+            continue;
+          }
+
+          if (!canNodeConnectToVideoPort(fromNode, portId)) {
+            continue;
+          }
+
+          if (
+            isVideoPortSingleValue(portId) &&
+            activeCanvas.edges.some(
+              (edge) => edge.toNodeId === node.id && edge.toPortId === portId,
+            )
+          ) {
+            continue;
+          }
+        } else if (!canNodeReceiveInput(node)) {
+          continue;
+        }
+
+        const target = getNodeInputPoint(node, portId);
+        const distance = Math.hypot(point.x - target.x, point.y - target.y);
+
+        if (distance <= edgeSnapRadius && (!nearest || distance < nearest.distance)) {
+          nearest = {
+            distance,
+            nodeId: node.id,
+            portId,
+          };
+        }
+      }
+    }
+
+    return nearest;
+  }
+
+  function isEdgeSnapTarget(nodeId: string, portId?: SeedanceInputPortId | 'default') {
+    return (
+      edgeDraft?.snapTarget?.nodeId === nodeId &&
+      (edgeDraft.snapTarget.portId ?? 'default') === (portId ?? 'default')
+    );
+  }
+
   function finishEdgeDraftOnBlank(event: PointerEvent<HTMLDivElement>) {
     if (!edgeDraft) {
+      return;
+    }
+
+    const snapTarget =
+      edgeDraft.snapTarget ?? findNearestEdgeDraftTarget(getCanvasPointFromClient(event.clientX, event.clientY));
+    if (snapTarget) {
+      completeEdgeDraftToTarget(snapTarget.nodeId, snapTarget.portId);
       return;
     }
 
@@ -3506,7 +3688,28 @@ export function App() {
     setProviderDrafts((current) => ({ ...current, [id]: draft }));
     setEditingProviderIds((current) => [...current, id]);
     setSelectedProviderId(id);
-    setShowProviderManager(true);
+    openProviderSettingsView('providers');
+  }
+
+  function updateCloudflareConfigDraft(updates: Partial<CloudflareR2Config>) {
+    setCloudflareConfigDraft((current) => ({
+      ...current,
+      ...updates,
+    }));
+  }
+
+  function saveCloudflareConfig() {
+    try {
+      window.localStorage.setItem(cloudflareStorageKey, JSON.stringify(cloudflareConfigDraft));
+      setCloudflareConfig(cloudflareConfigDraft);
+      setCanvasMessage('Cloudflare R2 配置已保存。');
+    } catch (error) {
+      setCanvasMessage(getLocalStorageErrorMessage(error));
+    }
+  }
+
+  function resetCloudflareConfigDraft() {
+    setCloudflareConfigDraft(cloudflareConfig);
   }
 
   function addProviderModel(providerId: string) {
@@ -4327,9 +4530,21 @@ export function App() {
               <p>无限画布视觉工作台</p>
             </header>
             <nav>
-          <button type="button" onClick={() => setShowProviderManager(true)}>
+          <button
+            type="button"
+            className={showProviderManager && providerSettingsView === 'providers' ? 'is-active' : ''}
+            onClick={() => openProviderSettingsView('providers')}
+          >
             <Settings size={18} />
             供应商管理
+          </button>
+          <button
+            type="button"
+            className={showProviderManager && providerSettingsView === 'cloudflare' ? 'is-active' : ''}
+            onClick={() => openProviderSettingsView('cloudflare')}
+          >
+            <Cloud size={18} />
+            Cloudflare 配置
           </button>
         </nav>
         <section className="panel storage-panel">
@@ -4456,9 +4671,13 @@ export function App() {
       <section className="workspace">
         <div className="toolbar">
           <div className="toolbar-title">
-            {showProviderManager ? <Settings size={18} /> : <BoxSelect size={18} />}
             {showProviderManager ? (
-              <span>供应商管理</span>
+              providerSettingsView === 'cloudflare' ? <Cloud size={18} /> : <Settings size={18} />
+            ) : (
+              <BoxSelect size={18} />
+            )}
+            {showProviderManager ? (
+              <span>{providerSettingsView === 'cloudflare' ? 'Cloudflare 配置' : '供应商管理'}</span>
             ) : isRenamingCanvas ? (
               <input
                 className="canvas-title-input"
@@ -4513,6 +4732,120 @@ export function App() {
           </div>
         </div>
         {showProviderManager ? (
+          providerSettingsView === 'cloudflare' ? (
+            <div className="provider-manager-view">
+              <section className="cloudflare-settings-detail">
+                <header className="provider-detail-header">
+                  <div className="provider-detail-title">
+                    <span className="provider-avatar provider-avatar-brand provider-avatar-large cloudflare-avatar">
+                      <Cloud size={26} />
+                    </span>
+                    <div>
+                      <h2>Cloudflare R2 配置</h2>
+                      <p>配置对象存储，用于后续将生成素材上传到 R2。</p>
+                    </div>
+                  </div>
+                  <span
+                    className={`provider-config-chip ${
+                      cloudflareConfigIsConfigured ? 'is-configured' : ''
+                    }`}
+                  >
+                    {cloudflareConfigIsConfigured ? '已配置' : '未配置'}
+                  </span>
+                </header>
+                <div className="provider-detail-body cloudflare-detail-body">
+                  <section className="provider-form-section">
+                    <div className="provider-section-heading">
+                      <h3>R2 存储</h3>
+                      <p>这些字段只保存在本机配置中，不会写入导出的画布文件。</p>
+                    </div>
+                    <div className="provider-form-grid">
+                      <label>
+                        Account ID
+                        <input
+                          value={cloudflareConfigDraft.accountId}
+                          placeholder="Cloudflare Account ID"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ accountId: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Bucket 名称
+                        <input
+                          value={cloudflareConfigDraft.bucketName}
+                          placeholder="shot-agent-assets"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ bucketName: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Access Key ID
+                        <input
+                          value={cloudflareConfigDraft.accessKeyId}
+                          placeholder="R2 Access Key ID"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ accessKeyId: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Secret Access Key
+                        <input
+                          type="password"
+                          value={cloudflareConfigDraft.secretAccessKey}
+                          placeholder="R2 Secret Access Key"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ secretAccessKey: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        S3 Endpoint
+                        <input
+                          value={cloudflareConfigDraft.endpoint}
+                          placeholder="https://<account-id>.r2.cloudflarestorage.com"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ endpoint: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        公开访问 URL
+                        <input
+                          value={cloudflareConfigDraft.publicBaseUrl}
+                          placeholder="https://assets.example.com"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ publicBaseUrl: event.target.value })
+                          }
+                        />
+                      </label>
+                    </div>
+                  </section>
+                </div>
+                <footer className="provider-detail-footer">
+                  <button
+                    type="button"
+                    className="provider-secondary-button"
+                    disabled={!cloudflareConfigIsDirty}
+                    onClick={resetCloudflareConfigDraft}
+                  >
+                    取消更改
+                  </button>
+                  <button
+                    type="button"
+                    className="provider-save-button"
+                    disabled={!cloudflareConfigIsDirty}
+                    onClick={saveCloudflareConfig}
+                  >
+                    <Save size={17} />
+                    保存 Cloudflare 配置
+                  </button>
+                </footer>
+              </section>
+            </div>
+          ) : (
           <div className="provider-manager-view">
             <div className="provider-settings-shell">
               <aside className="provider-settings-sidebar" aria-label="供应商列表">
@@ -4815,10 +5148,13 @@ export function App() {
               </section>
             </div>
           </div>
+          )
         ) : (
         <div
           ref={canvasRef}
-          className={`infinite-canvas ${dragState?.mode === 'pan' ? 'is-panning' : ''}`}
+          className={`infinite-canvas ${dragState?.mode === 'pan' ? 'is-panning' : ''} ${
+            edgeDraft?.snapTarget ? 'is-edge-snapping' : ''
+          }`}
           onContextMenu={(event) => {
             event.preventDefault();
             openAddMenu(event.clientX, event.clientY);
@@ -4981,7 +5317,9 @@ export function App() {
                           <span>{port.label}</span>
                           <button
                             type="button"
-                            className="edge-handle edge-handle-input"
+                            className={`edge-handle edge-handle-input ${
+                              isEdgeSnapTarget(node.id, port.id) ? 'is-snap-target' : ''
+                            }`}
                             aria-label={`连接到${port.label}`}
                             onPointerUp={(event) => completeEdgeDraft(event, node.id, port.id)}
                             onPointerDown={(event) => event.stopPropagation()}
@@ -4992,7 +5330,9 @@ export function App() {
                   ) : canNodeReceiveInput(node) ? (
                     <button
                       type="button"
-                      className="edge-handle edge-handle-input"
+                      className={`edge-handle edge-handle-input ${
+                        isEdgeSnapTarget(node.id) ? 'is-snap-target' : ''
+                      }`}
                       aria-label="连接到此节点"
                       onPointerUp={(event) => completeEdgeDraft(event, node.id)}
                       onPointerDown={(event) => event.stopPropagation()}

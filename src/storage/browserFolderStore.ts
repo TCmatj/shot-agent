@@ -73,10 +73,11 @@ export async function persistWorkspaceToFolder(
 ): Promise<CanvasWorkspaceState> {
   const canvasesWithPersistedAssets = await Promise.all(
     state.canvases.map(async (canvas) => {
-      const persistedCanvas = await persistCanvasAssets(rootHandle, canvas);
+      const canvasWithSyncedFolder = await syncCanvasFolderName(rootHandle, canvas);
+      const persistedCanvas = await persistCanvasAssets(rootHandle, canvasWithSyncedFolder);
       return {
         ...persistedCanvas,
-        storageFolderName: persistedCanvas.storageFolderName ?? getCanvasFolderName(persistedCanvas),
+        storageFolderName: getCanvasFolderName(persistedCanvas),
       };
     }),
   );
@@ -454,6 +455,67 @@ async function getCanvasDirectory(
 
 function getCanvasFolderName(canvas: CanvasView): string {
   return canvas.storageFolderName ?? `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+}
+
+function getExpectedCanvasFolderName(canvas: CanvasView): string {
+  return `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+}
+
+async function syncCanvasFolderName(
+  rootHandle: FileSystemDirectoryHandle,
+  canvas: CanvasView,
+): Promise<CanvasView> {
+  const expectedFolderName = getExpectedCanvasFolderName(canvas);
+
+  if (!canvas.storageFolderName || canvas.storageFolderName === expectedFolderName) {
+    return {
+      ...canvas,
+      storageFolderName: expectedFolderName,
+    };
+  }
+
+  try {
+    const oldDirectory = await rootHandle.getDirectoryHandle(canvas.storageFolderName);
+    const newDirectory = await rootHandle.getDirectoryHandle(expectedFolderName, { create: true });
+    await copyDirectoryContents(oldDirectory, newDirectory);
+    await rootHandle.removeEntry(canvas.storageFolderName, { recursive: true });
+  } catch {
+    // If the old folder is already gone, continue with the new deterministic folder name.
+  }
+
+  return {
+    ...canvas,
+    storageFolderName: expectedFolderName,
+  };
+}
+
+type IterableFileSystemDirectoryHandle = FileSystemDirectoryHandle & {
+  entries?: () => AsyncIterable<[string, FileSystemDirectoryHandle | FileSystemFileHandle]>;
+};
+
+async function copyDirectoryContents(
+  source: FileSystemDirectoryHandle,
+  target: FileSystemDirectoryHandle,
+): Promise<void> {
+  const entries = (source as IterableFileSystemDirectoryHandle).entries;
+
+  if (!entries) {
+    return;
+  }
+
+  for await (const [name, handle] of entries.call(source as IterableFileSystemDirectoryHandle)) {
+    if (handle.kind === 'directory') {
+      const nextTarget = await target.getDirectoryHandle(name, { create: true });
+      await copyDirectoryContents(handle, nextTarget);
+      continue;
+    }
+
+    const file = await handle.getFile();
+    const fileHandle = await target.getFileHandle(name, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(file);
+    await writable.close();
+  }
 }
 
 async function ensureProjectDirectories(canvasDir: FileSystemDirectoryHandle): Promise<void> {
