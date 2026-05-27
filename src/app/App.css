@@ -654,6 +654,15 @@ button:disabled {
   font-size: 13px;
 }
 
+.node-generation-id {
+  color: #96a2b1;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: -4px 0 0;
+  user-select: text;
+  word-break: break-all;
+}
+
 .node-body .node-output-markdown {
   background: #080a0d;
   border: 1px solid #303640;
@@ -2168,14 +2177,32 @@ audio.asset-preview {
 .cloudflare-settings-detail {
   background: #050607;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   width: 100%;
 }
 
+.cloudflare-header-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .cloudflare-detail-body {
-  max-width: 980px;
+  align-content: start;
+  max-width: 760px;
   width: 100%;
+}
+
+.cloudflare-detail-body .provider-form-section {
+  gap: 14px;
+  padding: 18px;
+}
+
+.cloudflare-detail-body .provider-form-grid {
+  gap: 12px;
 }
 
 .cloudflare-avatar {

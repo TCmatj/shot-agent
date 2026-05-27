@@ -29,7 +29,7 @@ export type Bounds = {
 };
 
 export function clampScale(scale: number): number {
-  return Math.min(2.5, Math.max(0.35, scale));
+  return Math.min(5, Math.max(0.1, scale));
 }
 
 export function panViewport(viewport: CanvasViewport, delta: Delta): CanvasViewport {

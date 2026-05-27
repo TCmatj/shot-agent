@@ -38,7 +38,6 @@ import {
   Music,
   Move,
   Pencil,
-  Play,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -3887,6 +3886,22 @@ export function App() {
     }), { history: false });
   }
 
+  function getSeedanceTaskErrorMessage(task: { [key: string]: unknown; error?: unknown }) {
+    if (!task.error || typeof task.error !== 'object') {
+      return '视频生成失败';
+    }
+
+    const error = task.error as { code?: unknown; message?: unknown };
+    const code = typeof error.code === 'string' ? error.code : undefined;
+    const message = typeof error.message === 'string' ? error.message : undefined;
+
+    if (code && message) {
+      return `${code}: ${message}`;
+    }
+
+    return message ?? code ?? '视频生成失败';
+  }
+
   function openOutputEditor(node: CanvasNodeView) {
     const outputVersions = getOutputVersionsForDisplay(node);
     const latestVersion = getLatestOutputVersion(outputVersions);
@@ -4030,6 +4045,10 @@ export function App() {
       lastFrameUrl?: string;
       completionTokens?: number;
       totalTokens?: number;
+      error?: {
+        code?: string;
+        message?: string;
+      };
     },
   ) {
     let savedVideoPath: string | undefined;
@@ -4088,7 +4107,7 @@ export function App() {
     updateNode(node.id, (current) => ({
       ...current,
       generationStatus: 'succeeded',
-      generationError: undefined,
+      generationError: saveWarnings.length > 0 ? saveWarnings.join(' | ') : undefined,
       outputUrl: task.videoUrl ?? current.outputUrl,
       outputDataUrl: localVideoUrl ?? current.outputDataUrl,
       outputPath: savedVideoPath ?? current.outputPath,
@@ -4171,25 +4190,12 @@ export function App() {
         });
       },
       onFailed(task) {
-        markNodeGenerationFailed(
-          node.id,
-          typeof task.error === 'object' &&
-            task.error &&
-            'message' in task.error &&
-            typeof task.error.message === 'string'
-            ? task.error.message
-            : '视频生成失败',
-        );
+        const errorMessage = getSeedanceTaskErrorMessage(task);
+        markNodeGenerationFailed(node.id, errorMessage);
         updateGenerationHistoryRecord(generationRecordId, (record) => ({
           ...record,
           status: 'failed',
-          errorMessage:
-            typeof task.error === 'object' &&
-            task.error &&
-            'message' in task.error &&
-            typeof task.error.message === 'string'
-              ? task.error.message
-              : '视频生成失败',
+          errorMessage,
           endedAt: new Date().toISOString(),
         }));
         stopSeedanceTracking(node.id);
@@ -4262,7 +4268,7 @@ export function App() {
     const token = resolveProviderToken(provider);
     updateNode(node.id, (current) => ({
       ...current,
-      generationId: generationRecordId,
+      generationId: node.kind === 'video' ? undefined : generationRecordId,
       generationStatus: 'running',
       generationError: undefined,
       estimatedTokenCost:
@@ -4723,12 +4729,7 @@ export function App() {
               >
                 <X size={18} />
               </button>
-            ) : (
-              <button type="button">
-                <Play size={18} />
-                执行
-              </button>
-            )}
+            ) : null}
           </div>
         </div>
         {showProviderManager ? (
@@ -4745,13 +4746,32 @@ export function App() {
                       <p>配置对象存储，用于后续将生成素材上传到 R2。</p>
                     </div>
                   </div>
-                  <span
-                    className={`provider-config-chip ${
-                      cloudflareConfigIsConfigured ? 'is-configured' : ''
-                    }`}
-                  >
-                    {cloudflareConfigIsConfigured ? '已配置' : '未配置'}
-                  </span>
+                  <div className="cloudflare-header-actions">
+                    <span
+                      className={`provider-config-chip ${
+                        cloudflareConfigIsConfigured ? 'is-configured' : ''
+                      }`}
+                    >
+                      {cloudflareConfigIsConfigured ? '已配置' : '未配置'}
+                    </span>
+                    <button
+                      type="button"
+                      className="provider-secondary-button"
+                      disabled={!cloudflareConfigIsDirty}
+                      onClick={resetCloudflareConfigDraft}
+                    >
+                      取消更改
+                    </button>
+                    <button
+                      type="button"
+                      className="provider-save-button"
+                      disabled={!cloudflareConfigIsDirty}
+                      onClick={saveCloudflareConfig}
+                    >
+                      <Save size={17} />
+                      保存 Cloudflare 配置
+                    </button>
+                  </div>
                 </header>
                 <div className="provider-detail-body cloudflare-detail-body">
                   <section className="provider-form-section">
@@ -4824,25 +4844,6 @@ export function App() {
                     </div>
                   </section>
                 </div>
-                <footer className="provider-detail-footer">
-                  <button
-                    type="button"
-                    className="provider-secondary-button"
-                    disabled={!cloudflareConfigIsDirty}
-                    onClick={resetCloudflareConfigDraft}
-                  >
-                    取消更改
-                  </button>
-                  <button
-                    type="button"
-                    className="provider-save-button"
-                    disabled={!cloudflareConfigIsDirty}
-                    onClick={saveCloudflareConfig}
-                  >
-                    <Save size={17} />
-                    保存 Cloudflare 配置
-                  </button>
-                </footer>
               </section>
             </div>
           ) : (
@@ -5578,37 +5579,42 @@ export function App() {
                           }
                         />
                         {node.kind === 'video' ? (
-                          <div className="node-inline-video-actions">
-                            <span className="node-inline-video-mode-label">模式</span>
-                            <label className="node-inline-video-mode">
-                              <select
-                                className="video-mode-select"
-                                value={node.seedanceScenario ?? 'text_to_video'}
+                          <>
+                            <div className="node-inline-video-actions">
+                              <span className="node-inline-video-mode-label">模式</span>
+                              <label className="node-inline-video-mode">
+                                <select
+                                  className="video-mode-select"
+                                  value={node.seedanceScenario ?? 'text_to_video'}
+                                  onPointerDown={(event) => event.stopPropagation()}
+                                  onChange={(event) =>
+                                    handleVideoScenarioChange(
+                                      node.id,
+                                      event.target.value as SeedanceScenario,
+                                    )
+                                  }
+                                >
+                                  {getVideoScenarioOptions().map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <button
+                                type="button"
+                                className="node-inline-generate-button"
+                                disabled={isGenerating}
                                 onPointerDown={(event) => event.stopPropagation()}
-                                onChange={(event) =>
-                                  handleVideoScenarioChange(
-                                    node.id,
-                                    event.target.value as SeedanceScenario,
-                                  )
-                                }
+                                onClick={() => void submitNodeGeneration(node)}
                               >
-                                {getVideoScenarioOptions().map((option) => (
-                                  <option key={option.value} value={option.value}>
-                                    {option.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <button
-                              type="button"
-                              className="node-inline-generate-button"
-                              disabled={isGenerating}
-                              onPointerDown={(event) => event.stopPropagation()}
-                              onClick={() => void submitNodeGeneration(node)}
-                            >
-                              {isGenerating ? '提交中' : '生成'}
-                            </button>
-                          </div>
+                                {isGenerating ? '提交中' : '生成'}
+                              </button>
+                            </div>
+                            {node.generationId ? (
+                              <p className="node-generation-id">生成ID：{node.generationId}</p>
+                            ) : null}
+                          </>
                         ) : (
                           <button
                             type="button"

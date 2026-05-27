@@ -82,6 +82,10 @@ export type GenerationOutput =
       lastFrameUrl?: string;
       completionTokens?: number;
       totalTokens?: number;
+      error?: {
+        code?: string;
+        message?: string;
+      };
       rawResponse: unknown;
     }
   | {
@@ -1406,7 +1410,7 @@ function normalizeOutput(
   }
 
   const task = videoTask(rawResponse);
-  if (!task.taskId && !task.videoUrl) {
+  if (!task.taskId && !task.videoUrl && !task.error) {
     return {
       ok: false,
       error: '视频生成响应缺少任务 ID 或视频地址',
@@ -1472,6 +1476,10 @@ function videoTask(rawResponse: unknown): {
   lastFrameUrl?: string;
   completionTokens?: number;
   totalTokens?: number;
+  error?: {
+    code?: string;
+    message?: string;
+  };
 } {
   if (!isRecord(rawResponse)) {
     return {};
@@ -1484,6 +1492,7 @@ function videoTask(rawResponse: unknown): {
     ? stringField(content, ['video_url', 'url'])
     : stringField(data, ['video_url', 'url']);
   const status = stringField(data, ['status']) ?? (videoUrl ? 'succeeded' : undefined);
+  const error = taskError(data);
 
   return {
     taskId: stringField(data, ['id', 'task_id']),
@@ -1493,7 +1502,25 @@ function videoTask(rawResponse: unknown): {
     completionTokens:
       usage && typeof usage.completion_tokens === 'number' ? usage.completion_tokens : undefined,
     totalTokens: usage && typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined,
+    ...(error ? { error } : {}),
   };
+}
+
+function taskError(data: Record<string, unknown>): { code?: string; message?: string } | undefined {
+  const error = data.error;
+
+  if (typeof error === 'string') {
+    return { message: error };
+  }
+
+  if (!isRecord(error)) {
+    return undefined;
+  }
+
+  const code = typeof error.code === 'string' ? error.code : undefined;
+  const message = typeof error.message === 'string' ? error.message : undefined;
+
+  return code || message ? { code, message } : undefined;
 }
 
 async function readResponse(response: Awaited<ReturnType<GenerationFetch>>): Promise<unknown> {

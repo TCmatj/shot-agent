@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clampScale,
   getCanvasContentBounds,
   getViewportForCanvasCenter,
   moveCanvasNode,
@@ -25,6 +26,12 @@ describe('canvas viewport', () => {
     );
 
     expect(viewport).toEqual({ x: -100, y: -100, scale: 2 });
+  });
+
+  it('clamps zoom scale between 10% and 500%', () => {
+    expect(clampScale(0.05)).toBe(0.1);
+    expect(clampScale(3)).toBe(3);
+    expect(clampScale(6)).toBe(5);
   });
 
   it('moves node by canvas-space delta', () => {

@@ -1197,6 +1197,53 @@ describe('generation client request building', () => {
     );
   });
 
+  it('keeps failed seedance task error code and message from polling responses', async () => {
+    const fetcher = vi.fn<GenerationFetch>(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: 'task_failed',
+        status: 'failed',
+        error: {
+          code: 'InvalidParameter',
+          message: 'content[1].image_url is not valid',
+        },
+      }),
+    }));
+
+    await expect(
+      queryGenerationTask({
+        provider: seedanceProvider,
+        taskId: 'task_failed',
+        token: 'token',
+        fetcher,
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      output: {
+        kind: 'video-task',
+        taskId: 'task_failed',
+        status: 'failed',
+        videoUrl: undefined,
+        lastFrameUrl: undefined,
+        completionTokens: undefined,
+        totalTokens: undefined,
+        error: {
+          code: 'InvalidParameter',
+          message: 'content[1].image_url is not valid',
+        },
+        rawResponse: {
+          id: 'task_failed',
+          status: 'failed',
+          error: {
+            code: 'InvalidParameter',
+            message: 'content[1].image_url is not valid',
+          },
+        },
+      },
+    });
+  });
+
   it('rejects malformed seedance polling responses without status information', async () => {
     const fetcher = vi.fn<GenerationFetch>(async () => ({
       ok: true,

@@ -390,6 +390,39 @@ describe('App video node inspector', () => {
     expect(screen.getByText('保存状态：已保存到本地 · assets/videos/task_1.mp4')).toBeTruthy();
   });
 
+  it('shows the submitted Seedance generation id below the generate button', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_video_generation_id',
+          name: '视频生成 ID 画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'video_1',
+              title: '视频生成',
+              modelId: 'seedance2.0',
+              kind: 'video',
+              x: 0,
+              y: 0,
+              generationId: 'task_1',
+              generationStatus: 'running',
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    const videoNode = screen.getByRole('heading', { name: '视频生成' }).closest('article');
+    expect(videoNode).toBeTruthy();
+    expect(within(videoNode!).getByText('生成ID：task_1')).toBeTruthy();
+  });
+
   it('shows role-based input ports for first-last-frame mode', async () => {
     render(<App />);
 
