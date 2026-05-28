@@ -7,6 +7,11 @@
     "core:default",
     "dialog:default",
     "fs:default",
+    "fs:read-all",
+    "fs:write-all",
+    "allow-authorize-workspace-directory",
+    "allow-get-default-workspace-directory",
+    "allow-download-generated-media-to-canvas-folder",
     "opener:default"
   ]
 }

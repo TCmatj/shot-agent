@@ -543,6 +543,27 @@ describe('generation client request building', () => {
     expect(result.ok && JSON.parse(result.request.body as string).framespersecond).toBeUndefined();
   });
 
+  it('rejects Seedance blob URLs before sending the provider request', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'image_asset_1'
+            ? { ...node, assetDataUrl: 'blob:http://localhost/local-image' }
+            : node,
+        ),
+      },
+      nodeId: 'video_1',
+      provider: seedanceProvider,
+      token: 'token',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: '视频生成的上游素材不能使用 blob: 临时地址，请重新导入素材或重新打开画布后再试。',
+    });
+  });
+
   it('rejects Seedance durations outside the official range', () => {
     const result = buildGenerationRequest({
       canvas: {
@@ -1257,6 +1278,53 @@ describe('generation client request building', () => {
         method: 'GET',
       }),
     );
+  });
+
+  it('keeps failed seedance task error code and message from polling responses', async () => {
+    const fetcher = vi.fn<GenerationFetch>(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: 'task_failed',
+        status: 'failed',
+        error: {
+          code: 'InvalidParameter',
+          message: 'content[1].image_url is not valid',
+        },
+      }),
+    }));
+
+    await expect(
+      queryGenerationTask({
+        provider: seedanceProvider,
+        taskId: 'task_failed',
+        token: 'token',
+        fetcher,
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      output: {
+        kind: 'video-task',
+        taskId: 'task_failed',
+        status: 'failed',
+        videoUrl: undefined,
+        lastFrameUrl: undefined,
+        completionTokens: undefined,
+        totalTokens: undefined,
+        error: {
+          code: 'InvalidParameter',
+          message: 'content[1].image_url is not valid',
+        },
+        rawResponse: {
+          id: 'task_failed',
+          status: 'failed',
+          error: {
+            code: 'InvalidParameter',
+            message: 'content[1].image_url is not valid',
+          },
+        },
+      },
+    });
   });
 
   it('rejects malformed seedance polling responses without status information', async () => {

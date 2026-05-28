@@ -74,10 +74,11 @@ export async function persistWorkspaceToFolder(
 ): Promise<CanvasWorkspaceState> {
   const canvasesWithPersistedAssets = await Promise.all(
     state.canvases.map(async (canvas) => {
-      const persistedCanvas = await persistCanvasAssets(rootHandle, canvas);
+      const canvasWithSyncedFolder = await syncCanvasFolderName(rootHandle, canvas);
+      const persistedCanvas = await persistCanvasAssets(rootHandle, canvasWithSyncedFolder);
       return {
         ...persistedCanvas,
-        storageFolderName: persistedCanvas.storageFolderName ?? getCanvasFolderName(persistedCanvas),
+        storageFolderName: getCanvasFolderName(persistedCanvas),
       };
     }),
   );
@@ -113,6 +114,53 @@ export async function persistWorkspaceToFolder(
   return hydrateWorkspaceAssetUrls(rootHandle, persistableState);
 }
 
+export async function persistCanvasToFolder(
+  rootHandle: ShotAgentDirectoryHandle,
+  state: CanvasWorkspaceState,
+  canvasId: string,
+): Promise<CanvasWorkspaceState> {
+  const targetCanvas = state.canvases.find((canvas) => canvas.id === canvasId);
+  if (!targetCanvas) {
+    return state;
+  }
+
+  const canvasWithSyncedFolder = await syncCanvasFolderName(rootHandle, targetCanvas);
+  const persistedCanvas = await persistCanvasAssets(rootHandle, canvasWithSyncedFolder);
+  const persistableCanvas = stripTransientAssetData([
+    {
+      ...persistedCanvas,
+      storageFolderName: getCanvasFolderName(persistedCanvas),
+    },
+  ])[0];
+  const persistableState: CanvasWorkspaceState = {
+    ...state,
+    canvases: state.canvases.map((canvas) =>
+      canvas.id === canvasId ? persistableCanvas : stripTransientAssetData([canvas])[0],
+    ),
+  };
+
+  await writeTextFile(rootHandle, 'workspace.json', serializeWorkspaceState(persistableState));
+
+  const canvasDir = await getCanvasDirectory(rootHandle, persistableCanvas, true);
+  await ensureProjectDirectories(canvasDir);
+  await writeTextFile(canvasDir, 'canvas.json', JSON.stringify(persistableCanvas, null, 2));
+  await writeTextFile(
+    canvasDir,
+    'workflow.json',
+    JSON.stringify(
+      {
+        canvasId: persistableCanvas.id,
+        nodes: persistableCanvas.nodes,
+        edges: persistableCanvas.edges,
+      },
+      null,
+      2,
+    ),
+  );
+
+  return hydrateWorkspaceAssetUrls(rootHandle, persistableState);
+}
+
 export async function readWorkspaceFromFolder(
   rootHandle: ShotAgentDirectoryHandle,
   fallback: CanvasWorkspaceState,
@@ -135,6 +183,75 @@ export async function readWorkspaceFromFolder(
   }
 
   return hydrateWorkspaceAssetUrls(rootHandle, mergedState);
+}
+
+export async function deleteCanvasFolder(
+  rootHandle: ShotAgentDirectoryHandle,
+  canvas: CanvasView,
+): Promise<void> {
+  await rootHandle.removeEntry(getCanvasFolderName(canvas), { recursive: true });
+}
+
+export async function listCanvasAssets(
+  rootHandle: ShotAgentDirectoryHandle,
+  canvas: CanvasView,
+): Promise<Array<{ name: string; path: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover'; mimeType: string; dataUrl?: string }>> {
+  const canvasDir = await getCanvasDirectory(rootHandle, canvas, false);
+  const assetsDir = await canvasDir.getDirectoryHandle('assets');
+  const folders: Array<{ directoryName: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover' }> = [
+    { directoryName: 'images', kind: 'image' },
+    { directoryName: 'videos', kind: 'video' },
+    { directoryName: 'audios', kind: 'audio' },
+    { directoryName: 'files', kind: 'file' },
+    { directoryName: 'covers', kind: 'cover' },
+  ];
+  const assets = await Promise.all(
+    folders.map(async ({ directoryName, kind }) => {
+      try {
+        const directory = await assetsDir.getDirectoryHandle(directoryName);
+        const entries: Array<{ name: string; path: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover'; mimeType: string; dataUrl?: string }> = [];
+        const iterableDirectory = directory as FileSystemDirectoryHandle & {
+          entries(): AsyncIterable<[string, FileSystemHandle]>;
+        };
+        for await (const [name, handle] of iterableDirectory.entries()) {
+          if (handle.kind !== 'file') {
+            continue;
+          }
+
+          const assetPath = `assets/${directoryName}/${name}`;
+          const file = await (handle as FileSystemFileHandle).getFile();
+          entries.push({
+            name,
+            path: assetPath,
+            kind,
+            mimeType: file.type || getMimeTypeFromPath(assetPath),
+            dataUrl: URL.createObjectURL(file),
+          });
+        }
+        return entries;
+      } catch {
+        return [];
+      }
+    }),
+  );
+
+  return assets.flat().sort((first, second) => first.name.localeCompare(second.name));
+}
+
+export async function deleteCanvasAsset(
+  rootHandle: ShotAgentDirectoryHandle,
+  canvas: CanvasView,
+  assetPath: string,
+): Promise<void> {
+  const canvasDir = await getCanvasDirectory(rootHandle, canvas, false);
+  const segments = assetPath.split('/').filter(Boolean);
+  if (segments.length < 3 || segments[0] !== 'assets') {
+    return;
+  }
+
+  const assetsDir = await canvasDir.getDirectoryHandle('assets');
+  const mediaDir = await assetsDir.getDirectoryHandle(segments[1]);
+  await mediaDir.removeEntry(segments.slice(2).join('/'));
 }
 
 export async function saveAssetFileToCanvasFolder(
@@ -238,26 +355,16 @@ export async function renameCanvasFolder(
 ): Promise<Pick<CanvasView, 'storageFolderName'>> {
   const currentDir = await getCanvasDirectory(rootHandle, canvas, false);
   const nextFolderName = `${sanitizeFolderName(nextName)}__${sanitizeFolderName(canvas.id)}`;
-  const currentFolderName = getCanvasFolderName(canvas);
 
-  if (currentFolderName === nextFolderName) {
+  if (currentDir.name === nextFolderName) {
     return {
       storageFolderName: nextFolderName,
     };
   }
 
-  try {
-    await rootHandle.getDirectoryHandle(nextFolderName);
-    throw new Error('目标画布文件夹已存在');
-  } catch (error) {
-    if (!(error instanceof DOMException) || error.name !== 'NotFoundError') {
-      throw error;
-    }
-  }
-
   const nextDir = await rootHandle.getDirectoryHandle(nextFolderName, { create: true });
   await copyDirectoryContents(currentDir, nextDir);
-  await rootHandle.removeEntry(currentFolderName, { recursive: true });
+  await rootHandle.removeEntry(currentDir.name, { recursive: true });
 
   return {
     storageFolderName: nextFolderName,
@@ -621,40 +728,68 @@ function parseCanvasFromWorkflowText(
   }
 }
 
-type DirectoryFileHandle = FileSystemFileHandle;
-type DirectoryEntryHandle = FileSystemDirectoryHandle | DirectoryFileHandle;
+function getExpectedCanvasFolderName(canvas: CanvasView): string {
+  return `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+}
 
-type IterableDirectoryHandle = FileSystemDirectoryHandle & {
-  values?: () => AsyncIterable<DirectoryEntryHandle>;
-  entries?: () => AsyncIterable<[string, DirectoryEntryHandle]>;
-  [Symbol.asyncIterator]?: () => AsyncIterable<DirectoryEntryHandle>;
+async function syncCanvasFolderName(
+  rootHandle: FileSystemDirectoryHandle,
+  canvas: CanvasView,
+): Promise<CanvasView> {
+  const expectedFolderName = getExpectedCanvasFolderName(canvas);
+
+  if (!canvas.storageFolderName || canvas.storageFolderName === expectedFolderName) {
+    return {
+      ...canvas,
+      storageFolderName: expectedFolderName,
+    };
+  }
+
+  try {
+    const oldDirectory = await rootHandle.getDirectoryHandle(canvas.storageFolderName);
+    const newDirectory = await rootHandle.getDirectoryHandle(expectedFolderName, { create: true });
+    await copyDirectoryContents(oldDirectory, newDirectory);
+    await rootHandle.removeEntry(canvas.storageFolderName, { recursive: true });
+  } catch {
+    // If the old folder is already gone, continue with the new deterministic folder name.
+  }
+
+  return {
+    ...canvas,
+    storageFolderName: expectedFolderName,
+  };
+}
+
+type IterableFileSystemDirectoryHandle = FileSystemDirectoryHandle & {
+  values?: () => AsyncIterable<FileSystemDirectoryHandle | FileSystemFileHandle>;
+  entries?: () => AsyncIterable<[string, FileSystemDirectoryHandle | FileSystemFileHandle]>;
+  [Symbol.asyncIterator]?: () => AsyncIterable<FileSystemDirectoryHandle | FileSystemFileHandle>;
 };
 
 async function copyDirectoryContents(
-  fromDir: FileSystemDirectoryHandle,
-  toDir: FileSystemDirectoryHandle,
+  source: FileSystemDirectoryHandle,
+  target: FileSystemDirectoryHandle,
 ): Promise<void> {
-  for await (const entry of iterateDirectoryEntries(fromDir)) {
-    if (entry.kind === 'directory') {
-      const sourceDir = entry as FileSystemDirectoryHandle;
-      const nextDir = await toDir.getDirectoryHandle(sourceDir.name, { create: true });
-      await copyDirectoryContents(sourceDir, nextDir);
+  for await (const handle of iterateDirectoryEntries(source)) {
+    const name = handle.name;
+    if (handle.kind === 'directory') {
+      const nextTarget = await target.getDirectoryHandle(name, { create: true });
+      await copyDirectoryContents(handle, nextTarget);
       continue;
     }
 
-    const sourceFileHandle = entry as DirectoryFileHandle;
-    const sourceFile = await sourceFileHandle.getFile();
-    const nextFile = await toDir.getFileHandle(sourceFileHandle.name, { create: true });
-    const writable = await nextFile.createWritable();
-    await writable.write(sourceFile);
+    const file = await handle.getFile();
+    const fileHandle = await target.getFileHandle(name, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(file);
     await writable.close();
   }
 }
 
 async function* iterateDirectoryEntries(
   directory: FileSystemDirectoryHandle,
-): AsyncGenerator<DirectoryEntryHandle, void, void> {
-  const iterableDirectory = directory as IterableDirectoryHandle;
+): AsyncGenerator<FileSystemDirectoryHandle | FileSystemFileHandle, void, void> {
+  const iterableDirectory = directory as IterableFileSystemDirectoryHandle;
 
   if (typeof iterableDirectory.values === 'function') {
     yield* iterableDirectory.values();
@@ -729,6 +864,49 @@ async function fileExists(directory: FileSystemDirectoryHandle, fileName: string
   }
 }
 
+async function readBlobAsText(blob: Blob): Promise<string> {
+  if (typeof blob.text === 'function') {
+    return blob.text();
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => resolve(String(reader.result ?? '')));
+    reader.addEventListener('error', () => reject(reader.error));
+    reader.readAsText(blob);
+  });
+}
+
+function getMimeTypeFromPath(assetPath: string): string {
+  const lowerCasePath = assetPath.toLowerCase();
+
+  if (lowerCasePath.endsWith('.png')) {
+    return 'image/png';
+  }
+
+  if (lowerCasePath.endsWith('.jpg') || lowerCasePath.endsWith('.jpeg')) {
+    return 'image/jpeg';
+  }
+
+  if (lowerCasePath.endsWith('.webp')) {
+    return 'image/webp';
+  }
+
+  if (lowerCasePath.endsWith('.mp4')) {
+    return 'video/mp4';
+  }
+
+  if (lowerCasePath.endsWith('.mp3')) {
+    return 'audio/mpeg';
+  }
+
+  if (lowerCasePath.endsWith('.wav')) {
+    return 'audio/wav';
+  }
+
+  return 'application/octet-stream';
+}
+
 function openHandleDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(dbName, 1);
@@ -756,20 +934,6 @@ function fileToDataUrl(file: Blob): Promise<string> {
     reader.addEventListener('load', () => resolve(String(reader.result)));
     reader.addEventListener('error', () => reject(reader.error));
     reader.readAsDataURL(file);
-  });
-}
-
-function readBlobAsText(file: Blob): Promise<string> {
-  if (typeof file.text === 'function') {
-    return file.text();
-  }
-
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.addEventListener('load', () => resolve(String(reader.result ?? '')));
-    reader.addEventListener('error', () => reject(reader.error));
-    reader.readAsText(file);
   });
 }
 

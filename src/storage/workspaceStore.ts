@@ -27,6 +27,17 @@ export type SavedGeneratedMedia = {
   assetName: string;
   assetPath: string;
   mimeType: string;
+  assetDataUrl?: string;
+};
+
+export type CanvasAssetFileKind = 'image' | 'video' | 'audio' | 'file' | 'cover';
+
+export type CanvasAssetFile = {
+  name: string;
+  path: string;
+  kind: CanvasAssetFileKind;
+  mimeType: string;
+  dataUrl?: string;
 };
 
 export type WorkspaceStore = {
@@ -43,10 +54,28 @@ export type WorkspaceStore = {
     handle: WorkspaceRootHandle,
     state: CanvasWorkspaceState,
   ): Promise<CanvasWorkspaceState>;
+  persistCanvasToFolder(
+    handle: WorkspaceRootHandle,
+    state: CanvasWorkspaceState,
+    canvasId: string,
+  ): Promise<CanvasWorkspaceState>;
   readWorkspaceFromFolder(
     handle: WorkspaceRootHandle,
     fallback: CanvasWorkspaceState,
   ): Promise<CanvasWorkspaceState>;
+  deleteCanvasFolder(
+    handle: WorkspaceRootHandle,
+    canvas: CanvasView,
+  ): Promise<void>;
+  listCanvasAssets(
+    handle: WorkspaceRootHandle,
+    canvas: CanvasView,
+  ): Promise<CanvasAssetFile[]>;
+  deleteCanvasAsset(
+    handle: WorkspaceRootHandle,
+    canvas: CanvasView,
+    assetPath: string,
+  ): Promise<void>;
   saveAssetFileToCanvasFolder(
     handle: WorkspaceRootHandle,
     canvas: CanvasView,
@@ -75,4 +104,13 @@ export type WorkspaceStore = {
     canvas: CanvasView,
     nextName: string,
   ): Promise<Pick<CanvasView, 'storageFolderName'>>;
+  saveGeneratedMediaUrlToCanvasFolder(
+    handle: WorkspaceRootHandle,
+    canvas: CanvasView,
+    input: {
+      url: string;
+      fileName: string;
+      kind: 'image' | 'video' | 'cover';
+    },
+  ): Promise<SavedGeneratedMedia>;
 };

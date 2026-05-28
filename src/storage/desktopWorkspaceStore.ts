@@ -1,6 +1,7 @@
 import { basename, join } from '@tauri-apps/api/path';
+import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { exists, mkdir, readDir, readFile, readTextFile, rename, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readDir, readFile, readTextFile, remove, rename, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import {
   createWorkspaceState,
   parseWorkspaceState,
@@ -23,11 +24,14 @@ export const desktopWorkspaceStore: WorkspaceStore = {
     const selected = await open({
       directory: true,
       multiple: false,
+      recursive: true,
     });
 
     if (!selected || Array.isArray(selected)) {
       return null;
     }
+
+    await authorizeWorkspaceDirectory(selected);
 
     return {
       kind: 'desktop-directory',
@@ -40,10 +44,13 @@ export const desktopWorkspaceStore: WorkspaceStore = {
       return null;
     }
 
-    const path = window.localStorage.getItem(rootDirectoryStorageKey);
+    const storedPath = window.localStorage.getItem(rootDirectoryStorageKey);
+    const path = storedPath ?? await getDefaultWorkspaceRootPath();
 
-    if (!path) {
-      return null;
+    if (storedPath) {
+      await authorizeWorkspaceDirectory(path);
+    } else {
+      window.localStorage.setItem(rootDirectoryStorageKey, path);
     }
 
     return {
@@ -60,6 +67,10 @@ export const desktopWorkspaceStore: WorkspaceStore = {
     window.localStorage.setItem(rootDirectoryStorageKey, handle.path);
   },
   async ensureDirectoryPermission(handle) {
+    if (handle.kind === 'desktop-directory') {
+      await authorizeWorkspaceDirectory(handle.path);
+    }
+
     return handle.kind === 'desktop-directory';
   },
   async persistWorkspaceToFolder(handle, state) {
@@ -69,7 +80,8 @@ export const desktopWorkspaceStore: WorkspaceStore = {
 
     const canvasesWithPersistedAssets = await Promise.all(
       state.canvases.map(async (canvas) => {
-        const persistedCanvas = await persistCanvasAssets(handle.path, canvas);
+        const canvasWithSyncedFolder = await syncCanvasFolderName(handle.path, canvas);
+        const persistedCanvas = await persistCanvasAssets(handle.path, canvasWithSyncedFolder);
         return {
           ...persistedCanvas,
           storageFolderName: persistedCanvas.storageFolderName ?? getCanvasFolderName(persistedCanvas),
@@ -128,6 +140,66 @@ export const desktopWorkspaceStore: WorkspaceStore = {
 
     return hydrateWorkspaceAssetUrls(handle.path, mergedState);
   },
+  async deleteCanvasFolder(handle, canvas) {
+    if (handle.kind !== 'desktop-directory') {
+      return;
+    }
+
+    const canvasDir = await join(handle.path, getCanvasFolderName(canvas));
+    await remove(canvasDir, { recursive: true });
+  },
+  async listCanvasAssets(handle, canvas) {
+    if (handle.kind !== 'desktop-directory') {
+      return [];
+    }
+
+    const canvasDir = await getCanvasDirectory(handle.path, canvas, false);
+    const assetsDir = await join(canvasDir, 'assets');
+    const folders: Array<{ directoryName: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover' }> = [
+      { directoryName: 'images', kind: 'image' },
+      { directoryName: 'videos', kind: 'video' },
+      { directoryName: 'audios', kind: 'audio' },
+      { directoryName: 'files', kind: 'file' },
+      { directoryName: 'covers', kind: 'cover' },
+    ];
+    const assets = await Promise.all(
+      folders.map(async ({ directoryName, kind }) => {
+        const directoryPath = await join(assetsDir, directoryName);
+        if (!(await exists(directoryPath))) {
+          return [];
+        }
+
+        const entries = await readDir(directoryPath);
+        return Promise.all(
+          entries
+            .filter((entry) => !entry.isDirectory)
+            .map(async (entry) => {
+              const assetPath = `assets/${directoryName}/${entry.name}`;
+              return {
+                name: entry.name,
+                path: assetPath,
+                kind,
+                mimeType: getMimeTypeFromPath(assetPath),
+                dataUrl: await readAssetObjectUrl(handle.path, canvas, assetPath),
+              };
+            }),
+        );
+      }),
+    );
+
+    return assets.flat().sort((first, second) => first.name.localeCompare(second.name));
+  },
+  async deleteCanvasAsset(handle, canvas, assetPath) {
+    if (handle.kind !== 'desktop-directory') {
+      return;
+    }
+
+    const canvasDir = await getCanvasDirectory(handle.path, canvas, false);
+    const resolvedPath = await join(canvasDir, ...assetPath.split('/').filter(Boolean));
+    if (await exists(resolvedPath)) {
+      await remove(resolvedPath);
+    }
+  },
   async saveAssetFileToCanvasFolder(handle, canvas, file) {
     if (handle.kind !== 'desktop-directory') {
       throw new Error('桌面存储仅支持本地文件夹路径');
@@ -145,14 +217,60 @@ export const desktopWorkspaceStore: WorkspaceStore = {
     const assetName = await makeUniqueFileName(mediaDir, file.name);
     const assetPath = await join(mediaDir, assetName);
 
-    await writeFile(assetPath, new Uint8Array(await file.arrayBuffer()));
+    const bytes = await blobToBytes(file);
+    await writeFile(assetPath, bytes);
 
     return {
       assetName,
       assetPath: `assets/${mediaDirName}/${assetName}`,
-      assetDataUrl: URL.createObjectURL(file),
+      assetDataUrl: bytesToDataUrl(bytes, file.type),
       assetMimeType: file.type,
     };
+  },
+  async persistCanvasToFolder(handle, state, canvasId) {
+    if (handle.kind !== 'desktop-directory') {
+      throw new Error('桌面存储仅支持本地文件夹路径');
+    }
+
+    const targetCanvas = state.canvases.find((canvas) => canvas.id === canvasId);
+    if (!targetCanvas) {
+      return state;
+    }
+
+    const canvasWithSyncedFolder = await syncCanvasFolderName(handle.path, targetCanvas);
+    const persistedCanvas = await persistCanvasAssets(handle.path, canvasWithSyncedFolder);
+    const persistableCanvas = stripTransientAssetData([
+      {
+        ...persistedCanvas,
+        storageFolderName: getCanvasFolderName(persistedCanvas),
+      },
+    ])[0];
+    const persistableState: CanvasWorkspaceState = {
+      ...state,
+      canvases: state.canvases.map((canvas) =>
+        canvas.id === canvasId ? persistableCanvas : stripTransientAssetData([canvas])[0],
+      ),
+    };
+
+    await writeTextFile(await join(handle.path, 'workspace.json'), serializeWorkspaceState(persistableState));
+
+    const canvasDir = await getCanvasDirectory(handle.path, persistableCanvas, true);
+    await ensureProjectDirectories(canvasDir);
+    await writeTextFile(await join(canvasDir, 'canvas.json'), JSON.stringify(persistableCanvas, null, 2));
+    await writeTextFile(
+      await join(canvasDir, 'workflow.json'),
+      JSON.stringify(
+        {
+          canvasId: persistableCanvas.id,
+          nodes: persistableCanvas.nodes,
+          edges: persistableCanvas.edges,
+        },
+        null,
+        2,
+      ),
+    );
+
+    return hydrateWorkspaceAssetUrls(handle.path, persistableState);
   },
   async saveDataUrlOutputToCanvasFolder(handle, canvas, dataUrl, input) {
     if (handle.kind !== 'desktop-directory') {
@@ -194,7 +312,7 @@ export const desktopWorkspaceStore: WorkspaceStore = {
       input.kind === 'video' ? 'video' : 'image',
     );
     const assetName = await makeUniqueFileName(mediaDir, ensureFileExtension(input.fileName, extension));
-    await writeFile(await join(mediaDir, assetName), new Uint8Array(await input.blob.arrayBuffer()));
+    await writeFile(await join(mediaDir, assetName), await blobToBytes(input.blob));
 
     return {
       assetName,
@@ -226,7 +344,37 @@ export const desktopWorkspaceStore: WorkspaceStore = {
       storageFolderName: nextFolderName,
     };
   },
+  async saveGeneratedMediaUrlToCanvasFolder(handle, canvas, input) {
+    if (handle.kind !== 'desktop-directory') {
+      throw new Error('桌面存储仅支持本地文件夹路径');
+    }
+
+    const saved = await invoke<{
+      assetName: string;
+      assetPath: string;
+      mimeType: string;
+    }>('download_generated_media_to_canvas_folder', {
+      rootPath: handle.path,
+      canvasFolderName: getCanvasFolderName(canvas),
+      url: input.url,
+      fileName: input.fileName,
+      kind: input.kind,
+    });
+
+    return {
+      ...saved,
+      assetDataUrl: await readAssetObjectUrl(handle.path, canvas, saved.assetPath, saved.mimeType),
+    };
+  },
 };
+
+async function authorizeWorkspaceDirectory(path: string): Promise<void> {
+  await invoke('authorize_workspace_directory', { path });
+}
+
+async function getDefaultWorkspaceRootPath(): Promise<string> {
+  return invoke<string>('get_default_workspace_directory');
+}
 
 async function hydrateWorkspaceAssetUrls(
   rootPath: string,
@@ -329,7 +477,7 @@ async function saveDataUrlAssetToCanvasDirectory(
     input.kind === 'video' ? 'video' : input.kind === 'audio' ? 'audio' : 'image',
   );
   const assetName = await makeUniqueFileName(mediaDir, ensureFileExtension(input.fileName, extension));
-  await writeFile(await join(mediaDir, assetName), new Uint8Array(await blob.arrayBuffer()));
+  await writeFile(await join(mediaDir, assetName), await blobToBytes(blob));
 
   return {
     assetName,
@@ -348,7 +496,7 @@ async function readAssetObjectUrl(
     const canvasDir = await getCanvasDirectory(rootPath, canvas, false);
     const resolvedPath = await join(canvasDir, ...assetPath.split('/').filter(Boolean));
     const bytes = await readFile(resolvedPath);
-    return URL.createObjectURL(new Blob([bytes], { type: mimeType ?? getMimeTypeFromPath(assetPath) }));
+    return bytesToDataUrl(bytes, mimeType ?? getMimeTypeFromPath(assetPath));
   } catch {
     return undefined;
   }
@@ -492,6 +640,37 @@ function parseCanvasFromWorkflowText(
   } catch {
     return null;
   }
+}
+
+function getExpectedCanvasFolderName(canvas: CanvasView): string {
+  return `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+}
+
+async function syncCanvasFolderName(rootPath: string, canvas: CanvasView): Promise<CanvasView> {
+  const expectedFolderName = getExpectedCanvasFolderName(canvas);
+
+  if (!canvas.storageFolderName || canvas.storageFolderName === expectedFolderName) {
+    return {
+      ...canvas,
+      storageFolderName: expectedFolderName,
+    };
+  }
+
+  const oldPath = await join(rootPath, canvas.storageFolderName);
+  const newPath = await join(rootPath, expectedFolderName);
+
+  try {
+    if ((await exists(oldPath)) && !(await exists(newPath))) {
+      await rename(oldPath, newPath);
+    }
+  } catch {
+    // 目录同步失败时仍继续使用确定性的目标目录名。
+  }
+
+  return {
+    ...canvas,
+    storageFolderName: expectedFolderName,
+  };
 }
 
 function sanitizeFolderName(name: string): string {
@@ -646,4 +825,30 @@ function getExtensionFromMimeType(mimeType: string, kind: 'image' | 'video' | 'a
   }
 
   return kind === 'video' ? '.mp4' : kind === 'audio' ? '.mp3' : '.png';
+}
+
+function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
+  let binary = '';
+
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]);
+  }
+
+  return `data:${mimeType};base64,${btoa(binary)}`;
+}
+
+async function blobToBytes(file: Blob): Promise<Uint8Array> {
+  if (typeof file.arrayBuffer === 'function') {
+    return new Uint8Array(await file.arrayBuffer());
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => {
+      const result = reader.result;
+      resolve(new Uint8Array(result instanceof ArrayBuffer ? result : new ArrayBuffer(0)));
+    });
+    reader.addEventListener('error', () => reject(reader.error));
+    reader.readAsArrayBuffer(file);
+  });
 }

@@ -12,6 +12,36 @@ import {
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
 const providerStorageKey = 'shot-agent:providers';
 
+function createDefaultVideoWorkspaceState(): CanvasWorkspaceState {
+  return {
+    ...createWorkspaceState([
+      {
+        id: 'canvas_default_video',
+        name: '默认画布',
+        updatedAt: '刚刚',
+        nodes: [
+          {
+            id: 'node_video_1',
+            title: '视频生成',
+            modelId: 'seedance2.0',
+            kind: 'video',
+            x: 520,
+            y: 240,
+          },
+        ],
+        edges: [],
+      },
+    ]),
+  };
+}
+
+function seedDefaultVideoWorkspace() {
+  window.localStorage.setItem(
+    workspaceStorageKey,
+    serializeWorkspaceState(createDefaultVideoWorkspaceState()),
+  );
+}
+
 async function openNodeInspectorByTitle(title: string) {
   const headings = await screen.findAllByRole('heading', { name: title });
   const canvasHeading = headings.find((heading) => heading.closest('article'));
@@ -336,9 +366,70 @@ describe('App image preview', () => {
   });
 });
 
+describe('App Cloudflare settings', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    HTMLElement.prototype.setPointerCapture = vi.fn();
+    HTMLElement.prototype.releasePointerCapture = vi.fn();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      },
+    );
+  });
+
+  it('opens Cloudflare configuration from the sidebar under provider management', async () => {
+    render(<App />);
+
+    const providerButton = screen.getByRole('button', { name: '供应商管理' });
+    const cloudflareButton = screen.getByRole('button', { name: 'Cloudflare 配置' });
+
+    expect(
+      providerButton.compareDocumentPosition(cloudflareButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await userEvent.click(cloudflareButton);
+
+    expect(screen.getByRole('heading', { name: 'Cloudflare R2 配置' })).toBeTruthy();
+    expect(screen.getByLabelText('Bucket 名称')).toBeTruthy();
+  });
+});
+
+describe('App empty startup', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      },
+    );
+  });
+
+  it('starts without a default canvas for new users', () => {
+    render(<App />);
+
+    expect(screen.getAllByText('暂无画布').length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: /新建画布/ }).length).toBeGreaterThan(0);
+    expect(screen.queryByText('默认画布')).toBeNull();
+  });
+});
+
 describe('App video node inspector', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    seedDefaultVideoWorkspace();
 
     vi.stubGlobal(
       'ResizeObserver',
@@ -506,6 +597,39 @@ describe('App video node inspector', () => {
 
     await openNodeInspectorByTitle('视频生成');
     expect(screen.getByText('保存状态：已保存到本地 · assets/videos/task_1.mp4')).toBeTruthy();
+  });
+
+  it('shows the submitted Seedance generation id below the generate button', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_video_generation_id',
+          name: '视频生成 ID 画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'video_1',
+              title: '视频生成',
+              modelId: 'seedance2.0',
+              kind: 'video',
+              x: 0,
+              y: 0,
+              generationId: 'task_1',
+              generationStatus: 'running',
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    const videoNode = screen.getByRole('heading', { name: '视频生成' }).closest('article');
+    expect(videoNode).toBeTruthy();
+    expect(within(videoNode!).getByText('生成ID：task_1')).toBeTruthy();
   });
 
   it('shows role-based input ports for first-last-frame mode', async () => {

@@ -25,6 +25,7 @@ import VolcengineIcon from '@lobehub/icons/es/Volcengine/components/Mono';
 import XAIIcon from '@lobehub/icons/es/XAI/components/Mono';
 import {
   BoxSelect,
+  Cloud,
   FilePlus2,
   FileText,
   FolderPlus,
@@ -39,7 +40,6 @@ import {
   Move,
   Minimize2,
   Pencil,
-  Play,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -51,6 +51,8 @@ import {
   Undo2,
   Redo2,
   Video,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import {
@@ -177,19 +179,16 @@ import {
   serializeStoredCanvasViewports,
   type StoredCanvasViewports,
 } from './canvasViewports';
-import { shouldApplyPersistedWorkspaceState } from './workspacePersistence';
 import {
   getWorkspaceStore,
 } from '../storage';
 import {
-  createObjectStorageConfig,
   isObjectStorageConfigured,
-  parseObjectStorageConfig,
   readAssetSourceAsBlob,
   uploadBlobToR2,
   type ObjectStorageConfig,
 } from '../storage/objectStorage';
-import type { WorkspaceRootHandle } from '../storage/workspaceStore';
+import type { CanvasAssetFile, CanvasAssetFileKind, WorkspaceRootHandle } from '../storage/workspaceStore';
 import { createSeedanceTaskTracker } from '../models/seedanceTaskTracker';
 
 type NodeTemplate = {
@@ -209,10 +208,16 @@ type AddMenuState = {
   fromNodeId?: string;
 } | null;
 
+type EdgeSnapTarget = {
+  nodeId: string;
+  portId?: SeedanceInputPortId | 'default';
+};
+
 type EdgeDraft = {
   fromNodeId: string;
   from: Point;
   to: Point;
+  snapTarget?: EdgeSnapTarget;
 } | null;
 
 type DragState =
@@ -258,9 +263,11 @@ type MinimapDragState = {
 type CanvasActionRailProps = {
   canUndo: boolean;
   canRedo: boolean;
+  isAssetPanelOpen: boolean;
   scale: number;
   onAddNode: (clientX: number, clientY: number) => void;
   onCreateCanvas: () => void;
+  onToggleAssetPanel: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onExportCanvas: () => void;
@@ -273,9 +280,11 @@ type CanvasActionRailProps = {
 function CanvasActionRail({
   canUndo,
   canRedo,
+  isAssetPanelOpen,
   scale,
   onAddNode,
   onCreateCanvas,
+  onToggleAssetPanel,
   onUndo,
   onRedo,
   onExportCanvas,
@@ -329,6 +338,15 @@ function CanvasActionRail({
         </button>
         <button type="button" aria-label="导入画布" title="导入画布" onClick={onImportCanvas}>
           <Import size={18} />
+        </button>
+        <button
+          type="button"
+          className={isAssetPanelOpen ? 'is-active' : ''}
+          aria-label="资产"
+          title="资产"
+          onClick={onToggleAssetPanel}
+        >
+          <FileText size={18} />
         </button>
       </div>
       <div className="canvas-action-group">
@@ -415,70 +433,52 @@ const nodeTemplates: NodeTemplate[] = [
   },
 ];
 
-const initialCanvases: CanvasView[] = [
-  {
-    id: 'canvas_first',
-    name: '默认画布',
-    updatedAt: '刚刚',
-    nodes: [
-      {
-        id: 'node_image_1',
-        title: '图片生成',
-        modelId: 'gpt-image-2',
-        kind: 'image',
-        x: 120,
-        y: 120,
-        imageResolutionTier: defaultImageResolutionTier,
-        imageAspectRatio: defaultImageAspectRatio,
-        imageQuality: defaultImageQuality,
-      },
-      {
-        id: 'node_video_1',
-        title: '视频生成',
-        modelId: 'seedance2.0',
-        kind: 'video',
-        x: 520,
-        y: 240,
-        seedanceScenario: 'image_to_video_first_frame',
-        videoRatio: getDefaultSeedanceRatio('seedance2.0'),
-        videoFramesPerSecond: getSeedanceCapabilities('seedance2.0').fixedFrameRate,
-      },
-      {
-        id: 'node_chat_1',
-        title: '提示词整理',
-        modelId: 'gpt-5.4-mini',
-        kind: 'chat',
-        x: 320,
-        y: -40,
-      },
-    ],
-    edges: [
-      {
-        id: 'edge_image_video',
-        fromNodeId: 'node_image_1',
-        toNodeId: 'node_video_1',
-        toPortId: 'first_frame_image',
-      },
-    ],
-  },
-  {
-    id: 'canvas_second',
-    name: '产品短片',
-    updatedAt: '示例',
-    nodes: [],
-    edges: [],
-  },
-];
+const initialCanvases: CanvasView[] = [];
 const initialWorkspaceState = createWorkspaceState(initialCanvases);
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
 const providerStorageKey = 'shot-agent:providers';
+const cloudflareStorageKey = 'shot-agent:cloudflare-r2';
 const deletedProviderStorageKey = 'shot-agent:deleted-providers';
 const canvasViewportStorageKey = 'shot-agent:canvas-viewports';
-const objectStorageConfigKey = 'shot-agent:object-storage-config';
 const canvasNodeSize = { width: 320, height: 220 };
 const edgeHandleHitSize = 18;
 const minimapSize = { width: 220, height: 150 };
 const defaultViewport: CanvasViewport = { x: 80, y: 72, scale: 1 };
+const edgeSnapRadius = 52;
+
+type ProviderSettingsView = 'providers' | 'cloudflare';
+
+type UnsavedChangesPrompt = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void | Promise<void>;
+};
+
+type AssetFilter = 'all' | CanvasAssetFileKind;
+
+type TauriWindowCloseHandle = {
+  close: () => Promise<void>;
+  destroy?: () => Promise<void>;
+};
+
+type CloudflareR2Config = {
+  accountId: string;
+  bucketName: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  endpoint: string;
+  publicBaseUrl: string;
+};
+
+const emptyCloudflareR2Config: CloudflareR2Config = {
+  accountId: '',
+  bucketName: '',
+  accessKeyId: '',
+  secretAccessKey: '',
+  endpoint: '',
+  publicBaseUrl: '',
+};
 
 function summarizeOutputText(value: string, maxLength = 160): string {
   const summary = value
@@ -1582,14 +1582,6 @@ function loadProviders(): ProviderConfig[] {
   }
 }
 
-function loadObjectStorageConfig(): ObjectStorageConfig {
-  if (typeof window === 'undefined') {
-    return createObjectStorageConfig();
-  }
-
-  return parseObjectStorageConfig(window.localStorage.getItem(objectStorageConfigKey));
-}
-
 function buildSeedanceReferenceObjectKey(
   canvas: CanvasView,
   node: CanvasNodeView,
@@ -1650,6 +1642,56 @@ function getMediaExtensionFromMimeType(
   }
 
   return kind === 'image' ? '.png' : kind === 'video' ? '.mp4' : '.mp3';
+}
+
+function loadCloudflareR2Config(): CloudflareR2Config {
+  if (typeof window === 'undefined') {
+    return emptyCloudflareR2Config;
+  }
+
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(cloudflareStorageKey) ?? '');
+
+    if (!parsed || typeof parsed !== 'object') {
+      return emptyCloudflareR2Config;
+    }
+
+    const record = parsed as Partial<Record<keyof CloudflareR2Config, unknown>>;
+
+    return {
+      accountId: typeof record.accountId === 'string' ? record.accountId : '',
+      bucketName: typeof record.bucketName === 'string' ? record.bucketName : '',
+      accessKeyId: typeof record.accessKeyId === 'string' ? record.accessKeyId : '',
+      secretAccessKey: typeof record.secretAccessKey === 'string' ? record.secretAccessKey : '',
+      endpoint: typeof record.endpoint === 'string' ? record.endpoint : '',
+      publicBaseUrl: typeof record.publicBaseUrl === 'string' ? record.publicBaseUrl : '',
+    };
+  } catch {
+    return emptyCloudflareR2Config;
+  }
+}
+
+function isCloudflareR2Configured(config: CloudflareR2Config): boolean {
+  return Boolean(
+    config.accountId.trim() &&
+      config.bucketName.trim() &&
+      config.accessKeyId.trim() &&
+      config.secretAccessKey.trim() &&
+      config.endpoint.trim() &&
+      config.publicBaseUrl.trim(),
+  );
+}
+
+function createObjectStorageConfigFromCloudflare(
+  config: CloudflareR2Config,
+): ObjectStorageConfig {
+  return {
+    endpoint: config.endpoint.trim(),
+    bucket: config.bucketName.trim(),
+    accessKeyId: config.accessKeyId.trim(),
+    secretAccessKey: config.secretAccessKey.trim(),
+    publicBaseURL: config.publicBaseUrl.trim(),
+  };
 }
 
 function parseDeletedProviderIds(value: string | null): Set<string> {
@@ -1721,6 +1763,109 @@ function getProviderProtocolLabel(protocol: ProviderConfig['protocol']): string 
     default:
       return '未知格式';
   }
+}
+
+function getGenerationStatusLabel(status: GenerationRecord['status']): string {
+  switch (status) {
+    case 'queued':
+      return '排队中';
+    case 'running':
+      return '生成中';
+    case 'succeeded':
+      return '已完成';
+    case 'failed':
+      return '失败';
+    case 'canceled':
+      return '已取消';
+    case 'idle':
+    default:
+      return '待开始';
+  }
+}
+
+function getGenerationStatusTone(status: GenerationRecord['status']): string {
+  switch (status) {
+    case 'succeeded':
+      return 'succeeded';
+    case 'failed':
+      return 'failed';
+    case 'queued':
+    case 'running':
+      return 'running';
+    case 'canceled':
+      return 'canceled';
+    case 'idle':
+    default:
+      return 'idle';
+  }
+}
+
+function formatGenerationTime(value?: string): string {
+  if (!value) {
+    return '-';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getGenerationTokenUsage(record: GenerationRecord): string {
+  const usage =
+    record.usage && typeof record.usage === 'object'
+      ? (record.usage as { completionTokens?: unknown; totalTokens?: unknown })
+      : null;
+  const totalTokens =
+    typeof usage?.totalTokens === 'number'
+      ? usage.totalTokens
+      : typeof usage?.completionTokens === 'number'
+        ? usage.completionTokens
+        : undefined;
+
+  return typeof totalTokens === 'number' ? `${totalTokens}` : '-';
+}
+
+function getAssetFilterLabel(filter: AssetFilter): string {
+  switch (filter) {
+    case 'image':
+      return '图片';
+    case 'video':
+      return '视频';
+    case 'audio':
+      return '音频';
+    case 'file':
+      return '文件';
+    case 'cover':
+      return '封面';
+    case 'all':
+    default:
+      return '全部';
+  }
+}
+
+function getAssetKindLabel(kind: CanvasAssetFileKind): string {
+  return getAssetFilterLabel(kind);
+}
+
+export async function forceCloseTauriWindow(appWindow: TauriWindowCloseHandle): Promise<void> {
+  if (appWindow.destroy) {
+    try {
+      await appWindow.destroy();
+      return;
+    } catch {
+      // Fall back to close below. Some runtimes may reject destroy depending on platform state.
+    }
+  }
+
+  await appWindow.close();
 }
 
 function getImageNodeSettingBadges(node: CanvasNodeView): string[] {
@@ -2021,9 +2166,6 @@ export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>(loadProviders);
-  const [objectStorageConfig, setObjectStorageConfig] = useState<ObjectStorageConfig>(
-    loadObjectStorageConfig,
-  );
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderConfig>>({});
   const [editingProviderIds, setEditingProviderIds] = useState<string[]>([]);
   const [fetchingProviderModelIds, setFetchingProviderModelIds] = useState<string[]>([]);
@@ -2037,8 +2179,17 @@ export function App() {
   const [providerVideoHistoryTotal, setProviderVideoHistoryTotal] = useState(0);
   const providerVideoHistoryRequestIdRef = useRef(0);
   const [showProviderManager, setShowProviderManager] = useState(false);
+  const [providerSettingsView, setProviderSettingsView] = useState<ProviderSettingsView>('providers');
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [providerSearchQuery, setProviderSearchQuery] = useState('');
+  const [showAssetPanel, setShowAssetPanel] = useState(false);
+  const [assetFilter, setAssetFilter] = useState<AssetFilter>('all');
+  const [canvasAssets, setCanvasAssets] = useState<CanvasAssetFile[]>([]);
+  const [loadingCanvasAssets, setLoadingCanvasAssets] = useState(false);
+  const [mutedAssetPaths, setMutedAssetPaths] = useState<string[]>([]);
+  const [cloudflareConfig, setCloudflareConfig] = useState<CloudflareR2Config>(loadCloudflareR2Config);
+  const [cloudflareConfigDraft, setCloudflareConfigDraft] =
+    useState<CloudflareR2Config>(cloudflareConfig);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [workspaceState, setWorkspaceStateRaw] = useState(() => {
     if (typeof window === 'undefined') {
@@ -2054,6 +2205,13 @@ export function App() {
     null,
   );
   const [folderStorageReady, setFolderStorageReady] = useState(false);
+  const [isSavingWorkspace, setIsSavingWorkspace] = useState(false);
+  const isSavingWorkspaceRef = useRef(false);
+  const [dirtyCanvasIds, setDirtyCanvasIds] = useState<Set<string>>(() => new Set());
+  const dirtyCanvasIdsRef = useRef<Set<string>>(new Set());
+  const allowTauriCloseRef = useRef(false);
+  const [pendingUnsavedChangesPrompt, setPendingUnsavedChangesPrompt] =
+    useState<UnsavedChangesPrompt | null>(null);
   const [canvasViewports, setCanvasViewports] = useState<StoredCanvasViewports>(
     loadCanvasViewports,
   );
@@ -2066,6 +2224,7 @@ export function App() {
     viewport: CanvasViewport;
   } | null>(null);
   const workspaceStateRef = useRef(workspaceState);
+  const savedWorkspaceStateRef = useRef(workspaceState);
   const seedanceTrackersRef = useRef(
     new Map<string, ReturnType<typeof createSeedanceTaskTracker>>(),
   );
@@ -2118,12 +2277,129 @@ export function App() {
     setWorkspaceStateRaw(action);
   }
 
+  function updateDirtyCanvasIds(updater: (current: Set<string>) => Set<string>) {
+    const next = updater(dirtyCanvasIdsRef.current);
+    dirtyCanvasIdsRef.current = next;
+    setDirtyCanvasIds(next);
+  }
+
+  function markCanvasDirty(canvasId: string | null | undefined) {
+    if (!canvasId) {
+      return;
+    }
+
+    updateDirtyCanvasIds((current) => {
+      if (current.has(canvasId)) {
+        return current;
+      }
+
+      const next = new Set(current);
+      next.add(canvasId);
+      return next;
+    });
+  }
+
+  function clearDirtyCanvasIds(canvasIds?: Iterable<string>) {
+    updateDirtyCanvasIds((current) => {
+      if (!canvasIds) {
+        return current.size > 0 ? new Set() : current;
+      }
+
+      const next = new Set(current);
+      let changed = false;
+      for (const canvasId of canvasIds) {
+        changed = next.delete(canvasId) || changed;
+      }
+
+      return changed ? next : current;
+    });
+  }
+
+  function hasUnsavedCanvasChanges() {
+    return dirtyCanvasIdsRef.current.size > 0;
+  }
+
+  function createCurrentCanvasSaveState(
+    current: typeof workspaceState,
+    saved: typeof workspaceState,
+    canvasId: string,
+  ): typeof workspaceState {
+    const currentCanvas = current.canvases.find((canvas) => canvas.id === canvasId);
+    if (!currentCanvas) {
+      return saved;
+    }
+
+    const currentCanvasNodeIds = new Set(currentCanvas.nodes.map((node) => node.id));
+    const savedHistoryForOtherCanvases = (saved.generationHistory ?? []).filter(
+      (record) => !currentCanvasNodeIds.has(record.nodeId),
+    );
+    const currentCanvasHistory = (current.generationHistory ?? []).filter((record) =>
+      currentCanvasNodeIds.has(record.nodeId),
+    );
+
+    const savedCanvasIds = new Set(saved.canvases.map((canvas) => canvas.id));
+    const mergedCanvases = savedCanvasIds.has(canvasId)
+      ? saved.canvases.map((canvas) => (canvas.id === canvasId ? currentCanvas : canvas))
+      : [...saved.canvases, currentCanvas];
+
+    return {
+      ...saved,
+      activeCanvasId: current.activeCanvasId,
+      storage: current.storage,
+      canvases: mergedCanvases,
+      generationHistory: [...currentCanvasHistory, ...savedHistoryForOtherCanvases],
+    };
+  }
+
+  function getCanvasSnapshotForDirtyCheck(state: typeof workspaceState, canvasId: string): string {
+    const canvas = state.canvases.find((current) => current.id === canvasId) ?? null;
+    const nodeIds = new Set(canvas?.nodes.map((node) => node.id) ?? []);
+    const generationHistory = (state.generationHistory ?? []).filter((record) =>
+      nodeIds.has(record.nodeId),
+    );
+
+    return JSON.stringify({
+      canvas,
+      generationHistory,
+    });
+  }
+
+  function syncCanvasDirtyState(canvasId: string | null | undefined, state = workspaceStateRef.current) {
+    if (!canvasId) {
+      return;
+    }
+
+    const currentSnapshot = getCanvasSnapshotForDirtyCheck(state, canvasId);
+    const savedSnapshot = getCanvasSnapshotForDirtyCheck(savedWorkspaceStateRef.current, canvasId);
+
+    if (currentSnapshot === savedSnapshot) {
+      clearDirtyCanvasIds([canvasId]);
+    } else {
+      markCanvasDirty(canvasId);
+    }
+  }
+
+  async function confirmPendingUnsavedChanges() {
+    const prompt = pendingUnsavedChangesPrompt;
+    if (!prompt) {
+      return;
+    }
+
+    setPendingUnsavedChangesPrompt(null);
+    await prompt.onConfirm();
+  }
+
   const [modalDragState, setModalDragState] = useState<ModalDragState | null>(null);
   const [previewImage, setPreviewImage] = useState<ImagePreviewState | null>(null);
   const { activeCanvasId, canvases, storage } = workspaceState;
   const canUndoWorkspace = workspaceHistory.past.length > 0;
   const canRedoWorkspace = workspaceHistory.future.length > 0;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? null;
+  const activeCanvasIsDirty = activeCanvas ? dirtyCanvasIds.has(activeCanvas.id) : false;
+  const filteredCanvasAssets =
+    assetFilter === 'all'
+      ? canvasAssets
+      : canvasAssets.filter((asset) => asset.kind === assetFilter);
   const renderedCanvasNodes = useMemo(() => {
     if (!activeCanvas) {
       return [];
@@ -2252,6 +2528,9 @@ export function App() {
     1,
     Math.ceil(providerVideoHistoryTotal / providerVideoHistoryPageSize) || 1,
   );
+  const cloudflareConfigIsDirty =
+    JSON.stringify(cloudflareConfigDraft) !== JSON.stringify(cloudflareConfig);
+  const cloudflareConfigIsConfigured = isCloudflareR2Configured(cloudflareConfigDraft);
   const minimapBounds = getCanvasContentBounds(renderedCanvasNodes, canvasNodeSize);
   const minimapScale = Math.min(
     minimapSize.width / minimapBounds.width,
@@ -2286,6 +2565,76 @@ export function App() {
     [],
   );
 
+  useEffect(() => {
+    if ('__TAURI_INTERNALS__' in window) {
+      return undefined;
+    }
+
+    function handleBeforeUnload(event: BeforeUnloadEvent) {
+      if (!hasUnsavedCanvasChanges()) {
+        return;
+      }
+
+      event.preventDefault();
+      event.returnValue = '';
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let canceled = false;
+
+    async function registerClosePrompt() {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        if (canceled) {
+          return;
+        }
+
+        const appWindow = getCurrentWindow();
+        unlisten = await appWindow.onCloseRequested(async (event) => {
+          if (allowTauriCloseRef.current) {
+            return;
+          }
+
+          if (!hasUnsavedCanvasChanges()) {
+            return;
+          }
+
+          event.preventDefault();
+          window.setTimeout(() => {
+            setPendingUnsavedChangesPrompt({
+              title: '画布未保存',
+              message: '当前还有未保存的画布更改，关闭应用后这些更改可能丢失。',
+              confirmLabel: '关闭应用',
+              onConfirm: async () => {
+                allowTauriCloseRef.current = true;
+                try {
+                  await forceCloseTauriWindow(appWindow);
+                } catch {
+                  allowTauriCloseRef.current = false;
+                  setCanvasMessage('关闭应用失败，请先保存画布后再重试。');
+                }
+              },
+            });
+          }, 0);
+        });
+      } catch {
+        // Browser runtime only needs beforeunload; Tauri close handling is optional here.
+      }
+    }
+
+    void registerClosePrompt();
+
+    return () => {
+      canceled = true;
+      unlisten?.();
+    };
+  }, []);
+
   function setWorkspaceStateWithHistory(
     updater: (current: typeof workspaceState) => typeof workspaceState,
   ) {
@@ -2312,6 +2661,7 @@ export function App() {
     workspaceStateRef.current = result.state;
     setWorkspaceHistory(result.history);
     setWorkspaceState(result.state);
+    syncCanvasDirtyState(result.state.activeCanvasId, result.state);
     clearSelection();
     setAddMenu(null);
     setEdgeDraft(null);
@@ -2328,6 +2678,7 @@ export function App() {
     workspaceStateRef.current = result.state;
     setWorkspaceHistory(result.history);
     setWorkspaceState(result.state);
+    syncCanvasDirtyState(result.state.activeCanvasId, result.state);
     clearSelection();
     setAddMenu(null);
     setEdgeDraft(null);
@@ -2465,6 +2816,7 @@ export function App() {
         if (!canceled) {
           setRootDirectoryHandle(handle);
           workspaceStateRef.current = restoredState;
+          savedWorkspaceStateRef.current = restoredState;
           setWorkspaceState(restoredState);
           setFolderStorageReady(true);
           setCanvasMessage(`已连接画布存储文件夹：${handle.name}`);
@@ -2484,32 +2836,91 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!rootDirectoryHandle || !folderStorageReady || dragState) {
+  async function saveWorkspaceToFolder() {
+    if (!rootDirectoryHandle || !folderStorageReady) {
+      setCanvasMessage('请先选择画布存储文件夹，再保存画布。');
       return;
     }
 
-    const snapshot = workspaceState;
+    if (dragState) {
+      setCanvasMessage('请结束拖拽后再保存画布。');
+      return;
+    }
 
-    void workspaceStore.persistWorkspaceToFolder(rootDirectoryHandle, snapshot)
-      .then((persistedState) => {
-        if (
-          !shouldApplyPersistedWorkspaceState(
-            snapshot,
-            workspaceStateRef.current,
-            persistedState,
-          )
-        ) {
-          return;
-        }
+    if (isSavingWorkspaceRef.current) {
+      return;
+    }
 
-        workspaceStateRef.current = persistedState;
-        setWorkspaceState(persistedState);
-      })
-      .catch(() => {
-        setCanvasMessage('写入画布存储文件夹失败，当前更改可能刷新后丢失。');
-      });
-  }, [dragState, folderStorageReady, rootDirectoryHandle, workspaceState]);
+    isSavingWorkspaceRef.current = true;
+    setIsSavingWorkspace(true);
+    const snapshot = workspaceStateRef.current;
+    const canvasIdToSave = snapshot.activeCanvasId;
+    const dirtyCanvasIdsAtSaveStart = new Set(dirtyCanvasIdsRef.current);
+    const saveState = createCurrentCanvasSaveState(
+      snapshot,
+      savedWorkspaceStateRef.current,
+      canvasIdToSave,
+    );
+
+    try {
+      const persistedState = await workspaceStore.persistCanvasToFolder(
+        rootDirectoryHandle,
+        saveState,
+        canvasIdToSave,
+      );
+      const unchangedDuringSave = workspaceStateRef.current === snapshot;
+      const persistedCanvas = persistedState.canvases.find((canvas) => canvas.id === canvasIdToSave);
+      const nextSavedState = {
+        ...savedWorkspaceStateRef.current,
+        activeCanvasId: persistedState.activeCanvasId,
+        storage: persistedState.storage,
+        canvases: savedWorkspaceStateRef.current.canvases.some((canvas) => canvas.id === canvasIdToSave)
+          ? savedWorkspaceStateRef.current.canvases.map((canvas) =>
+              canvas.id === canvasIdToSave ? persistedCanvas ?? canvas : canvas,
+            )
+          : [
+              ...savedWorkspaceStateRef.current.canvases,
+              ...(persistedCanvas ? [persistedCanvas] : []),
+            ],
+        generationHistory: persistedState.generationHistory,
+      };
+      savedWorkspaceStateRef.current = nextSavedState;
+
+      if (unchangedDuringSave && persistedCanvas) {
+        const nextLiveState = {
+          ...snapshot,
+          storage: persistedState.storage,
+          canvases: snapshot.canvases.map((canvas) =>
+            canvas.id === canvasIdToSave ? persistedCanvas : canvas,
+          ),
+          generationHistory: [
+            ...(persistedState.generationHistory ?? []).filter((record) =>
+              persistedCanvas.nodes.some((node) => node.id === record.nodeId),
+            ),
+            ...(snapshot.generationHistory ?? []).filter(
+              (record) => !persistedCanvas.nodes.some((node) => node.id === record.nodeId),
+            ),
+          ],
+        };
+        workspaceStateRef.current = nextLiveState;
+        setWorkspaceState(nextLiveState);
+      }
+
+      if (dirtyCanvasIdsAtSaveStart.has(canvasIdToSave)) {
+        clearDirtyCanvasIds([canvasIdToSave]);
+      }
+      setCanvasMessage(
+        unchangedDuringSave
+          ? '当前画布已保存。'
+          : '画布已保存，保存期间产生的新更改需要再次保存。',
+      );
+    } catch {
+      setCanvasMessage('写入画布存储文件夹失败，当前更改可能刷新后丢失。');
+    } finally {
+      isSavingWorkspaceRef.current = false;
+      setIsSavingWorkspace(false);
+    }
+  }
 
   useEffect(() => {
     try {
@@ -2531,18 +2942,11 @@ export function App() {
   }, [providers]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        objectStorageConfigKey,
-        JSON.stringify(objectStorageConfig),
-      );
-    } catch (error) {
-      setCanvasMessage(getLocalStorageErrorMessage(error));
-    }
-  }, [objectStorageConfig]);
-
-  useEffect(() => {
     if (!showProviderManager) {
+      return;
+    }
+
+    if (providerSettingsView !== 'providers') {
       return;
     }
 
@@ -2554,7 +2958,7 @@ export function App() {
     if (!selectedProviderId || !providerRows.some((provider) => provider.id === selectedProviderId)) {
       setSelectedProviderId(providerRows[0].id);
     }
-  }, [providerRows, selectedProviderId, showProviderManager]);
+  }, [providerRows, providerSettingsView, selectedProviderId, showProviderManager]);
 
   useEffect(() => {
     setProviderVideoHistoryPage(1);
@@ -2619,6 +3023,14 @@ export function App() {
   }, [activeCanvas, inspectedNodeId]);
 
   useEffect(() => {
+    if (!showAssetPanel) {
+      return;
+    }
+
+    void refreshCanvasAssets();
+  }, [showAssetPanel, activeCanvasId, folderStorageReady, rootDirectoryHandle]);
+
+  useEffect(() => {
     if (!activeCanvasId) {
       return;
     }
@@ -2673,6 +3085,50 @@ export function App() {
   }, [viewport]);
 
   useEffect(() => {
+    function handleWindowDragOver(event: DragEvent) {
+      if (
+        !hasSupportedMediaDataTransferItems(event.dataTransfer?.items) &&
+        !getFirstSupportedMediaFile(event.dataTransfer?.files)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      event.dataTransfer!.dropEffect = 'copy';
+    }
+
+    function handleWindowDrop(event: DragEvent) {
+      const file = getFirstSupportedMediaFile(event.dataTransfer?.files);
+
+      if (!file) {
+        return;
+      }
+
+      event.preventDefault();
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const point =
+        rect && event.clientX >= rect.left && event.clientY >= rect.top
+          ? getCanvasPointFromClient(event.clientX, event.clientY)
+          : screenToCanvasPoint(
+              {
+                x: rect ? rect.width / 2 : 420,
+                y: rect ? rect.height / 2 : 280,
+              },
+              viewport,
+            );
+
+      void addAssetNodeFromFile(file, point);
+    }
+
+    window.addEventListener('dragover', handleWindowDragOver);
+    window.addEventListener('drop', handleWindowDrop);
+    return () => {
+      window.removeEventListener('dragover', handleWindowDragOver);
+      window.removeEventListener('drop', handleWindowDrop);
+    };
+  }, [viewport]);
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       const target = event.target;
       const isEditingText =
@@ -2689,6 +3145,13 @@ export function App() {
       const isCut = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'x';
       const isPaste = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'v';
       const isSelectAll = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'a';
+      const isSave = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 's';
+
+      if (isSave) {
+        event.preventDefault();
+        void saveWorkspaceToFolder();
+        return;
+      }
 
       if (isUndo || isRedo) {
         if ((isUndo && !canUndoWorkspace) || (isRedo && !canRedoWorkspace)) {
@@ -2721,6 +3184,7 @@ export function App() {
           setCanvasClipboard(copied);
 
           if (isCut) {
+            markCanvasDirty(workspaceStateRef.current.activeCanvasId);
             setWorkspaceStateWithHistory((current) => ({
               ...current,
               canvases: current.canvases.map((canvas) =>
@@ -2745,6 +3209,7 @@ export function App() {
           event.preventDefault();
           let pastedNodeIds: string[] = [];
           let nextClipboard: CanvasClipboardPayload | null = null;
+          markCanvasDirty(workspaceStateRef.current.activeCanvasId);
 
           setWorkspaceStateWithHistory((current) => ({
             ...current,
@@ -2803,6 +3268,7 @@ export function App() {
       }
 
       if (nodeIdsToDelete.length > 0) {
+        markCanvasDirty(workspaceStateRef.current.activeCanvasId);
         setWorkspaceStateWithHistory((current) => ({
           ...current,
           canvases: current.canvases.map((canvas) =>
@@ -2825,9 +3291,13 @@ export function App() {
     canUndoWorkspace,
     activeCanvas,
     canvasClipboard,
+    dragState,
+    folderStorageReady,
+    rootDirectoryHandle,
     selectedEdgeId,
     selectedNodeId,
     selectedNodeIds,
+    workspaceStore,
     workspaceHistory,
   ]);
 
@@ -2853,6 +3323,7 @@ export function App() {
   }, [showProviderManager]);
 
   function setCanvases(updater: (canvases: CanvasView[]) => CanvasView[]) {
+    markCanvasDirty(workspaceStateRef.current.activeCanvasId);
     setWorkspaceStateWithHistory((current) => ({
       ...current,
       canvases: updater(current.canvases),
@@ -2870,17 +3341,41 @@ export function App() {
     setShowProviderManager(false);
   }
 
+  function openProviderSettingsView(view: ProviderSettingsView) {
+    setProviderSettingsView(view);
+    setShowProviderManager(true);
+  }
+
   function selectCanvasFromSidebar(canvasId: string) {
-    setActiveCanvasId(canvasId);
-    setShowProviderManager(false);
-    setAddMenu(null);
-    clearSelection();
+    if (canvasId === activeCanvasId) {
+      return;
+    }
+
+    function switchCanvas() {
+      setActiveCanvasId(canvasId);
+      setShowProviderManager(false);
+      setAddMenu(null);
+      clearSelection();
+    }
+
+    if (activeCanvasId && dirtyCanvasIdsRef.current.has(activeCanvasId)) {
+      setPendingUnsavedChangesPrompt({
+        title: '画布未保存',
+        message: '当前画布有未保存的更改，切换到其他画布后请记得返回保存。',
+        confirmLabel: '切换画布',
+        onConfirm: switchCanvas,
+      });
+      return;
+    }
+
+    switchCanvas();
   }
 
   function updateActiveCanvasNodes(
     updater: (nodes: CanvasNodeView[]) => CanvasNodeView[],
     options: { history?: boolean } = {},
   ) {
+    markCanvasDirty(workspaceStateRef.current.activeCanvasId);
     const setter = options.history === false ? setWorkspaceState : setWorkspaceStateWithHistory;
 
     setter((current) => ({
@@ -2897,6 +3392,7 @@ export function App() {
     updater: (edges: CanvasView['edges']) => CanvasView['edges'],
     options: { history?: boolean } = {},
   ) {
+    markCanvasDirty(workspaceStateRef.current.activeCanvasId);
     const setter = options.history === false ? setWorkspaceState : setWorkspaceStateWithHistory;
 
     setter((current) => ({
@@ -2909,17 +3405,87 @@ export function App() {
     }));
   }
 
+  async function refreshCanvasAssets() {
+    if (!rootDirectoryHandle || !folderStorageReady || !activeCanvas) {
+      setCanvasAssets([]);
+      return;
+    }
+
+    setLoadingCanvasAssets(true);
+    try {
+      const assets = await workspaceStore.listCanvasAssets(rootDirectoryHandle, activeCanvas);
+      setCanvasAssets(assets);
+    } catch {
+      setCanvasMessage('读取画布资产失败，请检查存储目录权限。');
+    } finally {
+      setLoadingCanvasAssets(false);
+    }
+  }
+
+  function clearCanvasAssetReferences(assetPath: string) {
+    updateActiveCanvasNodes((nodes) =>
+      nodes.map((node) => {
+        if (
+          node.assetPath !== assetPath &&
+          node.outputPath !== assetPath &&
+          node.outputCoverPath !== assetPath
+        ) {
+          return node;
+        }
+
+        return {
+          ...node,
+          assetPath: node.assetPath === assetPath ? undefined : node.assetPath,
+          assetDataUrl: node.assetPath === assetPath ? undefined : node.assetDataUrl,
+          assetName: node.assetPath === assetPath ? undefined : node.assetName,
+          assetMimeType: node.assetPath === assetPath ? undefined : node.assetMimeType,
+          outputPath: node.outputPath === assetPath ? undefined : node.outputPath,
+          outputDataUrl: node.outputPath === assetPath ? undefined : node.outputDataUrl,
+          outputCoverPath: node.outputCoverPath === assetPath ? undefined : node.outputCoverPath,
+          outputCoverDataUrl:
+            node.outputCoverPath === assetPath ? undefined : node.outputCoverDataUrl,
+        };
+      }),
+    );
+  }
+
+  async function deleteCanvasAsset(asset: CanvasAssetFile) {
+    if (!rootDirectoryHandle || !folderStorageReady || !activeCanvas) {
+      return;
+    }
+
+    try {
+      await workspaceStore.deleteCanvasAsset(rootDirectoryHandle, activeCanvas, asset.path);
+      clearCanvasAssetReferences(asset.path);
+      setCanvasAssets((current) => current.filter((item) => item.path !== asset.path));
+      setCanvasMessage(`已删除资产：${asset.name}`);
+    } catch {
+      setCanvasMessage('删除资产失败，请检查存储目录权限。');
+    }
+  }
+
   function addGenerationHistoryRecord(record: GenerationRecord) {
+    markCanvasDirty(workspaceStateRef.current.activeCanvasId);
     setWorkspaceStateWithHistory((current) => ({
       ...current,
       generationHistory: [record, ...(current.generationHistory ?? [])],
     }));
   }
 
+  function findCanvasIdByNodeId(nodeId: string): string | undefined {
+    return workspaceStateRef.current.canvases.find((canvas) =>
+      canvas.nodes.some((node) => node.id === nodeId),
+    )?.id;
+  }
+
   function updateGenerationHistoryRecord(
     recordId: string,
     updater: (record: GenerationRecord) => GenerationRecord,
   ) {
+    const record = workspaceStateRef.current.generationHistory.find(
+      (current) => current.id === recordId,
+    );
+    markCanvasDirty(findCanvasIdByNodeId(record?.nodeId ?? '') ?? workspaceStateRef.current.activeCanvasId);
     setWorkspaceState((current) => ({
       ...current,
       generationHistory: (current.generationHistory ?? []).map((record) =>
@@ -3200,6 +3766,24 @@ export function App() {
     }
   }
 
+  function getFirstSupportedMediaFile(fileList?: FileList | null): File | null {
+    return Array.from(fileList ?? []).find(isSupportedMediaFile) ?? null;
+  }
+
+  function hasSupportedMediaDataTransferItems(items?: DataTransferItemList | null): boolean {
+    return Array.from(items ?? []).some(
+      (item) => item.kind === 'file' && isSupportedMediaMimeType(item.type),
+    );
+  }
+
+  function isSupportedMediaFile(file: File): boolean {
+    return isSupportedMediaMimeType(file.type);
+  }
+
+  function isSupportedMediaMimeType(mimeType: string): boolean {
+    return mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType.startsWith('audio/');
+  }
+
   function createCanvas() {
     const id = `canvas_${Date.now()}`;
     setWorkspaceStateWithHistory((current) => ({
@@ -3216,6 +3800,7 @@ export function App() {
         },
       ],
     }));
+    markCanvasDirty(id);
     setViewport(defaultViewport);
     setCanvasMessage(null);
   }
@@ -3256,7 +3841,9 @@ export function App() {
       setWorkspaceStateWithHistory(() => nextState);
       const persistedState = await workspaceStore.persistWorkspaceToFolder(directory, nextState);
       workspaceStateRef.current = persistedState;
+      savedWorkspaceStateRef.current = persistedState;
       setWorkspaceState(persistedState);
+      clearDirtyCanvasIds();
       setCanvasMessage(`画布存储文件夹已设置为：${directory.name}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -3279,7 +3866,9 @@ export function App() {
         workspaceStateRef.current,
       );
       workspaceStateRef.current = persistedState;
+      savedWorkspaceStateRef.current = persistedState;
       setWorkspaceState(persistedState);
+      clearDirtyCanvasIds();
       setCanvasMessage(
         `已迁移 ${persistedState.canvases.length} 个画布和浏览器资产到文件夹：${rootDirectoryHandle.name}`,
       );
@@ -3295,18 +3884,6 @@ export function App() {
       updateWorkspaceStorage(current, {
         mode: 'custom-folder',
         folderPath: folderValue,
-      }),
-    );
-  }
-
-  function updateObjectStorageField(
-    field: keyof ObjectStorageConfig,
-    value: string,
-  ) {
-    setObjectStorageConfig((current) =>
-      createObjectStorageConfig({
-        ...current,
-        [field]: value,
       }),
     );
   }
@@ -3327,6 +3904,8 @@ export function App() {
     if (uploadCandidates.length === 0) {
       return { ok: true, canvas, uploadedUrls: new Map() };
     }
+
+    const objectStorageConfig = createObjectStorageConfigFromCloudflare(cloudflareConfig);
 
     if (!isObjectStorageConfigured(objectStorageConfig)) {
       return {
@@ -3414,6 +3993,10 @@ export function App() {
     setWorkspaceStateWithHistory(() => nextState);
     workspaceStateRef.current = nextState;
 
+    if (!(rootDirectoryHandle && folderStorageReady)) {
+      markCanvasDirty(canvasId);
+    }
+
     if (rootDirectoryHandle && folderStorageReady) {
       try {
         const persistedState = await workspaceStore.persistWorkspaceToFolder(
@@ -3443,11 +4026,13 @@ export function App() {
   }
 
   function deleteActiveCanvas() {
-    if (!activeCanvasId) {
+    if (!activeCanvasId || !activeCanvas) {
       return;
     }
 
+    void deletePersistedCanvasFolder(activeCanvas);
     setWorkspaceStateWithHistory((current) => deleteCanvas(current, current.activeCanvasId));
+    clearDirtyCanvasIds([activeCanvasId]);
     clearSelection();
     setAddMenu(null);
     setViewport(defaultViewport);
@@ -3455,11 +4040,29 @@ export function App() {
   }
 
   function deleteCanvasById(canvasId: string) {
+    const canvasToDelete = workspaceStateRef.current.canvases.find((canvas) => canvas.id === canvasId);
+    if (canvasToDelete) {
+      void deletePersistedCanvasFolder(canvasToDelete);
+    }
+
     setWorkspaceStateWithHistory((current) => deleteCanvas(current, canvasId));
+    clearDirtyCanvasIds([canvasId]);
     clearSelection();
     setAddMenu(null);
     setEditingCanvasId(null);
     setViewport(defaultViewport);
+  }
+
+  async function deletePersistedCanvasFolder(canvas: CanvasView) {
+    if (!rootDirectoryHandle || !folderStorageReady) {
+      return;
+    }
+
+    try {
+      await workspaceStore.deleteCanvasFolder(rootDirectoryHandle, canvas);
+    } catch {
+      setCanvasMessage('删除画布文件夹失败，请检查存储目录权限。');
+    }
   }
 
   function startRenameCanvasFromList(canvas: CanvasView) {
@@ -3497,6 +4100,7 @@ export function App() {
           : `canvas_${Date.now()}`;
 
       setWorkspaceStateWithHistory((current) => importCanvas(current, content, nextId));
+      markCanvasDirty(nextId);
       clearSelection();
       setAddMenu(null);
       setViewport(defaultViewport);
@@ -3571,9 +4175,18 @@ export function App() {
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
     if (edgeDraft) {
+      const to = getCanvasPointFromClient(event.clientX, event.clientY);
+      const snapTarget = findNearestEdgeDraftTarget(to);
+
       setEdgeDraft({
         ...edgeDraft,
-        to: getCanvasPointFromClient(event.clientX, event.clientY),
+        to,
+        snapTarget: snapTarget
+          ? {
+              nodeId: snapTarget.nodeId,
+              portId: snapTarget.portId,
+            }
+          : undefined,
       });
       return;
     }
@@ -3704,6 +4317,13 @@ export function App() {
   ) {
     event.stopPropagation();
 
+    completeEdgeDraftToTarget(toNodeId, toPortId);
+  }
+
+  function completeEdgeDraftToTarget(
+    toNodeId: string,
+    toPortId?: SeedanceInputPortId | 'default',
+  ) {
     if (!edgeDraft) {
       return;
     }
@@ -3763,8 +4383,93 @@ export function App() {
     setEdgeDraft(null);
   }
 
+  function findNearestEdgeDraftTarget(point: { x: number; y: number }) {
+    if (!activeCanvas || !edgeDraft) {
+      return null;
+    }
+
+    const fromNode = activeCanvas.nodes.find((node) => node.id === edgeDraft.fromNodeId);
+
+    if (!fromNode) {
+      return null;
+    }
+
+    let nearest:
+      | {
+          distance: number;
+          nodeId: string;
+          portId?: SeedanceInputPortId | 'default';
+        }
+      | null = null;
+
+    for (const node of activeCanvas.nodes) {
+      if (node.id === edgeDraft.fromNodeId) {
+        continue;
+      }
+
+      if (!canConnectCanvasNodes(fromNode, node)) {
+        continue;
+      }
+
+      const portIds =
+        node.kind === 'video'
+          ? getVideoInputPorts(node.seedanceScenario ?? 'text_to_video').map((port) => port.id)
+          : [undefined];
+
+      for (const portId of portIds) {
+        if (node.kind === 'video') {
+          if (!portId) {
+            continue;
+          }
+
+          if (!canNodeConnectToVideoPort(fromNode, portId)) {
+            continue;
+          }
+
+          if (
+            isVideoPortSingleValue(portId) &&
+            activeCanvas.edges.some(
+              (edge) => edge.toNodeId === node.id && edge.toPortId === portId,
+            )
+          ) {
+            continue;
+          }
+        } else if (!canNodeReceiveInput(node)) {
+          continue;
+        }
+
+        const target = getNodeInputPoint(node, portId);
+        const distance = Math.hypot(point.x - target.x, point.y - target.y);
+
+        if (distance <= edgeSnapRadius && (!nearest || distance < nearest.distance)) {
+          nearest = {
+            distance,
+            nodeId: node.id,
+            portId,
+          };
+        }
+      }
+    }
+
+    return nearest;
+  }
+
+  function isEdgeSnapTarget(nodeId: string, portId?: SeedanceInputPortId | 'default') {
+    return (
+      edgeDraft?.snapTarget?.nodeId === nodeId &&
+      (edgeDraft.snapTarget.portId ?? 'default') === (portId ?? 'default')
+    );
+  }
+
   function finishEdgeDraftOnBlank(event: PointerEvent<HTMLDivElement>) {
     if (!edgeDraft) {
+      return;
+    }
+
+    const snapTarget =
+      edgeDraft.snapTarget ?? findNearestEdgeDraftTarget(getCanvasPointFromClient(event.clientX, event.clientY));
+    if (snapTarget) {
+      completeEdgeDraftToTarget(snapTarget.nodeId, snapTarget.portId);
       return;
     }
 
@@ -3983,7 +4688,28 @@ export function App() {
     setProviderDrafts((current) => ({ ...current, [id]: draft }));
     setEditingProviderIds((current) => [...current, id]);
     setSelectedProviderId(id);
-    setShowProviderManager(true);
+    openProviderSettingsView('providers');
+  }
+
+  function updateCloudflareConfigDraft(updates: Partial<CloudflareR2Config>) {
+    setCloudflareConfigDraft((current) => ({
+      ...current,
+      ...updates,
+    }));
+  }
+
+  function saveCloudflareConfig() {
+    try {
+      window.localStorage.setItem(cloudflareStorageKey, JSON.stringify(cloudflareConfigDraft));
+      setCloudflareConfig(cloudflareConfigDraft);
+      setCanvasMessage('Cloudflare R2 配置已保存。');
+    } catch (error) {
+      setCanvasMessage(getLocalStorageErrorMessage(error));
+    }
+  }
+
+  function resetCloudflareConfigDraft() {
+    setCloudflareConfigDraft(cloudflareConfig);
   }
 
   function addProviderModel(providerId: string) {
@@ -4217,6 +4943,22 @@ export function App() {
     }), { history: false });
   }
 
+  function getSeedanceTaskErrorMessage(task: { [key: string]: unknown; error?: unknown }) {
+    if (!task.error || typeof task.error !== 'object') {
+      return '视频生成失败';
+    }
+
+    const error = task.error as { code?: unknown; message?: unknown };
+    const code = typeof error.code === 'string' ? error.code : undefined;
+    const message = typeof error.message === 'string' ? error.message : undefined;
+
+    if (code && message) {
+      return `${code}: ${message}`;
+    }
+
+    return message ?? code ?? '视频生成失败';
+  }
+
   function openOutputEditor(node: CanvasNodeView) {
     const outputVersions = getOutputVersionsForDisplay(node);
     const latestVersion = getLatestOutputVersion(outputVersions);
@@ -4360,6 +5102,10 @@ export function App() {
       lastFrameUrl?: string;
       completionTokens?: number;
       totalTokens?: number;
+      error?: {
+        code?: string;
+        message?: string;
+      };
     },
   ) {
     let savedVideoPath: string | undefined;
@@ -4368,26 +5114,25 @@ export function App() {
     let localCoverUrl: string | undefined;
     const saveWarnings: string[] = [];
 
-    if (rootDirectoryHandle && folderStorageReady && activeCanvas) {
+    const targetCanvas =
+      workspaceStateRef.current.canvases.find((canvas) =>
+        canvas.nodes.some((currentNode) => currentNode.id === node.id),
+      ) ?? activeCanvas;
+
+    if (rootDirectoryHandle && folderStorageReady && targetCanvas) {
       if (task.videoUrl) {
         try {
-          const videoResponse = await fetch(task.videoUrl);
-          if (!videoResponse.ok) {
-            throw new Error(`HTTP ${videoResponse.status}`);
-          }
-
-          const videoBlob = await videoResponse.blob();
-          const savedVideo = await workspaceStore.saveGeneratedMediaBlobToCanvasFolder(
+          const savedVideo = await workspaceStore.saveGeneratedMediaUrlToCanvasFolder(
             rootDirectoryHandle,
-            activeCanvas,
+            targetCanvas,
             {
-              blob: videoBlob,
               fileName: `${task.taskId ?? node.id}.mp4`,
               kind: 'video',
+              url: task.videoUrl,
             },
           );
           savedVideoPath = savedVideo.assetPath;
-          localVideoUrl = URL.createObjectURL(videoBlob);
+          localVideoUrl = savedVideo.assetDataUrl;
         } catch (error) {
           saveWarnings.push(
             `视频结果未能保存到本地文件夹：${error instanceof Error ? error.message : '未知错误'}`,
@@ -4397,23 +5142,17 @@ export function App() {
 
       if (task.lastFrameUrl) {
         try {
-          const coverResponse = await fetch(task.lastFrameUrl);
-          if (!coverResponse.ok) {
-            throw new Error(`HTTP ${coverResponse.status}`);
-          }
-
-          const coverBlob = await coverResponse.blob();
-          const savedCover = await workspaceStore.saveGeneratedMediaBlobToCanvasFolder(
+          const savedCover = await workspaceStore.saveGeneratedMediaUrlToCanvasFolder(
             rootDirectoryHandle,
-            activeCanvas,
+            targetCanvas,
             {
-              blob: coverBlob,
               fileName: `${task.taskId ?? node.id}.png`,
               kind: 'cover',
+              url: task.lastFrameUrl,
             },
           );
           savedCoverPath = savedCover.assetPath;
-          localCoverUrl = URL.createObjectURL(coverBlob);
+          localCoverUrl = savedCover.assetDataUrl;
         } catch (error) {
           saveWarnings.push(
             `视频封面未能保存到本地文件夹：${error instanceof Error ? error.message : '未知错误'}`,
@@ -4425,7 +5164,7 @@ export function App() {
     updateNode(node.id, (current) => ({
       ...current,
       generationStatus: 'succeeded',
-      generationError: undefined,
+      generationError: saveWarnings.length > 0 ? saveWarnings.join(' | ') : undefined,
       outputUrl: task.videoUrl ?? current.outputUrl,
       outputDataUrl: localVideoUrl ?? current.outputDataUrl,
       outputPath: savedVideoPath ?? current.outputPath,
@@ -4444,6 +5183,10 @@ export function App() {
       ...record,
       status: 'succeeded',
       outputAssetIds: [node.id],
+      usage: {
+        completionTokens: task.completionTokens,
+        totalTokens: task.totalTokens,
+      },
       endedAt: new Date().toISOString(),
     }));
     stopSeedanceTracking(node.id);
@@ -4508,25 +5251,16 @@ export function App() {
         });
       },
       onFailed(task) {
-        markNodeGenerationFailed(
-          node.id,
-          typeof task.error === 'object' &&
-            task.error &&
-            'message' in task.error &&
-            typeof task.error.message === 'string'
-            ? task.error.message
-            : '视频生成失败',
-        );
+        const errorMessage = getSeedanceTaskErrorMessage(task);
+        markNodeGenerationFailed(node.id, errorMessage);
         updateGenerationHistoryRecord(generationRecordId, (record) => ({
           ...record,
           status: 'failed',
-          errorMessage:
-            typeof task.error === 'object' &&
-            task.error &&
-            'message' in task.error &&
-            typeof task.error.message === 'string'
-              ? task.error.message
-              : '视频生成失败',
+          errorMessage,
+          usage: {
+            completionTokens: task.completionTokens,
+            totalTokens: task.totalTokens,
+          },
           endedAt: new Date().toISOString(),
         }));
         stopSeedanceTracking(node.id);
@@ -4599,7 +5333,7 @@ export function App() {
     const token = resolveProviderToken(provider);
     updateNode(node.id, (current) => ({
       ...current,
-      generationId: generationRecordId,
+      generationId: node.kind === 'video' ? undefined : generationRecordId,
       generationStatus: 'running',
       generationError: undefined,
       estimatedTokenCost:
@@ -4734,6 +5468,10 @@ export function App() {
         ...record,
         status: videoOutput.videoUrl ? 'succeeded' : 'running',
         outputAssetIds: videoOutput.videoUrl ? [node.id] : record.outputAssetIds,
+        usage: {
+          completionTokens: videoOutput.completionTokens,
+          totalTokens: videoOutput.totalTokens,
+        },
         endedAt: videoOutput.videoUrl ? new Date().toISOString() : record.endedAt,
       }));
 
@@ -4900,9 +5638,21 @@ export function App() {
               <p>无限画布视觉工作台</p>
             </header>
             <nav>
-          <button type="button" onClick={() => setShowProviderManager(true)}>
+          <button
+            type="button"
+            className={showProviderManager && providerSettingsView === 'providers' ? 'is-active' : ''}
+            onClick={() => openProviderSettingsView('providers')}
+          >
             <Settings size={18} />
             供应商管理
+          </button>
+          <button
+            type="button"
+            className={showProviderManager && providerSettingsView === 'cloudflare' ? 'is-active' : ''}
+            onClick={() => openProviderSettingsView('cloudflare')}
+          >
+            <Cloud size={18} />
+            Cloudflare 配置
           </button>
         </nav>
         <section className="panel storage-panel">
@@ -4949,52 +5699,18 @@ export function App() {
             </p>
             <div className="storage-cloud-fields">
               <h3>Cloudflare R2</h3>
-              <label>
-                Endpoint
-                <input
-                  value={objectStorageConfig.endpoint}
-                  placeholder="https://<account>.r2.cloudflarestorage.com"
-                  onChange={(event) => updateObjectStorageField('endpoint', event.target.value)}
-                />
-              </label>
-              <label>
-                Bucket
-                <input
-                  value={objectStorageConfig.bucket}
-                  placeholder="shot-agent"
-                  onChange={(event) => updateObjectStorageField('bucket', event.target.value)}
-                />
-              </label>
-              <label>
-                公网 Base URL
-                <input
-                  value={objectStorageConfig.publicBaseURL}
-                  placeholder="https://assets.example.com"
-                  onChange={(event) => updateObjectStorageField('publicBaseURL', event.target.value)}
-                />
-              </label>
-              <label>
-                Access Key ID
-                <input
-                  value={objectStorageConfig.accessKeyId}
-                  placeholder="R2 Access Key ID"
-                  onChange={(event) => updateObjectStorageField('accessKeyId', event.target.value)}
-                />
-              </label>
-              <label>
-                Secret Access Key
-                <input
-                  type="password"
-                  value={objectStorageConfig.secretAccessKey}
-                  placeholder="R2 Secret Access Key"
-                  onChange={(event) => updateObjectStorageField('secretAccessKey', event.target.value)}
-                />
-              </label>
               <p>
-                {isObjectStorageConfigured(objectStorageConfig)
+                {cloudflareConfigIsConfigured
                   ? '已配置：本地参考图片、视频、音频会先上传到 R2，再传给 Seedance。'
                   : '未配置：本地参考图片、视频、音频暂时无法直接提交给 Seedance。'}
               </p>
+              <button
+                type="button"
+                className="provider-secondary-button"
+                onClick={() => openProviderSettingsView('cloudflare')}
+              >
+                打开 Cloudflare 配置
+              </button>
             </div>
           </section>
         <section className="panel">
@@ -5042,8 +5758,13 @@ export function App() {
                         className="canvas-list-name"
                         onClick={() => selectCanvasFromSidebar(canvas.id)}
                       >
-                        <strong>{canvas.name}</strong>
-                    <small>{canvas.nodes.length} 个节点 · {canvas.updatedAt}</small>
+                        <strong className="canvas-list-name-text">
+                          {canvas.name}
+                          {dirtyCanvasIds.has(canvas.id) ? (
+                            <span className="canvas-unsaved-dot" aria-label="未保存" title="未保存" />
+                          ) : null}
+                        </strong>
+                        <small>{canvas.nodes.length} 个节点 · {canvas.updatedAt}</small>
                       </button>
                     )}
                   </div>
@@ -5078,9 +5799,13 @@ export function App() {
       <section className="workspace">
         <div className="toolbar">
           <div className="toolbar-title">
-            {showProviderManager ? <Settings size={18} /> : <BoxSelect size={18} />}
             {showProviderManager ? (
-              <span>供应商管理</span>
+              providerSettingsView === 'cloudflare' ? <Cloud size={18} /> : <Settings size={18} />
+            ) : (
+              <BoxSelect size={18} />
+            )}
+            {showProviderManager ? (
+              <span>{providerSettingsView === 'cloudflare' ? 'Cloudflare 配置' : '供应商管理'}</span>
             ) : isRenamingCanvas ? (
               <input
                 className="canvas-title-input"
@@ -5100,17 +5825,34 @@ export function App() {
               />
             ) : (
               <>
-                <span>{activeCanvas?.name ?? '暂无画布'}</span>
+                <span className="canvas-title-name">
+                  {activeCanvas?.name ?? '暂无画布'}
+                  {activeCanvasIsDirty ? (
+                    <span className="canvas-unsaved-dot" aria-label="未保存" title="未保存" />
+                  ) : null}
+                </span>
                 {activeCanvas ? (
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="重命名画布"
-                    title="重命名画布"
-                    onClick={startRenameActiveCanvas}
-                  >
-                    <Pencil size={15} />
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="重命名画布"
+                      title="重命名画布"
+                      onClick={startRenameActiveCanvas}
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="保存画布"
+                      title="保存画布 Ctrl+S"
+                      disabled={!folderStorageReady || !rootDirectoryHandle || isSavingWorkspace}
+                      onClick={() => void saveWorkspaceToFolder()}
+                    >
+                      <Save size={15} />
+                    </button>
+                  </>
                 ) : null}
               </>
             )}
@@ -5126,15 +5868,124 @@ export function App() {
               >
                 <X size={18} />
               </button>
-            ) : (
-              <button type="button">
-                <Play size={18} />
-                执行
-              </button>
-            )}
+            ) : null}
           </div>
         </div>
         {showProviderManager ? (
+          providerSettingsView === 'cloudflare' ? (
+            <div className="provider-manager-view">
+              <section className="cloudflare-settings-detail">
+                <header className="provider-detail-header">
+                  <div className="provider-detail-title">
+                    <span className="provider-avatar provider-avatar-brand provider-avatar-large cloudflare-avatar">
+                      <Cloud size={26} />
+                    </span>
+                    <div>
+                      <h2>Cloudflare R2 配置</h2>
+                      <p>配置对象存储，用于后续将生成素材上传到 R2。</p>
+                    </div>
+                  </div>
+                  <div className="cloudflare-header-actions">
+                    <span
+                      className={`provider-config-chip ${
+                        cloudflareConfigIsConfigured ? 'is-configured' : ''
+                      }`}
+                    >
+                      {cloudflareConfigIsConfigured ? '已配置' : '未配置'}
+                    </span>
+                    <button
+                      type="button"
+                      className="provider-secondary-button"
+                      disabled={!cloudflareConfigIsDirty}
+                      onClick={resetCloudflareConfigDraft}
+                    >
+                      取消更改
+                    </button>
+                    <button
+                      type="button"
+                      className="provider-save-button"
+                      disabled={!cloudflareConfigIsDirty}
+                      onClick={saveCloudflareConfig}
+                    >
+                      <Save size={17} />
+                      保存 Cloudflare 配置
+                    </button>
+                  </div>
+                </header>
+                <div className="provider-detail-body cloudflare-detail-body">
+                  <section className="provider-form-section">
+                    <div className="provider-section-heading">
+                      <h3>R2 存储</h3>
+                      <p>这些字段只保存在本机配置中，不会写入导出的画布文件。</p>
+                    </div>
+                    <div className="provider-form-grid">
+                      <label>
+                        Account ID
+                        <input
+                          value={cloudflareConfigDraft.accountId}
+                          placeholder="Cloudflare Account ID"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ accountId: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Bucket 名称
+                        <input
+                          value={cloudflareConfigDraft.bucketName}
+                          placeholder="shot-agent-assets"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ bucketName: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Access Key ID
+                        <input
+                          value={cloudflareConfigDraft.accessKeyId}
+                          placeholder="R2 Access Key ID"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ accessKeyId: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Secret Access Key
+                        <input
+                          type="password"
+                          value={cloudflareConfigDraft.secretAccessKey}
+                          placeholder="R2 Secret Access Key"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ secretAccessKey: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        S3 Endpoint
+                        <input
+                          value={cloudflareConfigDraft.endpoint}
+                          placeholder="https://<account-id>.r2.cloudflarestorage.com"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ endpoint: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        公开访问 URL
+                        <input
+                          value={cloudflareConfigDraft.publicBaseUrl}
+                          placeholder="https://assets.example.com"
+                          onChange={(event) =>
+                            updateCloudflareConfigDraft({ publicBaseUrl: event.target.value })
+                          }
+                        />
+                      </label>
+                    </div>
+                  </section>
+                </div>
+              </section>
+            </div>
+          ) : (
           <div className="provider-manager-view">
             <div className="provider-settings-shell">
               <aside className="provider-settings-sidebar" aria-label="供应商列表">
@@ -5554,10 +6405,13 @@ export function App() {
               </section>
             </div>
           </div>
+          )
         ) : (
         <div
           ref={canvasRef}
-          className={`infinite-canvas ${dragState?.mode === 'pan' ? 'is-panning' : ''}`}
+          className={`infinite-canvas ${dragState?.mode === 'pan' ? 'is-panning' : ''} ${
+            edgeDraft?.snapTarget ? 'is-edge-snapping' : ''
+          }`}
           onContextMenu={(event) => {
             event.preventDefault();
             openAddMenu(event.clientX, event.clientY);
@@ -5570,7 +6424,8 @@ export function App() {
           onDragOver={(event) => event.preventDefault()}
           onDrop={(event) => {
             event.preventDefault();
-            const file = event.dataTransfer.files[0];
+            event.stopPropagation();
+            const file = getFirstSupportedMediaFile(event.dataTransfer.files);
 
             if (file) {
               void addAssetNodeFromFile(file, getCanvasPointFromClient(event.clientX, event.clientY));
@@ -5580,9 +6435,11 @@ export function App() {
           <CanvasActionRail
             canUndo={canUndoWorkspace}
             canRedo={canRedoWorkspace}
+            isAssetPanelOpen={showAssetPanel}
             scale={viewport.scale}
             onAddNode={(clientX, clientY) => openAddMenu(clientX, clientY)}
             onCreateCanvas={createCanvas}
+            onToggleAssetPanel={() => setShowAssetPanel((current) => !current)}
             onUndo={undoWorkspace}
             onRedo={redoWorkspace}
             onExportCanvas={downloadActiveCanvas}
@@ -5591,6 +6448,116 @@ export function App() {
             onZoomIn={() => zoomBy(1.12)}
             onResetViewport={resetViewport}
           />
+          {showAssetPanel ? (
+            <section
+              className="canvas-asset-sidebar asset-panel"
+              onPointerDown={(event) => event.stopPropagation()}
+              onWheel={(event) => event.stopPropagation()}
+              onDragOver={(event) => event.preventDefault()}
+            >
+              <div className="panel-title-row">
+                <h2>资产</h2>
+                <div className="asset-panel-actions">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="刷新资产"
+                    title="刷新资产"
+                    onClick={() => void refreshCanvasAssets()}
+                  >
+                    <RefreshCw size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="关闭资产面板"
+                    title="关闭资产面板"
+                    onClick={() => setShowAssetPanel(false)}
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              </div>
+              <div className="asset-filter-row" role="tablist" aria-label="资产类型">
+                {(['all', 'image', 'video', 'audio', 'file', 'cover'] as AssetFilter[]).map((filter) => (
+                  <button
+                    key={filter}
+                    type="button"
+                    className={assetFilter === filter ? 'is-active' : ''}
+                    onClick={() => setAssetFilter(filter)}
+                  >
+                    {getAssetFilterLabel(filter)}
+                  </button>
+                ))}
+              </div>
+              <div className="asset-list">
+                {loadingCanvasAssets ? (
+                  <div className="asset-empty-state">正在读取资产</div>
+                ) : filteredCanvasAssets.length > 0 ? (
+                  filteredCanvasAssets.map((asset) => {
+                    const isMuted = mutedAssetPaths.includes(asset.path);
+                    return (
+                      <article className="asset-list-item" key={asset.path}>
+                        <div className="asset-list-preview">
+                          {asset.kind === 'image' || asset.kind === 'cover' ? (
+                            asset.dataUrl ? <img src={asset.dataUrl} alt={asset.name} /> : <Image size={22} />
+                          ) : asset.kind === 'video' ? (
+                            asset.dataUrl ? (
+                              <video src={asset.dataUrl} controls muted={isMuted} />
+                            ) : (
+                              <Video size={22} />
+                            )
+                          ) : asset.kind === 'audio' ? (
+                            asset.dataUrl ? (
+                              <audio src={asset.dataUrl} controls muted={isMuted} />
+                            ) : (
+                              <Music size={22} />
+                            )
+                          ) : (
+                            <FileText size={22} />
+                          )}
+                        </div>
+                        <div className="asset-list-meta">
+                          <strong title={asset.name}>{asset.name}</strong>
+                          <small>{getAssetKindLabel(asset.kind)} · {asset.mimeType}</small>
+                        </div>
+                        <div className="asset-list-actions">
+                          {(asset.kind === 'video' || asset.kind === 'audio') ? (
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label={isMuted ? '取消静音' : '静音'}
+                              title={isMuted ? '取消静音' : '静音'}
+                              onClick={() =>
+                                setMutedAssetPaths((current) =>
+                                  current.includes(asset.path)
+                                    ? current.filter((path) => path !== asset.path)
+                                    : [...current, asset.path],
+                                )
+                              }
+                            >
+                              {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="icon-button danger-icon-button"
+                            aria-label="删除资产"
+                            title="删除资产"
+                            onClick={() => void deleteCanvasAsset(asset)}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })
+                ) : (
+                  <div className="asset-empty-state">没有匹配的资产文件</div>
+                )}
+              </div>
+            </section>
+          ) : null}
           {addMenu ? (
             <div
               className="add-node-menu"
@@ -5719,7 +6686,9 @@ export function App() {
                           <span>{port.label}</span>
                           <button
                             type="button"
-                            className="edge-handle edge-handle-input"
+                            className={`edge-handle edge-handle-input ${
+                              isEdgeSnapTarget(node.id, port.id) ? 'is-snap-target' : ''
+                            }`}
                             aria-label={`连接到${port.label}`}
                             style={{
                               width: `${edgeHandleHitSize}px`,
@@ -5736,7 +6705,9 @@ export function App() {
                   ) : canNodeReceiveInput(node) ? (
                     <button
                       type="button"
-                      className="edge-handle edge-handle-input"
+                      className={`edge-handle edge-handle-input ${
+                        isEdgeSnapTarget(node.id) ? 'is-snap-target' : ''
+                      }`}
                       aria-label="连接到此节点"
                       style={{
                         width: `${edgeHandleHitSize}px`,
@@ -5988,37 +6959,42 @@ export function App() {
                           }
                         />
                         {node.kind === 'video' ? (
-                          <div className="node-inline-video-actions">
-                            <span className="node-inline-video-mode-label">模式</span>
-                            <label className="node-inline-video-mode">
-                              <select
-                                className="video-mode-select"
-                                value={node.seedanceScenario ?? 'text_to_video'}
+                          <>
+                            <div className="node-inline-video-actions">
+                              <span className="node-inline-video-mode-label">模式</span>
+                              <label className="node-inline-video-mode">
+                                <select
+                                  className="video-mode-select"
+                                  value={node.seedanceScenario ?? 'text_to_video'}
+                                  onPointerDown={(event) => event.stopPropagation()}
+                                  onChange={(event) =>
+                                    handleVideoScenarioChange(
+                                      node.id,
+                                      event.target.value as SeedanceScenario,
+                                    )
+                                  }
+                                >
+                                  {getVideoScenarioOptions().map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <button
+                                type="button"
+                                className="node-inline-generate-button"
+                                disabled={isGenerating}
                                 onPointerDown={(event) => event.stopPropagation()}
-                                onChange={(event) =>
-                                  handleVideoScenarioChange(
-                                    node.id,
-                                    event.target.value as SeedanceScenario,
-                                  )
-                                }
+                                onClick={() => void submitNodeGeneration(node)}
                               >
-                                {getVideoScenarioOptions().map((option) => (
-                                  <option key={option.value} value={option.value}>
-                                    {option.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <button
-                              type="button"
-                              className="node-inline-generate-button"
-                              disabled={isGenerating}
-                              onPointerDown={(event) => event.stopPropagation()}
-                              onClick={() => void submitNodeGeneration(node)}
-                            >
-                              {isGenerating ? '提交中' : '生成'}
-                            </button>
-                          </div>
+                                {isGenerating ? '提交中' : '生成'}
+                              </button>
+                            </div>
+                            {node.generationId ? (
+                              <p className="node-generation-id">生成ID：{node.generationId}</p>
+                            ) : null}
+                          </>
                         ) : (
                           <button
                             type="button"
@@ -6702,6 +7678,28 @@ export function App() {
                   >
                     <Save size={16} />
                     保存为新版本
+                  </button>
+                </footer>
+              </section>
+            </div>,
+            document.body,
+          ) : null}
+          {pendingUnsavedChangesPrompt ? createPortal(
+            <div
+              className="unsaved-dialog-backdrop"
+              onPointerDown={() => setPendingUnsavedChangesPrompt(null)}
+            >
+              <section className="unsaved-dialog" onPointerDown={(event) => event.stopPropagation()}>
+                <header>
+                  <h2>{pendingUnsavedChangesPrompt.title}</h2>
+                </header>
+                <p>{pendingUnsavedChangesPrompt.message}</p>
+                <footer>
+                  <button type="button" onClick={() => setPendingUnsavedChangesPrompt(null)}>
+                    取消
+                  </button>
+                  <button type="button" className="danger-button" onClick={() => void confirmPendingUnsavedChanges()}>
+                    {pendingUnsavedChangesPrompt.confirmLabel}
                   </button>
                 </footer>
               </section>
