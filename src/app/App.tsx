@@ -435,6 +435,11 @@ type UnsavedChangesPrompt = {
 
 type AssetFilter = 'all' | CanvasAssetFileKind;
 
+type TauriWindowCloseHandle = {
+  close: () => Promise<void>;
+  destroy?: () => Promise<void>;
+};
+
 type CloudflareR2Config = {
   accountId: string;
   bucketName: string;
@@ -1555,6 +1560,19 @@ function getAssetKindLabel(kind: CanvasAssetFileKind): string {
   return getAssetFilterLabel(kind);
 }
 
+export async function forceCloseTauriWindow(appWindow: TauriWindowCloseHandle): Promise<void> {
+  if (appWindow.destroy) {
+    try {
+      await appWindow.destroy();
+      return;
+    } catch {
+      // Fall back to close below. Some runtimes may reject destroy depending on platform state.
+    }
+  }
+
+  await appWindow.close();
+}
+
 function getImageNodeSettingBadges(node: CanvasNodeView): string[] {
   const resolutionTier = node.imageResolutionTier ?? defaultImageResolutionTier;
   const aspectRatio = node.imageAspectRatio ?? defaultImageAspectRatio;
@@ -2259,14 +2277,10 @@ export function App() {
               onConfirm: async () => {
                 allowTauriCloseRef.current = true;
                 try {
-                  await appWindow.close();
+                  await forceCloseTauriWindow(appWindow);
                 } catch {
-                  try {
-                    await appWindow.destroy();
-                  } catch {
-                    allowTauriCloseRef.current = false;
-                    setCanvasMessage('关闭应用失败，请先保存画布后再重试。');
-                  }
+                  allowTauriCloseRef.current = false;
+                  setCanvasMessage('关闭应用失败，请先保存画布后再重试。');
                 }
               },
             });
