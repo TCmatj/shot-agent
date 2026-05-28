@@ -392,6 +392,7 @@ describe('App Cloudflare settings', () => {
     const providerButton = screen.getByRole('button', { name: '供应商管理' });
     const cloudflareButton = screen.getByRole('button', { name: 'Cloudflare 配置' });
 
+    expect(screen.queryByRole('button', { name: '打开 Cloudflare 配置' })).toBeNull();
     expect(
       providerButton.compareDocumentPosition(cloudflareButton) &
         Node.DOCUMENT_POSITION_FOLLOWING,

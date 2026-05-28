@@ -11,6 +11,7 @@
     "fs:write-all",
     "allow-authorize-workspace-directory",
     "allow-get-default-workspace-directory",
+    "allow-force-close-application",
     "allow-download-generated-media-to-canvas-folder",
     "opener:default"
   ]

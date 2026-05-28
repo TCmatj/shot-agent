@@ -35,6 +35,11 @@ fn get_default_workspace_directory(app: tauri::AppHandle) -> Result<String, Stri
 }
 
 #[tauri::command]
+fn force_close_application(app: tauri::AppHandle) {
+  app.exit(0);
+}
+
+#[tauri::command]
 async fn download_generated_media_to_canvas_folder(
   root_path: String,
   canvas_folder_name: String,
@@ -185,6 +190,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       authorize_workspace_directory,
       get_default_workspace_directory,
+      force_close_application,
       download_generated_media_to_canvas_folder,
     ])
     .run(tauri::generate_context!())

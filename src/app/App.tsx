@@ -9,6 +9,7 @@
   type WheelEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { invoke } from '@tauri-apps/api/core';
 import AlibabaCloudIcon from '@lobehub/icons/es/AlibabaCloud/components/Mono';
 import AnthropicIcon from '@lobehub/icons/es/Anthropic/components/Mono';
 import AzureAIIcon from '@lobehub/icons/es/AzureAI/components/Mono';
@@ -461,6 +462,8 @@ type TauriWindowCloseHandle = {
   close: () => Promise<void>;
   destroy?: () => Promise<void>;
 };
+
+type TauriInvoke = (command: string) => Promise<unknown>;
 
 type CloudflareR2Config = {
   accountId: string;
@@ -1855,7 +1858,17 @@ function getAssetKindLabel(kind: CanvasAssetFileKind): string {
   return getAssetFilterLabel(kind);
 }
 
-export async function forceCloseTauriWindow(appWindow: TauriWindowCloseHandle): Promise<void> {
+export async function forceCloseTauriWindow(
+  appWindow: TauriWindowCloseHandle,
+  invokeCommand: TauriInvoke = invoke,
+): Promise<void> {
+  try {
+    await invokeCommand('force_close_application');
+    return;
+  } catch {
+    // Fall back to JS window APIs when the backend command is unavailable, such as in tests.
+  }
+
   if (appWindow.destroy) {
     try {
       await appWindow.destroy();
@@ -2600,11 +2613,19 @@ export function App() {
             return;
           }
 
+          event.preventDefault();
+
           if (!hasUnsavedCanvasChanges()) {
+            allowTauriCloseRef.current = true;
+            window.setTimeout(() => {
+              void forceCloseTauriWindow(appWindow).catch(() => {
+                allowTauriCloseRef.current = false;
+                setCanvasMessage('关闭应用失败，请稍后重试。');
+              });
+            }, 0);
             return;
           }
 
-          event.preventDefault();
           window.setTimeout(() => {
             setPendingUnsavedChangesPrompt({
               title: '画布未保存',
@@ -5606,6 +5627,35 @@ export function App() {
     });
   }
 
+  const unsavedChangesPromptPortal = pendingUnsavedChangesPrompt
+    ? createPortal(
+        <div
+          className="unsaved-dialog-backdrop"
+          onPointerDown={() => setPendingUnsavedChangesPrompt(null)}
+        >
+          <section className="unsaved-dialog" onPointerDown={(event) => event.stopPropagation()}>
+            <header>
+              <h2>{pendingUnsavedChangesPrompt.title}</h2>
+            </header>
+            <p>{pendingUnsavedChangesPrompt.message}</p>
+            <footer>
+              <button type="button" onClick={() => setPendingUnsavedChangesPrompt(null)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                onClick={() => void confirmPendingUnsavedChanges()}
+              >
+                {pendingUnsavedChangesPrompt.confirmLabel}
+              </button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      )
+    : null;
+
   return (
     <main className={`app-shell ${isSidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}>
       <aside className="sidebar">
@@ -5692,27 +5742,12 @@ export function App() {
               onChange={(event) => updateCanvasStorageFolder(event.target.value)}
             />
           </label>
-            <p>
-              {folderStorageReady && rootDirectoryHandle
-                ? `当前：${rootDirectoryHandle.name} / 每个画布独立文件夹`
-                : '当前：未连接存储文件夹，无法保存素材'}
-            </p>
-            <div className="storage-cloud-fields">
-              <h3>Cloudflare R2</h3>
-              <p>
-                {cloudflareConfigIsConfigured
-                  ? '已配置：本地参考图片、视频、音频会先上传到 R2，再传给 Seedance。'
-                  : '未配置：本地参考图片、视频、音频暂时无法直接提交给 Seedance。'}
-              </p>
-              <button
-                type="button"
-                className="provider-secondary-button"
-                onClick={() => openProviderSettingsView('cloudflare')}
-              >
-                打开 Cloudflare 配置
-              </button>
-            </div>
-          </section>
+          <p>
+            {folderStorageReady && rootDirectoryHandle
+              ? `当前：${rootDirectoryHandle.name} / 每个画布独立文件夹`
+              : '当前：未连接存储文件夹，无法保存素材'}
+          </p>
+        </section>
         <section className="panel">
           <div className="panel-title-row">
             <h2>画布</h2>
@@ -7684,32 +7719,11 @@ export function App() {
             </div>,
             document.body,
           ) : null}
-          {pendingUnsavedChangesPrompt ? createPortal(
-            <div
-              className="unsaved-dialog-backdrop"
-              onPointerDown={() => setPendingUnsavedChangesPrompt(null)}
-            >
-              <section className="unsaved-dialog" onPointerDown={(event) => event.stopPropagation()}>
-                <header>
-                  <h2>{pendingUnsavedChangesPrompt.title}</h2>
-                </header>
-                <p>{pendingUnsavedChangesPrompt.message}</p>
-                <footer>
-                  <button type="button" onClick={() => setPendingUnsavedChangesPrompt(null)}>
-                    取消
-                  </button>
-                  <button type="button" className="danger-button" onClick={() => void confirmPendingUnsavedChanges()}>
-                    {pendingUnsavedChangesPrompt.confirmLabel}
-                  </button>
-                </footer>
-              </section>
-            </div>,
-            document.body,
-          ) : null}
           <ImagePreviewModal preview={previewImage} onClose={() => setPreviewImage(null)} />
         </div>
         )}
       </section>
+      {unsavedChangesPromptPortal}
       {canvasNavigationPanel ? createPortal(canvasNavigationPanel, document.body) : null}
     </main>
   );

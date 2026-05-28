@@ -948,7 +948,7 @@ button:disabled {
   inset: 0;
   justify-content: center;
   position: fixed;
-  z-index: 30;
+  z-index: 1000;
 }
 
 .unsaved-dialog {
