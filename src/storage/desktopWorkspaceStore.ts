@@ -1,7 +1,7 @@
 import { basename, join } from '@tauri-apps/api/path';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { exists, mkdir, readFile, readTextFile, remove, rename, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readDir, readFile, readTextFile, remove, rename, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import {
   parseWorkspaceState,
   serializeWorkspaceState,
@@ -116,6 +116,51 @@ export const desktopWorkspaceStore: WorkspaceStore = {
 
     return hydrateWorkspaceAssetUrls(handle.path, persistableState);
   },
+  async persistCanvasToFolder(handle, state, canvasId) {
+    if (handle.kind !== 'desktop-directory') {
+      throw new Error('桌面存储仅支持本地文件夹路径');
+    }
+
+    const targetCanvas = state.canvases.find((canvas) => canvas.id === canvasId);
+    if (!targetCanvas) {
+      return state;
+    }
+
+    const canvasWithSyncedFolder = await syncCanvasFolderName(handle.path, targetCanvas);
+    const persistedCanvas = await persistCanvasAssets(handle.path, canvasWithSyncedFolder);
+    const persistableCanvas = stripTransientAssetData([
+      {
+        ...persistedCanvas,
+        storageFolderName: getCanvasFolderName(persistedCanvas),
+      },
+    ])[0];
+    const persistableState: CanvasWorkspaceState = {
+      ...state,
+      canvases: state.canvases.map((canvas) =>
+        canvas.id === canvasId ? persistableCanvas : stripTransientAssetData([canvas])[0],
+      ),
+    };
+
+    await writeTextFile(await join(handle.path, 'workspace.json'), serializeWorkspaceState(persistableState));
+
+    const canvasDir = await getCanvasDirectory(handle.path, persistableCanvas, true);
+    await ensureProjectDirectories(canvasDir);
+    await writeTextFile(await join(canvasDir, 'canvas.json'), JSON.stringify(persistableCanvas, null, 2));
+    await writeTextFile(
+      await join(canvasDir, 'workflow.json'),
+      JSON.stringify(
+        {
+          canvasId: persistableCanvas.id,
+          nodes: persistableCanvas.nodes,
+          edges: persistableCanvas.edges,
+        },
+        null,
+        2,
+      ),
+    );
+
+    return hydrateWorkspaceAssetUrls(handle.path, persistableState);
+  },
   async readWorkspaceFromFolder(handle, fallback) {
     if (handle.kind !== 'desktop-directory') {
       return fallback;
@@ -136,6 +181,58 @@ export const desktopWorkspaceStore: WorkspaceStore = {
 
     const canvasDir = await join(handle.path, getCanvasFolderName(canvas));
     await remove(canvasDir, { recursive: true });
+  },
+  async listCanvasAssets(handle, canvas) {
+    if (handle.kind !== 'desktop-directory') {
+      return [];
+    }
+
+    const canvasDir = await getCanvasDirectory(handle.path, canvas, false);
+    const assetsDir = await join(canvasDir, 'assets');
+    const folders: Array<{ directoryName: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover' }> = [
+      { directoryName: 'images', kind: 'image' },
+      { directoryName: 'videos', kind: 'video' },
+      { directoryName: 'audios', kind: 'audio' },
+      { directoryName: 'files', kind: 'file' },
+      { directoryName: 'covers', kind: 'cover' },
+    ];
+    const assets = await Promise.all(
+      folders.map(async ({ directoryName, kind }) => {
+        const directoryPath = await join(assetsDir, directoryName);
+        if (!(await exists(directoryPath))) {
+          return [];
+        }
+
+        const entries = await readDir(directoryPath);
+        return Promise.all(
+          entries
+            .filter((entry) => !entry.isDirectory)
+            .map(async (entry) => {
+              const assetPath = `assets/${directoryName}/${entry.name}`;
+              return {
+                name: entry.name,
+                path: assetPath,
+                kind,
+                mimeType: getMimeTypeFromPath(assetPath),
+                dataUrl: await readAssetObjectUrl(handle.path, canvas, assetPath),
+              };
+            }),
+        );
+      }),
+    );
+
+    return assets.flat().sort((first, second) => first.name.localeCompare(second.name));
+  },
+  async deleteCanvasAsset(handle, canvas, assetPath) {
+    if (handle.kind !== 'desktop-directory') {
+      return;
+    }
+
+    const canvasDir = await getCanvasDirectory(handle.path, canvas, false);
+    const resolvedPath = await join(canvasDir, ...assetPath.split('/').filter(Boolean));
+    if (await exists(resolvedPath)) {
+      await remove(resolvedPath);
+    }
   },
   async saveAssetFileToCanvasFolder(handle, canvas, file) {
     if (handle.kind !== 'desktop-directory') {

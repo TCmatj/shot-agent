@@ -113,6 +113,53 @@ export async function persistWorkspaceToFolder(
   return hydrateWorkspaceAssetUrls(rootHandle, persistableState);
 }
 
+export async function persistCanvasToFolder(
+  rootHandle: ShotAgentDirectoryHandle,
+  state: CanvasWorkspaceState,
+  canvasId: string,
+): Promise<CanvasWorkspaceState> {
+  const targetCanvas = state.canvases.find((canvas) => canvas.id === canvasId);
+  if (!targetCanvas) {
+    return state;
+  }
+
+  const canvasWithSyncedFolder = await syncCanvasFolderName(rootHandle, targetCanvas);
+  const persistedCanvas = await persistCanvasAssets(rootHandle, canvasWithSyncedFolder);
+  const persistableCanvas = stripTransientAssetData([
+    {
+      ...persistedCanvas,
+      storageFolderName: getCanvasFolderName(persistedCanvas),
+    },
+  ])[0];
+  const persistableState: CanvasWorkspaceState = {
+    ...state,
+    canvases: state.canvases.map((canvas) =>
+      canvas.id === canvasId ? persistableCanvas : stripTransientAssetData([canvas])[0],
+    ),
+  };
+
+  await writeTextFile(rootHandle, 'workspace.json', serializeWorkspaceState(persistableState));
+
+  const canvasDir = await getCanvasDirectory(rootHandle, persistableCanvas, true);
+  await ensureProjectDirectories(canvasDir);
+  await writeTextFile(canvasDir, 'canvas.json', JSON.stringify(persistableCanvas, null, 2));
+  await writeTextFile(
+    canvasDir,
+    'workflow.json',
+    JSON.stringify(
+      {
+        canvasId: persistableCanvas.id,
+        nodes: persistableCanvas.nodes,
+        edges: persistableCanvas.edges,
+      },
+      null,
+      2,
+    ),
+  );
+
+  return hydrateWorkspaceAssetUrls(rootHandle, persistableState);
+}
+
 export async function readWorkspaceFromFolder(
   rootHandle: ShotAgentDirectoryHandle,
   fallback: CanvasWorkspaceState,
@@ -133,6 +180,68 @@ export async function deleteCanvasFolder(
   canvas: CanvasView,
 ): Promise<void> {
   await rootHandle.removeEntry(getCanvasFolderName(canvas), { recursive: true });
+}
+
+export async function listCanvasAssets(
+  rootHandle: ShotAgentDirectoryHandle,
+  canvas: CanvasView,
+): Promise<Array<{ name: string; path: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover'; mimeType: string; dataUrl?: string }>> {
+  const canvasDir = await getCanvasDirectory(rootHandle, canvas, false);
+  const assetsDir = await canvasDir.getDirectoryHandle('assets');
+  const folders: Array<{ directoryName: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover' }> = [
+    { directoryName: 'images', kind: 'image' },
+    { directoryName: 'videos', kind: 'video' },
+    { directoryName: 'audios', kind: 'audio' },
+    { directoryName: 'files', kind: 'file' },
+    { directoryName: 'covers', kind: 'cover' },
+  ];
+  const assets = await Promise.all(
+    folders.map(async ({ directoryName, kind }) => {
+      try {
+        const directory = await assetsDir.getDirectoryHandle(directoryName);
+        const entries: Array<{ name: string; path: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover'; mimeType: string; dataUrl?: string }> = [];
+        const iterableDirectory = directory as FileSystemDirectoryHandle & {
+          entries(): AsyncIterable<[string, FileSystemHandle]>;
+        };
+        for await (const [name, handle] of iterableDirectory.entries()) {
+          if (handle.kind !== 'file') {
+            continue;
+          }
+
+          const assetPath = `assets/${directoryName}/${name}`;
+          const file = await (handle as FileSystemFileHandle).getFile();
+          entries.push({
+            name,
+            path: assetPath,
+            kind,
+            mimeType: file.type || getMimeTypeFromPath(assetPath),
+            dataUrl: URL.createObjectURL(file),
+          });
+        }
+        return entries;
+      } catch {
+        return [];
+      }
+    }),
+  );
+
+  return assets.flat().sort((first, second) => first.name.localeCompare(second.name));
+}
+
+export async function deleteCanvasAsset(
+  rootHandle: ShotAgentDirectoryHandle,
+  canvas: CanvasView,
+  assetPath: string,
+): Promise<void> {
+  const canvasDir = await getCanvasDirectory(rootHandle, canvas, false);
+  const segments = assetPath.split('/').filter(Boolean);
+  if (segments.length < 3 || segments[0] !== 'assets') {
+    return;
+  }
+
+  const assetsDir = await canvasDir.getDirectoryHandle('assets');
+  const mediaDir = await assetsDir.getDirectoryHandle(segments[1]);
+  await mediaDir.removeEntry(segments.slice(2).join('/'));
 }
 
 export async function saveAssetFileToCanvasFolder(
@@ -568,6 +677,36 @@ async function fileExists(directory: FileSystemDirectoryHandle, fileName: string
   } catch {
     return false;
   }
+}
+
+function getMimeTypeFromPath(assetPath: string): string {
+  const lowerCasePath = assetPath.toLowerCase();
+
+  if (lowerCasePath.endsWith('.png')) {
+    return 'image/png';
+  }
+
+  if (lowerCasePath.endsWith('.jpg') || lowerCasePath.endsWith('.jpeg')) {
+    return 'image/jpeg';
+  }
+
+  if (lowerCasePath.endsWith('.webp')) {
+    return 'image/webp';
+  }
+
+  if (lowerCasePath.endsWith('.mp4')) {
+    return 'video/mp4';
+  }
+
+  if (lowerCasePath.endsWith('.mp3')) {
+    return 'audio/mpeg';
+  }
+
+  if (lowerCasePath.endsWith('.wav')) {
+    return 'audio/wav';
+  }
+
+  return 'application/octet-stream';
 }
 
 function openHandleDatabase(): Promise<IDBDatabase> {

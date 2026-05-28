@@ -1,7 +1,10 @@
 import {
   ensureDirectoryPermission as ensureBrowserDirectoryPermission,
+  deleteCanvasAsset as deleteCanvasAssetFromBrowserFolder,
   deleteCanvasFolder as deleteCanvasFolderFromBrowserFolder,
   getStoredRootDirectoryHandle as getStoredBrowserRootDirectoryHandle,
+  listCanvasAssets as listCanvasAssetsFromBrowserFolder,
+  persistCanvasToFolder as persistCanvasToBrowserFolder,
   persistWorkspaceToFolder as persistWorkspaceToBrowserFolder,
   readWorkspaceFromFolder as readWorkspaceFromBrowserFolder,
   saveAssetFileToCanvasFolder as saveAssetFileToBrowserCanvasFolder,
@@ -70,6 +73,17 @@ export const browserWorkspaceStore: WorkspaceStore = {
 
     return persistWorkspaceToBrowserFolder(handle.directoryHandle as ShotAgentDirectoryHandle, state);
   },
+  async persistCanvasToFolder(handle, state, canvasId) {
+    if (handle.kind !== 'browser-directory') {
+      throw new Error('浏览器存储仅支持浏览器目录句柄');
+    }
+
+    return persistCanvasToBrowserFolder(
+      handle.directoryHandle as ShotAgentDirectoryHandle,
+      state,
+      canvasId,
+    );
+  },
   async readWorkspaceFromFolder(handle, fallback) {
     if (handle.kind !== 'browser-directory') {
       return fallback;
@@ -83,6 +97,24 @@ export const browserWorkspaceStore: WorkspaceStore = {
     }
 
     await deleteCanvasFolderFromBrowserFolder(handle.directoryHandle as ShotAgentDirectoryHandle, canvas);
+  },
+  async listCanvasAssets(handle, canvas) {
+    if (handle.kind !== 'browser-directory') {
+      return [];
+    }
+
+    return listCanvasAssetsFromBrowserFolder(handle.directoryHandle as ShotAgentDirectoryHandle, canvas);
+  },
+  async deleteCanvasAsset(handle, canvas, assetPath) {
+    if (handle.kind !== 'browser-directory') {
+      return;
+    }
+
+    await deleteCanvasAssetFromBrowserFolder(
+      handle.directoryHandle as ShotAgentDirectoryHandle,
+      canvas,
+      assetPath,
+    );
   },
   async saveAssetFileToCanvasFolder(handle, canvas, file) {
     if (handle.kind !== 'browser-directory') {

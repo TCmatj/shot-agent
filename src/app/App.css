@@ -224,6 +224,119 @@ button:disabled {
   color: #66717f;
 }
 
+.asset-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.asset-panel-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.asset-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.asset-filter-row button {
+  border-radius: 999px;
+  font-size: 12px;
+  min-height: 28px;
+  padding: 0 9px;
+}
+
+.asset-filter-row button.is-active {
+  background: #d7dde5;
+  border-color: #d7dde5;
+  color: #111418;
+}
+
+.asset-list {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.asset-list-item {
+  background: #171a1f;
+  border: 1px solid #303640;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  padding: 8px;
+}
+
+.asset-list-preview {
+  align-items: center;
+  background: #080a0d;
+  border: 1px solid #252b34;
+  border-radius: 6px;
+  display: flex;
+  height: 54px;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.asset-list-preview img,
+.asset-list-preview video {
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.asset-list-preview audio {
+  width: 58px;
+}
+
+.asset-list-meta {
+  align-self: center;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.asset-list-meta strong,
+.asset-list-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-list-meta strong {
+  color: #eef2f5;
+  font-size: 13px;
+}
+
+.asset-list-meta small,
+.asset-empty-state {
+  color: #8d98a7;
+  font-size: 12px;
+}
+
+.asset-list-actions {
+  align-content: center;
+  display: grid;
+  gap: 5px;
+}
+
+.asset-list-actions .icon-button {
+  height: 26px;
+  min-height: 26px;
+  width: 26px;
+}
+
+.asset-empty-state {
+  background: #171a1f;
+  border: 1px dashed #303640;
+  border-radius: 6px;
+  padding: 12px;
+}
+
 .canvas-list {
   display: grid;
   gap: 8px;
@@ -296,6 +409,24 @@ button:disabled {
 .canvas-list strong {
   font-size: 14px;
   font-weight: 600;
+}
+
+.canvas-list-name-text,
+.canvas-title-name {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.canvas-unsaved-dot {
+  background: #f2c94c;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px rgba(242, 201, 76, 0.16);
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 7px;
+  width: 7px;
 }
 
 .canvas-list small {
@@ -808,6 +939,44 @@ button:disabled {
 .output-modal h2 {
   font-size: 16px;
   margin: 0 0 4px;
+}
+
+.unsaved-dialog-backdrop {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.58);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  position: fixed;
+  z-index: 30;
+}
+
+.unsaved-dialog {
+  background: #090b0e;
+  border: 1px solid #3a424f;
+  border-radius: 8px;
+  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.54);
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  width: min(420px, calc(100vw - 40px));
+}
+
+.unsaved-dialog h2 {
+  font-size: 17px;
+  margin: 0;
+}
+
+.unsaved-dialog p {
+  color: #c7d0dc;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.unsaved-dialog footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
 }
 
 .output-modal-header {
@@ -1418,11 +1587,47 @@ audio.asset-preview {
   width: 42px;
 }
 
+.canvas-action-rail button.is-active {
+  background: #d7dde5;
+  border-color: #d7dde5;
+  color: #111418;
+}
+
 .canvas-scale-indicator {
   color: #cdd6df;
   font-size: 12px;
   min-width: 42px;
   text-align: center;
+}
+
+.canvas-asset-sidebar {
+  background: rgba(9, 11, 14, 0.96);
+  border: 1px solid #252b34;
+  border-radius: 8px;
+  bottom: 18px;
+  box-shadow: 0 22px 56px rgba(0, 0, 0, 0.36);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  left: 72px;
+  max-width: calc(100% - 96px);
+  min-height: 0;
+  padding: 14px;
+  position: absolute;
+  top: 18px;
+  width: 360px;
+  z-index: 4;
+}
+
+.canvas-asset-sidebar h2 {
+  color: #dfe5ec;
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.canvas-asset-sidebar .asset-list {
+  max-height: none;
+  min-height: 0;
 }
 
 .add-node-menu {
@@ -2152,6 +2357,118 @@ audio.asset-preview {
   gap: 12px;
   grid-template-columns: auto minmax(150px, 1fr) minmax(150px, 1fr) auto;
   padding: 12px;
+}
+
+.provider-history-section {
+  gap: 14px;
+}
+
+.provider-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.provider-history-item {
+  background: #07090c;
+  border: 1px solid #232933;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.provider-history-item header {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.provider-history-item header > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.provider-history-item strong {
+  color: #eef2f5;
+  font-size: 13px;
+}
+
+.provider-history-item small {
+  color: #8d98a7;
+  font-size: 12px;
+}
+
+.provider-history-status {
+  border: 1px solid #3a424f;
+  border-radius: 999px;
+  color: #c7d0dc;
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+.provider-history-status.is-succeeded {
+  border-color: #2f6b4f;
+  color: #91ddb6;
+}
+
+.provider-history-status.is-failed {
+  border-color: #7a3a3a;
+  color: #ffaaa7;
+}
+
+.provider-history-status.is-running {
+  border-color: #695d2d;
+  color: #f2d56f;
+}
+
+.provider-history-item dl {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.provider-history-item dl > div {
+  min-width: 0;
+}
+
+.provider-history-item dt {
+  color: #778391;
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+
+.provider-history-item dd {
+  color: #cbd5e1;
+  font-size: 12px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-history-error,
+.provider-history-prompt {
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 8px;
+}
+
+.provider-history-error {
+  background: rgba(122, 58, 58, 0.18);
+  color: #ffbbb8;
+}
+
+.provider-history-prompt {
+  background: #0d1117;
+  color: #aeb8c5;
+  max-height: 54px;
+  overflow: hidden;
 }
 
 .provider-model-toggle {

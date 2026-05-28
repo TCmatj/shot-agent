@@ -49,6 +49,8 @@ import {
   Undo2,
   Redo2,
   Video,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import {
@@ -162,11 +164,10 @@ import {
   serializeStoredCanvasViewports,
   type StoredCanvasViewports,
 } from './canvasViewports';
-import { shouldApplyPersistedWorkspaceState } from './workspacePersistence';
 import {
   getWorkspaceStore,
 } from '../storage';
-import type { WorkspaceRootHandle } from '../storage/workspaceStore';
+import type { CanvasAssetFile, CanvasAssetFileKind, WorkspaceRootHandle } from '../storage/workspaceStore';
 import { createSeedanceTaskTracker } from '../models/seedanceTaskTracker';
 
 type NodeTemplate = {
@@ -241,9 +242,11 @@ type MinimapDragState = {
 type CanvasActionRailProps = {
   canUndo: boolean;
   canRedo: boolean;
+  isAssetPanelOpen: boolean;
   scale: number;
   onAddNode: (clientX: number, clientY: number) => void;
   onCreateCanvas: () => void;
+  onToggleAssetPanel: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onExportCanvas: () => void;
@@ -256,9 +259,11 @@ type CanvasActionRailProps = {
 function CanvasActionRail({
   canUndo,
   canRedo,
+  isAssetPanelOpen,
   scale,
   onAddNode,
   onCreateCanvas,
+  onToggleAssetPanel,
   onUndo,
   onRedo,
   onExportCanvas,
@@ -312,6 +317,15 @@ function CanvasActionRail({
         </button>
         <button type="button" aria-label="导入画布" title="导入画布" onClick={onImportCanvas}>
           <Import size={18} />
+        </button>
+        <button
+          type="button"
+          className={isAssetPanelOpen ? 'is-active' : ''}
+          aria-label="资产"
+          title="资产"
+          onClick={onToggleAssetPanel}
+        >
+          <FileText size={18} />
         </button>
       </div>
       <div className="canvas-action-group">
@@ -411,6 +425,15 @@ const defaultViewport: CanvasViewport = { x: 80, y: 72, scale: 1 };
 const edgeSnapRadius = 52;
 
 type ProviderSettingsView = 'providers' | 'cloudflare';
+
+type UnsavedChangesPrompt = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void | Promise<void>;
+};
+
+type AssetFilter = 'all' | CanvasAssetFileKind;
 
 type CloudflareR2Config = {
   accountId: string;
@@ -1442,6 +1465,96 @@ function getProviderProtocolLabel(protocol: ProviderConfig['protocol']): string 
   }
 }
 
+function getGenerationStatusLabel(status: GenerationRecord['status']): string {
+  switch (status) {
+    case 'queued':
+      return '排队中';
+    case 'running':
+      return '生成中';
+    case 'succeeded':
+      return '已完成';
+    case 'failed':
+      return '失败';
+    case 'canceled':
+      return '已取消';
+    case 'idle':
+    default:
+      return '待开始';
+  }
+}
+
+function getGenerationStatusTone(status: GenerationRecord['status']): string {
+  switch (status) {
+    case 'succeeded':
+      return 'succeeded';
+    case 'failed':
+      return 'failed';
+    case 'queued':
+    case 'running':
+      return 'running';
+    case 'canceled':
+      return 'canceled';
+    case 'idle':
+    default:
+      return 'idle';
+  }
+}
+
+function formatGenerationTime(value?: string): string {
+  if (!value) {
+    return '-';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getGenerationTokenUsage(record: GenerationRecord): string {
+  const usage =
+    record.usage && typeof record.usage === 'object'
+      ? (record.usage as { completionTokens?: unknown; totalTokens?: unknown })
+      : null;
+  const totalTokens =
+    typeof usage?.totalTokens === 'number'
+      ? usage.totalTokens
+      : typeof usage?.completionTokens === 'number'
+        ? usage.completionTokens
+        : undefined;
+
+  return typeof totalTokens === 'number' ? `${totalTokens}` : '-';
+}
+
+function getAssetFilterLabel(filter: AssetFilter): string {
+  switch (filter) {
+    case 'image':
+      return '图片';
+    case 'video':
+      return '视频';
+    case 'audio':
+      return '音频';
+    case 'file':
+      return '文件';
+    case 'cover':
+      return '封面';
+    case 'all':
+    default:
+      return '全部';
+  }
+}
+
+function getAssetKindLabel(kind: CanvasAssetFileKind): string {
+  return getAssetFilterLabel(kind);
+}
+
 function getImageNodeSettingBadges(node: CanvasNodeView): string[] {
   const resolutionTier = node.imageResolutionTier ?? defaultImageResolutionTier;
   const aspectRatio = node.imageAspectRatio ?? defaultImageAspectRatio;
@@ -1710,6 +1823,11 @@ export function App() {
   const [providerSettingsView, setProviderSettingsView] = useState<ProviderSettingsView>('providers');
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [providerSearchQuery, setProviderSearchQuery] = useState('');
+  const [showAssetPanel, setShowAssetPanel] = useState(false);
+  const [assetFilter, setAssetFilter] = useState<AssetFilter>('all');
+  const [canvasAssets, setCanvasAssets] = useState<CanvasAssetFile[]>([]);
+  const [loadingCanvasAssets, setLoadingCanvasAssets] = useState(false);
+  const [mutedAssetPaths, setMutedAssetPaths] = useState<string[]>([]);
   const [cloudflareConfig, setCloudflareConfig] = useState<CloudflareR2Config>(loadCloudflareR2Config);
   const [cloudflareConfigDraft, setCloudflareConfigDraft] =
     useState<CloudflareR2Config>(cloudflareConfig);
@@ -1728,6 +1846,13 @@ export function App() {
     null,
   );
   const [folderStorageReady, setFolderStorageReady] = useState(false);
+  const [isSavingWorkspace, setIsSavingWorkspace] = useState(false);
+  const isSavingWorkspaceRef = useRef(false);
+  const [dirtyCanvasIds, setDirtyCanvasIds] = useState<Set<string>>(() => new Set());
+  const dirtyCanvasIdsRef = useRef<Set<string>>(new Set());
+  const allowTauriCloseRef = useRef(false);
+  const [pendingUnsavedChangesPrompt, setPendingUnsavedChangesPrompt] =
+    useState<UnsavedChangesPrompt | null>(null);
   const [canvasViewports, setCanvasViewports] = useState<StoredCanvasViewports>(
     loadCanvasViewports,
   );
@@ -1740,6 +1865,7 @@ export function App() {
     viewport: CanvasViewport;
   } | null>(null);
   const workspaceStateRef = useRef(workspaceState);
+  const savedWorkspaceStateRef = useRef(workspaceState);
   const seedanceTrackersRef = useRef(
     new Map<string, ReturnType<typeof createSeedanceTaskTracker>>(),
   );
@@ -1792,12 +1918,129 @@ export function App() {
     setWorkspaceStateRaw(action);
   }
 
+  function updateDirtyCanvasIds(updater: (current: Set<string>) => Set<string>) {
+    const next = updater(dirtyCanvasIdsRef.current);
+    dirtyCanvasIdsRef.current = next;
+    setDirtyCanvasIds(next);
+  }
+
+  function markCanvasDirty(canvasId: string | null | undefined) {
+    if (!canvasId) {
+      return;
+    }
+
+    updateDirtyCanvasIds((current) => {
+      if (current.has(canvasId)) {
+        return current;
+      }
+
+      const next = new Set(current);
+      next.add(canvasId);
+      return next;
+    });
+  }
+
+  function clearDirtyCanvasIds(canvasIds?: Iterable<string>) {
+    updateDirtyCanvasIds((current) => {
+      if (!canvasIds) {
+        return current.size > 0 ? new Set() : current;
+      }
+
+      const next = new Set(current);
+      let changed = false;
+      for (const canvasId of canvasIds) {
+        changed = next.delete(canvasId) || changed;
+      }
+
+      return changed ? next : current;
+    });
+  }
+
+  function hasUnsavedCanvasChanges() {
+    return dirtyCanvasIdsRef.current.size > 0;
+  }
+
+  function createCurrentCanvasSaveState(
+    current: typeof workspaceState,
+    saved: typeof workspaceState,
+    canvasId: string,
+  ): typeof workspaceState {
+    const currentCanvas = current.canvases.find((canvas) => canvas.id === canvasId);
+    if (!currentCanvas) {
+      return saved;
+    }
+
+    const currentCanvasNodeIds = new Set(currentCanvas.nodes.map((node) => node.id));
+    const savedHistoryForOtherCanvases = (saved.generationHistory ?? []).filter(
+      (record) => !currentCanvasNodeIds.has(record.nodeId),
+    );
+    const currentCanvasHistory = (current.generationHistory ?? []).filter((record) =>
+      currentCanvasNodeIds.has(record.nodeId),
+    );
+
+    const savedCanvasIds = new Set(saved.canvases.map((canvas) => canvas.id));
+    const mergedCanvases = savedCanvasIds.has(canvasId)
+      ? saved.canvases.map((canvas) => (canvas.id === canvasId ? currentCanvas : canvas))
+      : [...saved.canvases, currentCanvas];
+
+    return {
+      ...saved,
+      activeCanvasId: current.activeCanvasId,
+      storage: current.storage,
+      canvases: mergedCanvases,
+      generationHistory: [...currentCanvasHistory, ...savedHistoryForOtherCanvases],
+    };
+  }
+
+  function getCanvasSnapshotForDirtyCheck(state: typeof workspaceState, canvasId: string): string {
+    const canvas = state.canvases.find((current) => current.id === canvasId) ?? null;
+    const nodeIds = new Set(canvas?.nodes.map((node) => node.id) ?? []);
+    const generationHistory = (state.generationHistory ?? []).filter((record) =>
+      nodeIds.has(record.nodeId),
+    );
+
+    return JSON.stringify({
+      canvas,
+      generationHistory,
+    });
+  }
+
+  function syncCanvasDirtyState(canvasId: string | null | undefined, state = workspaceStateRef.current) {
+    if (!canvasId) {
+      return;
+    }
+
+    const currentSnapshot = getCanvasSnapshotForDirtyCheck(state, canvasId);
+    const savedSnapshot = getCanvasSnapshotForDirtyCheck(savedWorkspaceStateRef.current, canvasId);
+
+    if (currentSnapshot === savedSnapshot) {
+      clearDirtyCanvasIds([canvasId]);
+    } else {
+      markCanvasDirty(canvasId);
+    }
+  }
+
+  async function confirmPendingUnsavedChanges() {
+    const prompt = pendingUnsavedChangesPrompt;
+    if (!prompt) {
+      return;
+    }
+
+    setPendingUnsavedChangesPrompt(null);
+    await prompt.onConfirm();
+  }
+
   const [modalDragState, setModalDragState] = useState<ModalDragState | null>(null);
   const [previewImage, setPreviewImage] = useState<ImagePreviewState | null>(null);
   const { activeCanvasId, canvases, storage } = workspaceState;
   const canUndoWorkspace = workspaceHistory.past.length > 0;
   const canRedoWorkspace = workspaceHistory.future.length > 0;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? null;
+  const activeCanvasIsDirty = activeCanvas ? dirtyCanvasIds.has(activeCanvas.id) : false;
+  const filteredCanvasAssets =
+    assetFilter === 'all'
+      ? canvasAssets
+      : canvasAssets.filter((asset) => asset.kind === assetFilter);
   const renderedCanvasNodes = useMemo(() => {
     if (!activeCanvas) {
       return [];
@@ -1916,6 +2159,16 @@ export function App() {
     null;
   const selectedProviderView =
     selectedProvider ? providerDrafts[selectedProvider.id] ?? selectedProvider : null;
+  const selectedProviderVideoHistory =
+    selectedProvider && selectedProviderView?.protocol === 'volcengine'
+      ? (workspaceState.generationHistory ?? [])
+          .filter(
+            (record) =>
+              record.providerId === selectedProvider.id &&
+              record.nodeKind === 'video',
+          )
+          .slice(0, 20)
+      : [];
   const selectedProviderIsFetching =
     selectedProvider ? fetchingProviderModelIds.includes(selectedProvider.id) : false;
   const selectedProviderHasDraft = selectedProvider
@@ -1958,6 +2211,80 @@ export function App() {
     [],
   );
 
+  useEffect(() => {
+    if ('__TAURI_INTERNALS__' in window) {
+      return undefined;
+    }
+
+    function handleBeforeUnload(event: BeforeUnloadEvent) {
+      if (!hasUnsavedCanvasChanges()) {
+        return;
+      }
+
+      event.preventDefault();
+      event.returnValue = '';
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let canceled = false;
+
+    async function registerClosePrompt() {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        if (canceled) {
+          return;
+        }
+
+        const appWindow = getCurrentWindow();
+        unlisten = await appWindow.onCloseRequested(async (event) => {
+          if (allowTauriCloseRef.current) {
+            return;
+          }
+
+          if (!hasUnsavedCanvasChanges()) {
+            return;
+          }
+
+          event.preventDefault();
+          window.setTimeout(() => {
+            setPendingUnsavedChangesPrompt({
+              title: '画布未保存',
+              message: '当前还有未保存的画布更改，关闭应用后这些更改可能丢失。',
+              confirmLabel: '关闭应用',
+              onConfirm: async () => {
+                allowTauriCloseRef.current = true;
+                try {
+                  await appWindow.close();
+                } catch {
+                  try {
+                    await appWindow.destroy();
+                  } catch {
+                    allowTauriCloseRef.current = false;
+                    setCanvasMessage('关闭应用失败，请先保存画布后再重试。');
+                  }
+                }
+              },
+            });
+          }, 0);
+        });
+      } catch {
+        // Browser runtime only needs beforeunload; Tauri close handling is optional here.
+      }
+    }
+
+    void registerClosePrompt();
+
+    return () => {
+      canceled = true;
+      unlisten?.();
+    };
+  }, []);
+
   function setWorkspaceStateWithHistory(
     updater: (current: typeof workspaceState) => typeof workspaceState,
   ) {
@@ -1984,6 +2311,7 @@ export function App() {
     workspaceStateRef.current = result.state;
     setWorkspaceHistory(result.history);
     setWorkspaceState(result.state);
+    syncCanvasDirtyState(result.state.activeCanvasId, result.state);
     clearSelection();
     setAddMenu(null);
     setEdgeDraft(null);
@@ -2000,6 +2328,7 @@ export function App() {
     workspaceStateRef.current = result.state;
     setWorkspaceHistory(result.history);
     setWorkspaceState(result.state);
+    syncCanvasDirtyState(result.state.activeCanvasId, result.state);
     clearSelection();
     setAddMenu(null);
     setEdgeDraft(null);
@@ -2137,6 +2466,7 @@ export function App() {
         if (!canceled) {
           setRootDirectoryHandle(handle);
           workspaceStateRef.current = restoredState;
+          savedWorkspaceStateRef.current = restoredState;
           setWorkspaceState(restoredState);
           setFolderStorageReady(true);
           setCanvasMessage(`已连接画布存储文件夹：${handle.name}`);
@@ -2156,32 +2486,91 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!rootDirectoryHandle || !folderStorageReady || dragState) {
+  async function saveWorkspaceToFolder() {
+    if (!rootDirectoryHandle || !folderStorageReady) {
+      setCanvasMessage('请先选择画布存储文件夹，再保存画布。');
       return;
     }
 
-    const snapshot = workspaceState;
+    if (dragState) {
+      setCanvasMessage('请结束拖拽后再保存画布。');
+      return;
+    }
 
-    void workspaceStore.persistWorkspaceToFolder(rootDirectoryHandle, snapshot)
-      .then((persistedState) => {
-        if (
-          !shouldApplyPersistedWorkspaceState(
-            snapshot,
-            workspaceStateRef.current,
-            persistedState,
-          )
-        ) {
-          return;
-        }
+    if (isSavingWorkspaceRef.current) {
+      return;
+    }
 
-        workspaceStateRef.current = persistedState;
-        setWorkspaceState(persistedState);
-      })
-      .catch(() => {
-        setCanvasMessage('写入画布存储文件夹失败，当前更改可能刷新后丢失。');
-      });
-  }, [dragState, folderStorageReady, rootDirectoryHandle, workspaceState]);
+    isSavingWorkspaceRef.current = true;
+    setIsSavingWorkspace(true);
+    const snapshot = workspaceStateRef.current;
+    const canvasIdToSave = snapshot.activeCanvasId;
+    const dirtyCanvasIdsAtSaveStart = new Set(dirtyCanvasIdsRef.current);
+    const saveState = createCurrentCanvasSaveState(
+      snapshot,
+      savedWorkspaceStateRef.current,
+      canvasIdToSave,
+    );
+
+    try {
+      const persistedState = await workspaceStore.persistCanvasToFolder(
+        rootDirectoryHandle,
+        saveState,
+        canvasIdToSave,
+      );
+      const unchangedDuringSave = workspaceStateRef.current === snapshot;
+      const persistedCanvas = persistedState.canvases.find((canvas) => canvas.id === canvasIdToSave);
+      const nextSavedState = {
+        ...savedWorkspaceStateRef.current,
+        activeCanvasId: persistedState.activeCanvasId,
+        storage: persistedState.storage,
+        canvases: savedWorkspaceStateRef.current.canvases.some((canvas) => canvas.id === canvasIdToSave)
+          ? savedWorkspaceStateRef.current.canvases.map((canvas) =>
+              canvas.id === canvasIdToSave ? persistedCanvas ?? canvas : canvas,
+            )
+          : [
+              ...savedWorkspaceStateRef.current.canvases,
+              ...(persistedCanvas ? [persistedCanvas] : []),
+            ],
+        generationHistory: persistedState.generationHistory,
+      };
+      savedWorkspaceStateRef.current = nextSavedState;
+
+      if (unchangedDuringSave && persistedCanvas) {
+        const nextLiveState = {
+          ...snapshot,
+          storage: persistedState.storage,
+          canvases: snapshot.canvases.map((canvas) =>
+            canvas.id === canvasIdToSave ? persistedCanvas : canvas,
+          ),
+          generationHistory: [
+            ...(persistedState.generationHistory ?? []).filter((record) =>
+              persistedCanvas.nodes.some((node) => node.id === record.nodeId),
+            ),
+            ...(snapshot.generationHistory ?? []).filter(
+              (record) => !persistedCanvas.nodes.some((node) => node.id === record.nodeId),
+            ),
+          ],
+        };
+        workspaceStateRef.current = nextLiveState;
+        setWorkspaceState(nextLiveState);
+      }
+
+      if (dirtyCanvasIdsAtSaveStart.has(canvasIdToSave)) {
+        clearDirtyCanvasIds([canvasIdToSave]);
+      }
+      setCanvasMessage(
+        unchangedDuringSave
+          ? '当前画布已保存。'
+          : '画布已保存，保存期间产生的新更改需要再次保存。',
+      );
+    } catch {
+      setCanvasMessage('写入画布存储文件夹失败，当前更改可能刷新后丢失。');
+    } finally {
+      isSavingWorkspaceRef.current = false;
+      setIsSavingWorkspace(false);
+    }
+  }
 
   useEffect(() => {
     try {
@@ -2265,6 +2654,14 @@ export function App() {
       setInspectedNodeId(null);
     }
   }, [activeCanvas, inspectedNodeId]);
+
+  useEffect(() => {
+    if (!showAssetPanel) {
+      return;
+    }
+
+    void refreshCanvasAssets();
+  }, [showAssetPanel, activeCanvasId, folderStorageReady, rootDirectoryHandle]);
 
   useEffect(() => {
     if (!activeCanvasId) {
@@ -2381,6 +2778,13 @@ export function App() {
       const isCut = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'x';
       const isPaste = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'v';
       const isSelectAll = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'a';
+      const isSave = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 's';
+
+      if (isSave) {
+        event.preventDefault();
+        void saveWorkspaceToFolder();
+        return;
+      }
 
       if (isUndo || isRedo) {
         if ((isUndo && !canUndoWorkspace) || (isRedo && !canRedoWorkspace)) {
@@ -2413,6 +2817,7 @@ export function App() {
           setCanvasClipboard(copied);
 
           if (isCut) {
+            markCanvasDirty(workspaceStateRef.current.activeCanvasId);
             setWorkspaceStateWithHistory((current) => ({
               ...current,
               canvases: current.canvases.map((canvas) =>
@@ -2437,6 +2842,7 @@ export function App() {
           event.preventDefault();
           let pastedNodeIds: string[] = [];
           let nextClipboard: CanvasClipboardPayload | null = null;
+          markCanvasDirty(workspaceStateRef.current.activeCanvasId);
 
           setWorkspaceStateWithHistory((current) => ({
             ...current,
@@ -2495,6 +2901,7 @@ export function App() {
       }
 
       if (nodeIdsToDelete.length > 0) {
+        markCanvasDirty(workspaceStateRef.current.activeCanvasId);
         setWorkspaceStateWithHistory((current) => ({
           ...current,
           canvases: current.canvases.map((canvas) =>
@@ -2517,9 +2924,13 @@ export function App() {
     canUndoWorkspace,
     activeCanvas,
     canvasClipboard,
+    dragState,
+    folderStorageReady,
+    rootDirectoryHandle,
     selectedEdgeId,
     selectedNodeId,
     selectedNodeIds,
+    workspaceStore,
     workspaceHistory,
   ]);
 
@@ -2545,6 +2956,7 @@ export function App() {
   }, [showProviderManager]);
 
   function setCanvases(updater: (canvases: CanvasView[]) => CanvasView[]) {
+    markCanvasDirty(workspaceStateRef.current.activeCanvasId);
     setWorkspaceStateWithHistory((current) => ({
       ...current,
       canvases: updater(current.canvases),
@@ -2568,16 +2980,35 @@ export function App() {
   }
 
   function selectCanvasFromSidebar(canvasId: string) {
-    setActiveCanvasId(canvasId);
-    setShowProviderManager(false);
-    setAddMenu(null);
-    clearSelection();
+    if (canvasId === activeCanvasId) {
+      return;
+    }
+
+    function switchCanvas() {
+      setActiveCanvasId(canvasId);
+      setShowProviderManager(false);
+      setAddMenu(null);
+      clearSelection();
+    }
+
+    if (activeCanvasId && dirtyCanvasIdsRef.current.has(activeCanvasId)) {
+      setPendingUnsavedChangesPrompt({
+        title: '画布未保存',
+        message: '当前画布有未保存的更改，切换到其他画布后请记得返回保存。',
+        confirmLabel: '切换画布',
+        onConfirm: switchCanvas,
+      });
+      return;
+    }
+
+    switchCanvas();
   }
 
   function updateActiveCanvasNodes(
     updater: (nodes: CanvasNodeView[]) => CanvasNodeView[],
     options: { history?: boolean } = {},
   ) {
+    markCanvasDirty(workspaceStateRef.current.activeCanvasId);
     const setter = options.history === false ? setWorkspaceState : setWorkspaceStateWithHistory;
 
     setter((current) => ({
@@ -2594,6 +3025,7 @@ export function App() {
     updater: (edges: CanvasView['edges']) => CanvasView['edges'],
     options: { history?: boolean } = {},
   ) {
+    markCanvasDirty(workspaceStateRef.current.activeCanvasId);
     const setter = options.history === false ? setWorkspaceState : setWorkspaceStateWithHistory;
 
     setter((current) => ({
@@ -2606,17 +3038,87 @@ export function App() {
     }));
   }
 
+  async function refreshCanvasAssets() {
+    if (!rootDirectoryHandle || !folderStorageReady || !activeCanvas) {
+      setCanvasAssets([]);
+      return;
+    }
+
+    setLoadingCanvasAssets(true);
+    try {
+      const assets = await workspaceStore.listCanvasAssets(rootDirectoryHandle, activeCanvas);
+      setCanvasAssets(assets);
+    } catch {
+      setCanvasMessage('读取画布资产失败，请检查存储目录权限。');
+    } finally {
+      setLoadingCanvasAssets(false);
+    }
+  }
+
+  function clearCanvasAssetReferences(assetPath: string) {
+    updateActiveCanvasNodes((nodes) =>
+      nodes.map((node) => {
+        if (
+          node.assetPath !== assetPath &&
+          node.outputPath !== assetPath &&
+          node.outputCoverPath !== assetPath
+        ) {
+          return node;
+        }
+
+        return {
+          ...node,
+          assetPath: node.assetPath === assetPath ? undefined : node.assetPath,
+          assetDataUrl: node.assetPath === assetPath ? undefined : node.assetDataUrl,
+          assetName: node.assetPath === assetPath ? undefined : node.assetName,
+          assetMimeType: node.assetPath === assetPath ? undefined : node.assetMimeType,
+          outputPath: node.outputPath === assetPath ? undefined : node.outputPath,
+          outputDataUrl: node.outputPath === assetPath ? undefined : node.outputDataUrl,
+          outputCoverPath: node.outputCoverPath === assetPath ? undefined : node.outputCoverPath,
+          outputCoverDataUrl:
+            node.outputCoverPath === assetPath ? undefined : node.outputCoverDataUrl,
+        };
+      }),
+    );
+  }
+
+  async function deleteCanvasAsset(asset: CanvasAssetFile) {
+    if (!rootDirectoryHandle || !folderStorageReady || !activeCanvas) {
+      return;
+    }
+
+    try {
+      await workspaceStore.deleteCanvasAsset(rootDirectoryHandle, activeCanvas, asset.path);
+      clearCanvasAssetReferences(asset.path);
+      setCanvasAssets((current) => current.filter((item) => item.path !== asset.path));
+      setCanvasMessage(`已删除资产：${asset.name}`);
+    } catch {
+      setCanvasMessage('删除资产失败，请检查存储目录权限。');
+    }
+  }
+
   function addGenerationHistoryRecord(record: GenerationRecord) {
+    markCanvasDirty(workspaceStateRef.current.activeCanvasId);
     setWorkspaceStateWithHistory((current) => ({
       ...current,
       generationHistory: [record, ...(current.generationHistory ?? [])],
     }));
   }
 
+  function findCanvasIdByNodeId(nodeId: string): string | undefined {
+    return workspaceStateRef.current.canvases.find((canvas) =>
+      canvas.nodes.some((node) => node.id === nodeId),
+    )?.id;
+  }
+
   function updateGenerationHistoryRecord(
     recordId: string,
     updater: (record: GenerationRecord) => GenerationRecord,
   ) {
+    const record = workspaceStateRef.current.generationHistory.find(
+      (current) => current.id === recordId,
+    );
+    markCanvasDirty(findCanvasIdByNodeId(record?.nodeId ?? '') ?? workspaceStateRef.current.activeCanvasId);
     setWorkspaceState((current) => ({
       ...current,
       generationHistory: (current.generationHistory ?? []).map((record) =>
@@ -2931,6 +3433,7 @@ export function App() {
         },
       ],
     }));
+    markCanvasDirty(id);
     setViewport(defaultViewport);
     setCanvasMessage(null);
   }
@@ -2966,7 +3469,9 @@ export function App() {
       setWorkspaceStateWithHistory(() => nextState);
       const persistedState = await workspaceStore.persistWorkspaceToFolder(directory, nextState);
       workspaceStateRef.current = persistedState;
+      savedWorkspaceStateRef.current = persistedState;
       setWorkspaceState(persistedState);
+      clearDirtyCanvasIds();
       setCanvasMessage(`画布存储文件夹已设置为：${directory.name}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -2989,7 +3494,9 @@ export function App() {
         workspaceStateRef.current,
       );
       workspaceStateRef.current = persistedState;
+      savedWorkspaceStateRef.current = persistedState;
       setWorkspaceState(persistedState);
+      clearDirtyCanvasIds();
       setCanvasMessage(
         `已迁移 ${persistedState.canvases.length} 个画布和浏览器资产到文件夹：${rootDirectoryHandle.name}`,
       );
@@ -3010,6 +3517,13 @@ export function App() {
   }
 
   function renameActiveCanvas(name: string) {
+    const nextName = name.trim();
+    const currentCanvas = workspaceStateRef.current.canvases.find(
+      (canvas) => canvas.id === workspaceStateRef.current.activeCanvasId,
+    );
+    if (currentCanvas && nextName && currentCanvas.name !== nextName) {
+      markCanvasDirty(currentCanvas.id);
+    }
     setWorkspaceStateWithHistory((current) => renameCanvas(current, current.activeCanvasId, name));
   }
 
@@ -3034,6 +3548,7 @@ export function App() {
 
     void deletePersistedCanvasFolder(activeCanvas);
     setWorkspaceStateWithHistory((current) => deleteCanvas(current, current.activeCanvasId));
+    clearDirtyCanvasIds([activeCanvasId]);
     clearSelection();
     setAddMenu(null);
     setViewport(defaultViewport);
@@ -3047,6 +3562,7 @@ export function App() {
     }
 
     setWorkspaceStateWithHistory((current) => deleteCanvas(current, canvasId));
+    clearDirtyCanvasIds([canvasId]);
     clearSelection();
     setAddMenu(null);
     setEditingCanvasId(null);
@@ -3071,6 +3587,11 @@ export function App() {
   }
 
   function commitRenameCanvasFromList(canvasId: string) {
+    const nextName = draftListCanvasName.trim();
+    const currentCanvas = workspaceStateRef.current.canvases.find((canvas) => canvas.id === canvasId);
+    if (currentCanvas && nextName && currentCanvas.name !== nextName) {
+      markCanvasDirty(canvasId);
+    }
     setWorkspaceStateWithHistory((current) => renameCanvas(current, canvasId, draftListCanvasName));
     setEditingCanvasId(null);
   }
@@ -3100,6 +3621,7 @@ export function App() {
           : `canvas_${Date.now()}`;
 
       setWorkspaceStateWithHistory((current) => importCanvas(current, content, nextId));
+      markCanvasDirty(nextId);
       clearSelection();
       setAddMenu(null);
       setViewport(defaultViewport);
@@ -4126,6 +4648,10 @@ export function App() {
       ...record,
       status: 'succeeded',
       outputAssetIds: [node.id],
+      usage: {
+        completionTokens: task.completionTokens,
+        totalTokens: task.totalTokens,
+      },
       endedAt: new Date().toISOString(),
     }));
     stopSeedanceTracking(node.id);
@@ -4196,6 +4722,10 @@ export function App() {
           ...record,
           status: 'failed',
           errorMessage,
+          usage: {
+            completionTokens: task.completionTokens,
+            totalTokens: task.totalTokens,
+          },
           endedAt: new Date().toISOString(),
         }));
         stopSeedanceTracking(node.id);
@@ -4370,6 +4900,10 @@ export function App() {
         ...record,
         status: videoOutput.videoUrl ? 'succeeded' : 'running',
         outputAssetIds: videoOutput.videoUrl ? [node.id] : record.outputAssetIds,
+        usage: {
+          completionTokens: videoOutput.completionTokens,
+          totalTokens: videoOutput.totalTokens,
+        },
         endedAt: videoOutput.videoUrl ? new Date().toISOString() : record.endedAt,
       }));
 
@@ -4641,8 +5175,13 @@ export function App() {
                         className="canvas-list-name"
                         onClick={() => selectCanvasFromSidebar(canvas.id)}
                       >
-                        <strong>{canvas.name}</strong>
-                    <small>{canvas.nodes.length} 个节点 · {canvas.updatedAt}</small>
+                        <strong className="canvas-list-name-text">
+                          {canvas.name}
+                          {dirtyCanvasIds.has(canvas.id) ? (
+                            <span className="canvas-unsaved-dot" aria-label="未保存" title="未保存" />
+                          ) : null}
+                        </strong>
+                        <small>{canvas.nodes.length} 个节点 · {canvas.updatedAt}</small>
                       </button>
                     )}
                   </div>
@@ -4703,17 +5242,34 @@ export function App() {
               />
             ) : (
               <>
-                <span>{activeCanvas?.name ?? '暂无画布'}</span>
+                <span className="canvas-title-name">
+                  {activeCanvas?.name ?? '暂无画布'}
+                  {activeCanvasIsDirty ? (
+                    <span className="canvas-unsaved-dot" aria-label="未保存" title="未保存" />
+                  ) : null}
+                </span>
                 {activeCanvas ? (
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="重命名画布"
-                    title="重命名画布"
-                    onClick={startRenameActiveCanvas}
-                  >
-                    <Pencil size={15} />
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="重命名画布"
+                      title="重命名画布"
+                      onClick={startRenameActiveCanvas}
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="保存画布"
+                      title="保存画布 Ctrl+S"
+                      disabled={!folderStorageReady || !rootDirectoryHandle || isSavingWorkspace}
+                      onClick={() => void saveWorkspaceToFolder()}
+                    >
+                      <Save size={15} />
+                    </button>
+                  </>
                 ) : null}
               </>
             )}
@@ -5122,6 +5678,63 @@ export function App() {
                           ) : null}
                         </div>
                       </section>
+                      {selectedProviderView.protocol === 'volcengine' ? (
+                        <section className="provider-form-section provider-history-section">
+                          <div className="provider-section-heading">
+                            <h3>视频生成历史</h3>
+                            <p>展示最近提交到火山方舟的视频生成任务，保存画布后会写入工作区文件。</p>
+                          </div>
+                          {selectedProviderVideoHistory.length > 0 ? (
+                            <div className="provider-history-list">
+                              {selectedProviderVideoHistory.map((record) => (
+                                <article className="provider-history-item" key={record.id}>
+                                  <header>
+                                    <div>
+                                      <strong>{record.providerModelId || record.canonicalModelId}</strong>
+                                      <small>{formatGenerationTime(record.startedAt ?? record.createdAt)}</small>
+                                    </div>
+                                    <span
+                                      className={`provider-history-status is-${getGenerationStatusTone(
+                                        record.status,
+                                      )}`}
+                                    >
+                                      {getGenerationStatusLabel(record.status)}
+                                    </span>
+                                  </header>
+                                  <dl>
+                                    <div>
+                                      <dt>生成ID</dt>
+                                      <dd>{record.id}</dd>
+                                    </div>
+                                    <div>
+                                      <dt>节点</dt>
+                                      <dd>{record.nodeId}</dd>
+                                    </div>
+                                    <div>
+                                      <dt>Token</dt>
+                                      <dd>{getGenerationTokenUsage(record)}</dd>
+                                    </div>
+                                    <div>
+                                      <dt>结束时间</dt>
+                                      <dd>{formatGenerationTime(record.endedAt)}</dd>
+                                    </div>
+                                  </dl>
+                                  {record.errorMessage ? (
+                                    <p className="provider-history-error">{record.errorMessage}</p>
+                                  ) : null}
+                                  {record.prompt ? (
+                                    <p className="provider-history-prompt">{record.prompt}</p>
+                                  ) : null}
+                                </article>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="provider-empty-state">
+                              还没有视频生成历史。提交火山方舟视频任务后会显示在这里。
+                            </div>
+                          )}
+                        </section>
+                      ) : null}
                     </div>
                     <footer className="provider-detail-footer">
                       <button
@@ -5179,9 +5792,11 @@ export function App() {
           <CanvasActionRail
             canUndo={canUndoWorkspace}
             canRedo={canRedoWorkspace}
+            isAssetPanelOpen={showAssetPanel}
             scale={viewport.scale}
             onAddNode={(clientX, clientY) => openAddMenu(clientX, clientY)}
             onCreateCanvas={createCanvas}
+            onToggleAssetPanel={() => setShowAssetPanel((current) => !current)}
             onUndo={undoWorkspace}
             onRedo={redoWorkspace}
             onExportCanvas={downloadActiveCanvas}
@@ -5190,6 +5805,116 @@ export function App() {
             onZoomIn={() => zoomBy(1.12)}
             onResetViewport={resetViewport}
           />
+          {showAssetPanel ? (
+            <section
+              className="canvas-asset-sidebar asset-panel"
+              onPointerDown={(event) => event.stopPropagation()}
+              onWheel={(event) => event.stopPropagation()}
+              onDragOver={(event) => event.preventDefault()}
+            >
+              <div className="panel-title-row">
+                <h2>资产</h2>
+                <div className="asset-panel-actions">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="刷新资产"
+                    title="刷新资产"
+                    onClick={() => void refreshCanvasAssets()}
+                  >
+                    <RefreshCw size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="关闭资产面板"
+                    title="关闭资产面板"
+                    onClick={() => setShowAssetPanel(false)}
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              </div>
+              <div className="asset-filter-row" role="tablist" aria-label="资产类型">
+                {(['all', 'image', 'video', 'audio', 'file', 'cover'] as AssetFilter[]).map((filter) => (
+                  <button
+                    key={filter}
+                    type="button"
+                    className={assetFilter === filter ? 'is-active' : ''}
+                    onClick={() => setAssetFilter(filter)}
+                  >
+                    {getAssetFilterLabel(filter)}
+                  </button>
+                ))}
+              </div>
+              <div className="asset-list">
+                {loadingCanvasAssets ? (
+                  <div className="asset-empty-state">正在读取资产</div>
+                ) : filteredCanvasAssets.length > 0 ? (
+                  filteredCanvasAssets.map((asset) => {
+                    const isMuted = mutedAssetPaths.includes(asset.path);
+                    return (
+                      <article className="asset-list-item" key={asset.path}>
+                        <div className="asset-list-preview">
+                          {asset.kind === 'image' || asset.kind === 'cover' ? (
+                            asset.dataUrl ? <img src={asset.dataUrl} alt={asset.name} /> : <Image size={22} />
+                          ) : asset.kind === 'video' ? (
+                            asset.dataUrl ? (
+                              <video src={asset.dataUrl} controls muted={isMuted} />
+                            ) : (
+                              <Video size={22} />
+                            )
+                          ) : asset.kind === 'audio' ? (
+                            asset.dataUrl ? (
+                              <audio src={asset.dataUrl} controls muted={isMuted} />
+                            ) : (
+                              <Music size={22} />
+                            )
+                          ) : (
+                            <FileText size={22} />
+                          )}
+                        </div>
+                        <div className="asset-list-meta">
+                          <strong title={asset.name}>{asset.name}</strong>
+                          <small>{getAssetKindLabel(asset.kind)} · {asset.mimeType}</small>
+                        </div>
+                        <div className="asset-list-actions">
+                          {(asset.kind === 'video' || asset.kind === 'audio') ? (
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label={isMuted ? '取消静音' : '静音'}
+                              title={isMuted ? '取消静音' : '静音'}
+                              onClick={() =>
+                                setMutedAssetPaths((current) =>
+                                  current.includes(asset.path)
+                                    ? current.filter((path) => path !== asset.path)
+                                    : [...current, asset.path],
+                                )
+                              }
+                            >
+                              {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="icon-button danger-icon-button"
+                            aria-label="删除资产"
+                            title="删除资产"
+                            onClick={() => void deleteCanvasAsset(asset)}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })
+                ) : (
+                  <div className="asset-empty-state">没有匹配的资产文件</div>
+                )}
+              </div>
+            </section>
+          ) : null}
           {addMenu ? (
             <div
               className="add-node-menu"
@@ -6292,6 +7017,28 @@ export function App() {
                   >
                     <Save size={16} />
                     保存为新版本
+                  </button>
+                </footer>
+              </section>
+            </div>,
+            document.body,
+          ) : null}
+          {pendingUnsavedChangesPrompt ? createPortal(
+            <div
+              className="unsaved-dialog-backdrop"
+              onPointerDown={() => setPendingUnsavedChangesPrompt(null)}
+            >
+              <section className="unsaved-dialog" onPointerDown={(event) => event.stopPropagation()}>
+                <header>
+                  <h2>{pendingUnsavedChangesPrompt.title}</h2>
+                </header>
+                <p>{pendingUnsavedChangesPrompt.message}</p>
+                <footer>
+                  <button type="button" onClick={() => setPendingUnsavedChangesPrompt(null)}>
+                    取消
+                  </button>
+                  <button type="button" className="danger-button" onClick={() => void confirmPendingUnsavedChanges()}>
+                    {pendingUnsavedChangesPrompt.confirmLabel}
                   </button>
                 </footer>
               </section>

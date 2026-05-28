@@ -27,10 +27,19 @@ const unsupportedWorkspaceStore: WorkspaceStore = {
   async persistWorkspaceToFolder(_handle, state) {
     return state;
   },
+  async persistCanvasToFolder(_handle, state) {
+    return state;
+  },
   async readWorkspaceFromFolder(_handle, fallback) {
     return fallback;
   },
   async deleteCanvasFolder() {
+    return undefined;
+  },
+  async listCanvasAssets() {
+    return [];
+  },
+  async deleteCanvasAsset() {
     return undefined;
   },
   async saveAssetFileToCanvasFolder() {
