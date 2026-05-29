@@ -1533,6 +1533,11 @@ audio.asset-preview {
   border-color: rgba(255, 255, 255, 0.18);
 }
 
+body.preview-image-zoomed .canvas-navigation-panel {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .canvas-minimap-node,
 .canvas-minimap-window {
   border-radius: 2px;

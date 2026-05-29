@@ -885,6 +885,17 @@ function ImagePreviewModal({
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
+  useEffect(() => {
+    const className = 'preview-image-zoomed';
+    const shouldHideMinimap = Boolean(preview) && zoomPercent > 100;
+
+    document.body.classList.toggle(className, shouldHideMinimap);
+
+    return () => {
+      document.body.classList.remove(className);
+    };
+  }, [preview, zoomPercent]);
+
   if (!preview) {
     return null;
   }
@@ -3929,10 +3940,7 @@ export function App() {
     const objectStorageConfig = createObjectStorageConfigFromCloudflare(cloudflareConfig);
 
     if (!isObjectStorageConfigured(objectStorageConfig)) {
-      return {
-        ok: false,
-        error: 'Seedance 引用中包含本地图片、视频或音频，请先在左侧存储区配置 Cloudflare R2。',
-      };
+      return { ok: true, canvas, uploadedUrls: new Map() };
     }
 
     const uploadedUrls = new Map<string, string>();
@@ -5951,7 +5959,7 @@ export function App() {
                   <section className="provider-form-section">
                     <div className="provider-section-heading">
                       <h3>R2 存储</h3>
-                      <p>这些字段只保存在本机配置中，不会写入导出的画布文件。</p>
+                      <p>这是可选配置。这些字段只保存在本机配置中，不会写入导出的画布文件。</p>
                     </div>
                     <div className="provider-form-grid">
                       <label>

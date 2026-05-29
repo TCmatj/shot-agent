@@ -2169,6 +2169,54 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the authorize_workspace_directory command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-authorize-workspace-directory",
+          "markdownDescription": "Enables the authorize_workspace_directory command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the download_generated_media_to_canvas_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-download-generated-media-to-canvas-folder",
+          "markdownDescription": "Enables the download_generated_media_to_canvas_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the force_close_application command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-force-close-application",
+          "markdownDescription": "Enables the force_close_application command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_default_workspace_directory command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-default-workspace-directory",
+          "markdownDescription": "Enables the get_default_workspace_directory command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the authorize_workspace_directory command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-authorize-workspace-directory",
+          "markdownDescription": "Denies the authorize_workspace_directory command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the download_generated_media_to_canvas_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-download-generated-media-to-canvas-folder",
+          "markdownDescription": "Denies the download_generated_media_to_canvas_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the force_close_application command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-force-close-application",
+          "markdownDescription": "Denies the force_close_application command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_default_workspace_directory command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-default-workspace-directory",
+          "markdownDescription": "Denies the get_default_workspace_directory command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",
