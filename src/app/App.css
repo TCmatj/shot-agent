@@ -258,10 +258,16 @@ button:disabled {
   align-items: start;
   display: grid;
   gap: 8px;
+  grid-auto-rows: max-content;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   max-height: 360px;
-  overflow: auto;
-  padding-right: 2px;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 16px 16px 0;
+  scroll-padding-bottom: 16px;
+  scrollbar-gutter: stable;
 }
 
 .asset-list-item {
@@ -304,7 +310,12 @@ button:disabled {
   width: 100%;
 }
 
-.asset-list-preview img,
+.asset-list-preview img {
+  height: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
 .asset-list-preview video {
   height: 100%;
   object-fit: cover;
@@ -467,7 +478,12 @@ button:disabled {
   width: 100%;
 }
 
-.asset-picker-preview img,
+.asset-picker-preview img {
+  height: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
 .asset-picker-preview video {
   height: 100%;
   object-fit: cover;
@@ -2037,10 +2053,11 @@ body.preview-image-zoomed .canvas-navigation-panel {
   left: 72px;
   max-width: calc(100% - 96px);
   min-height: 0;
+  overflow: hidden;
   padding: 14px;
   position: absolute;
   top: 18px;
-  width: 360px;
+  width: min(420px, calc(100% - 96px));
   z-index: 4;
 }
 
@@ -2054,6 +2071,8 @@ body.preview-image-zoomed .canvas-navigation-panel {
 .canvas-asset-sidebar .asset-list {
   max-height: none;
   min-height: 0;
+  padding-bottom: 22px;
+  scroll-padding-bottom: 22px;
 }
 
 .add-node-menu {

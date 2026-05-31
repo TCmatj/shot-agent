@@ -3822,7 +3822,7 @@ export function App() {
     function preventCanvasWheelScroll(event: globalThis.WheelEvent) {
       if (
         event.target instanceof Element &&
-        event.target.closest('.output-modal')
+        event.target.closest('.output-modal, .canvas-asset-sidebar, .asset-picker-layer')
       ) {
         return;
       }
@@ -5328,7 +5328,7 @@ export function App() {
 
     if (
       event.target instanceof Element &&
-      event.target.closest('.output-modal')
+      event.target.closest('.output-modal, .canvas-asset-sidebar, .asset-picker-layer')
     ) {
       return;
     }
@@ -7182,6 +7182,7 @@ export function App() {
             <section
               className="canvas-asset-sidebar asset-panel"
               onPointerDown={(event) => event.stopPropagation()}
+              onWheelCapture={(event) => event.stopPropagation()}
               onWheel={(event) => event.stopPropagation()}
               onDragOver={(event) => event.preventDefault()}
             >
