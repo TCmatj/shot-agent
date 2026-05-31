@@ -113,6 +113,25 @@ describe('App image preview', () => {
     );
   });
 
+  it('keeps asset panel wheel events scrollable inside the canvas', async () => {
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole('button', { name: '资产' }));
+
+    const assetPanel = document.querySelector('.canvas-asset-sidebar');
+    expect(assetPanel).toBeTruthy();
+
+    const wheelEvent = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaY: 120,
+    });
+
+    assetPanel!.dispatchEvent(wheelEvent);
+
+    expect(wheelEvent.defaultPrevented).toBe(false);
+  });
+
   it('opens the shared image preview modal when a node image is double-clicked', async () => {
     const state: CanvasWorkspaceState = {
       ...createWorkspaceState([
