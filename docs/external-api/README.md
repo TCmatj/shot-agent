@@ -8,10 +8,11 @@
   - [OpenAI / gpt-image-2](image/openai/gpt-image-2.md)
 - 视频模型
   - [Seedance 2.0 / Seedance 2.0 Fast](video/seedance/seedance-2.md)
+  - [Seedance Sora 格式 curl 对比](video/seedance/seedance-sora-curl-comparison.md)
 
 ## 维护规则
 
-- 文档使用中文编写。
+- 文档使用中文编写，源码文件统一按 UTF-8 保存。
 - 每个模型独立成文档，路径按 `类型/渠道/模型.md` 组织。
 - 调研外部 API 时必须记录来源链接和调研日期。
 - 不要在文档中写入真实 API key、token、账号、私有 endpoint。
