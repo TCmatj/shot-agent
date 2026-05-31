@@ -96,7 +96,6 @@ export type CanvasProjectPaths = {
     images: string;
     videos: string;
     files: string;
-    covers: string;
   };
   exports: string;
 };

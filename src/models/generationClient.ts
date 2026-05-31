@@ -349,7 +349,10 @@ export function buildGenerationRequest(
   }
 
   if (node.kind === 'video') {
-    return { ok: false, error: 'OpenAI-compatible 供应商当前不处理视频节点' };
+    return {
+      ok: true,
+      request: buildOpenAIVideoTaskRequest(input.provider, input.token, providerModelId, prompt, node, input.canvas),
+    };
   }
 
   const imageInputs = collectInputAssets(node, input.canvas).filter(
@@ -419,24 +422,31 @@ export async function queryGenerationTask(
     return { ok: false, error: `缺少供应商密钥：${input.provider.apiTokenRef}` };
   }
 
-  if (input.provider.protocol !== 'volcengine') {
+  if (input.provider.protocol !== 'volcengine' && input.provider.protocol !== 'openai-compatible') {
     return { ok: false, error: `当前供应商不支持任务查询：${input.provider.protocol}` };
   }
 
   const fetcher = input.fetcher ?? fetch;
   let response: Awaited<ReturnType<GenerationFetch>>;
-
-  try {
-    response = await fetcher(
-      `${normalizeBaseURL(input.provider.baseURL, false)}/api/v3/contents/generations/tasks/${input.taskId}`,
-      {
-        method: 'GET',
-        headers: {
+  const taskUrl =
+    input.provider.protocol === 'volcengine'
+      ? `${normalizeBaseURL(input.provider.baseURL, false)}/api/v3/contents/generations/tasks/${input.taskId}`
+      : `${normalizeBaseURL(input.provider.baseURL)}/videos/${input.taskId}`;
+  const headers: Record<string, string> =
+    input.provider.protocol === 'volcengine'
+      ? {
           Authorization: `Bearer ${input.token}`,
           'Content-Type': 'application/json',
-        },
-      },
-    );
+        }
+      : {
+          Authorization: `Bearer ${input.token}`,
+        };
+
+  try {
+    response = await fetcher(taskUrl, {
+      method: 'GET',
+      headers,
+    });
   } catch (error) {
     return {
       ok: false,
@@ -769,6 +779,164 @@ function buildOpenAIChatRequest(
     responseKind: 'text',
     streamProtocol: 'openai',
   };
+}
+
+function buildOpenAIVideoTaskRequest(
+  provider: ProviderConfig,
+  token: string,
+  model: string,
+  prompt: string,
+  node: CanvasNodeView,
+  canvas: CanvasView,
+): GenerationRequest {
+  const body = new FormData();
+  const metadata = buildOpenAIVideoMetadata(node, canvas);
+  const referenceImage = collectOpenAIVideoReferenceImages(node, canvas)[0];
+
+  body.set('prompt', prompt);
+  body.set('model', model);
+  body.set('seconds', String(getOpenAIVideoSeconds(node)));
+  body.set('size', getOpenAIVideoSize(node));
+
+  if (referenceImage) {
+    if (isDataUrl(referenceImage.content)) {
+      const blob = dataUrlToBlob(referenceImage.content, referenceImage.mimeType);
+      if (blob) {
+        body.set(
+          'input_reference',
+          blob,
+          getOpenAIVideoReferenceFilename(referenceImage.node, referenceImage.mimeType),
+        );
+      }
+    } else if (isRemoteUrl(referenceImage.content) && !metadata.img_url) {
+      metadata.img_url = referenceImage.content;
+    }
+  }
+
+  if (Object.keys(metadata).length > 0) {
+    body.set('metadata', JSON.stringify(metadata));
+  }
+
+  return {
+    url: `${normalizeBaseURL(provider.baseURL)}/videos`,
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body,
+    responseKind: 'video-task',
+  };
+}
+
+function buildOpenAIVideoMetadata(
+  node: CanvasNodeView,
+  canvas: CanvasView,
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  const imageAssets = collectConnectedSeedanceAssets(node, canvas).filter(
+    (asset) => asset.node.kind === 'image' || asset.node.kind === 'imageAsset',
+  );
+
+  for (const asset of imageAssets) {
+    if (!isRemoteUrl(asset.content)) {
+      continue;
+    }
+
+    if (asset.portId === 'first_frame_image') {
+      metadata.first_frame_url = asset.content;
+    } else if (asset.portId === 'last_frame_image') {
+      metadata.last_frame_url = asset.content;
+    } else if (!metadata.img_url) {
+      metadata.img_url = asset.content;
+    }
+  }
+
+  return metadata;
+}
+
+function collectOpenAIVideoReferenceImages(
+  node: CanvasNodeView,
+  canvas: CanvasView,
+): InputAsset[] {
+  const promptImages = collectInputAssets(node, canvas).filter(
+    (asset) => asset.role === 'reference_image',
+  );
+
+  if (promptImages.length > 0) {
+    return promptImages;
+  }
+
+  return collectConnectedSeedanceAssets(node, canvas)
+    .filter((asset) => asset.node.kind === 'image' || asset.node.kind === 'imageAsset')
+    .map((asset) => ({
+      node: asset.node,
+      role: 'reference_image' as const,
+      content: asset.content,
+      mimeType: asset.mimeType,
+    }));
+}
+
+function getOpenAIVideoSeconds(node: CanvasNodeView): number {
+  const seconds = node.videoDurationSeconds;
+
+  if (typeof seconds === 'number' && seconds > 0) {
+    return Math.round(seconds);
+  }
+
+  return 4;
+}
+
+function getOpenAIVideoSize(node: CanvasNodeView): string {
+  const { width, height } = getOpenAIVideoDimensions(node);
+  return `${width}x${height}`;
+}
+
+function getOpenAIVideoDimensions(node: CanvasNodeView): { width: number; height: number } {
+  const resolution = node.videoResolution ?? '720p';
+  const ratio = node.videoRatio && node.videoRatio !== 'adaptive' ? node.videoRatio : '16:9';
+  const sizes: Record<string, Record<string, { width: number; height: number }>> = {
+    '480p': {
+      '16:9': { width: 854, height: 480 },
+      '9:16': { width: 480, height: 854 },
+      '1:1': { width: 480, height: 480 },
+      '4:3': { width: 640, height: 480 },
+      '3:4': { width: 480, height: 640 },
+      '21:9': { width: 1120, height: 480 },
+    },
+    '720p': {
+      '16:9': { width: 1280, height: 720 },
+      '9:16': { width: 720, height: 1280 },
+      '1:1': { width: 720, height: 720 },
+      '4:3': { width: 960, height: 720 },
+      '3:4': { width: 720, height: 960 },
+      '21:9': { width: 1680, height: 720 },
+    },
+    '1080p': {
+      '16:9': { width: 1920, height: 1080 },
+      '9:16': { width: 1080, height: 1920 },
+      '1:1': { width: 1080, height: 1080 },
+      '4:3': { width: 1440, height: 1080 },
+      '3:4': { width: 1080, height: 1440 },
+      '21:9': { width: 2520, height: 1080 },
+    },
+  };
+
+  return sizes[resolution]?.[ratio] ?? { width: 1280, height: 720 };
+}
+
+function getOpenAIVideoReferenceFilename(node: CanvasNodeView, mimeType?: string): string {
+  if (node.assetName) {
+    return node.assetName;
+  }
+
+  const extension =
+    mimeType === 'image/jpeg'
+      ? '.jpg'
+      : mimeType === 'image/webp'
+        ? '.webp'
+        : '.png';
+
+  return `${node.id}${extension}`;
 }
 
 function buildAnthropicMessagesRequest(
@@ -1473,6 +1641,10 @@ function dataUrlToBlob(dataUrl: string, fallbackMimeType?: string): Blob | null 
 
 function isDataUrl(value: string): boolean {
   return /^data:[^;,]+;base64,/.test(value);
+}
+
+function isRemoteUrl(value: string): boolean {
+  return /^https?:\/\//.test(value);
 }
 
 function normalizeOutput(

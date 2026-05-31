@@ -117,7 +117,7 @@ export const desktopWorkspaceStore: WorkspaceStore = {
 
     return hydrateWorkspaceAssetUrls(handle.path, persistableState);
   },
-  async readWorkspaceFromFolder(handle, fallback) {
+  async readWorkspaceFromFolder(handle, fallback, options) {
     if (handle.kind !== 'desktop-directory') {
       return fallback;
     }
@@ -131,7 +131,10 @@ export const desktopWorkspaceStore: WorkspaceStore = {
       restoredState = null;
     }
 
-    const discoveredCanvases = await discoverCanvasFolders(handle.path);
+    const shouldIncludeDiscoveredCanvases = options?.includeDiscoveredCanvases ?? true;
+    const discoveredCanvases = shouldIncludeDiscoveredCanvases
+      ? await discoverCanvasFolders(handle.path)
+      : [];
     const mergedState = mergeDiscoveredCanvases(restoredState, discoveredCanvases, fallback);
 
     if (!mergedState) {
@@ -145,8 +148,7 @@ export const desktopWorkspaceStore: WorkspaceStore = {
       return;
     }
 
-    const canvasDir = await join(handle.path, getCanvasFolderName(canvas));
-    await remove(canvasDir, { recursive: true });
+    await removeCanvasFolderCandidates(handle.path, canvas);
   },
   async listCanvasAssets(handle, canvas) {
     if (handle.kind !== 'desktop-directory') {
@@ -155,12 +157,11 @@ export const desktopWorkspaceStore: WorkspaceStore = {
 
     const canvasDir = await getCanvasDirectory(handle.path, canvas, false);
     const assetsDir = await join(canvasDir, 'assets');
-    const folders: Array<{ directoryName: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover' }> = [
+    const folders: Array<{ directoryName: string; kind: 'image' | 'video' | 'audio' | 'file' }> = [
       { directoryName: 'images', kind: 'image' },
       { directoryName: 'videos', kind: 'video' },
       { directoryName: 'audios', kind: 'audio' },
       { directoryName: 'files', kind: 'file' },
-      { directoryName: 'covers', kind: 'cover' },
     ];
     const assets = await Promise.all(
       folders.map(async ({ directoryName, kind }) => {
@@ -303,8 +304,7 @@ export const desktopWorkspaceStore: WorkspaceStore = {
 
     const canvasDir = await getCanvasDirectory(handle.path, canvas, true);
     const assetsDir = await join(canvasDir, 'assets');
-    const mediaDirName =
-      input.kind === 'video' ? 'videos' : input.kind === 'cover' ? 'covers' : 'images';
+    const mediaDirName = input.kind === 'video' ? 'videos' : 'images';
     const mediaDir = await join(assetsDir, mediaDirName);
     await mkdir(mediaDir, { recursive: true });
     const extension = getExtensionFromMimeType(
@@ -389,12 +389,12 @@ async function hydrateWorkspaceAssetUrls(
           assetDataUrl: node.assetPath
             ? await readAssetObjectUrl(rootPath, canvas, node.assetPath, node.assetMimeType)
             : node.assetDataUrl,
+          maskImageDataUrl: node.maskImagePath
+            ? await readAssetObjectUrl(rootPath, canvas, node.maskImagePath, node.maskImageMimeType)
+            : node.maskImageDataUrl,
           outputDataUrl: node.outputPath
             ? await readAssetObjectUrl(rootPath, canvas, node.outputPath)
             : node.outputDataUrl,
-          outputCoverDataUrl: node.outputCoverPath
-            ? await readAssetObjectUrl(rootPath, canvas, node.outputCoverPath)
-            : node.outputCoverDataUrl,
         })),
       ),
     })),
@@ -429,6 +429,19 @@ async function persistCanvasAssets(rootPath: string, canvas: CanvasView): Promis
           };
         }
 
+        if (nextNode.maskImageDataUrl && !nextNode.maskImagePath) {
+          const savedMaskImage = await saveDataUrlAssetToCanvasDirectory(canvasDir, nextNode.maskImageDataUrl, {
+            kind: 'image',
+            fileName: nextNode.maskImageName ?? `${nextNode.id}-mask-source`,
+          });
+          nextNode = {
+            ...nextNode,
+            maskImageName: savedMaskImage.assetName,
+            maskImagePath: savedMaskImage.assetPath,
+            maskImageMimeType: nextNode.maskImageMimeType ?? savedMaskImage.mimeType,
+          };
+        }
+
         if (nextNode.outputDataUrl && !nextNode.outputPath) {
           const savedOutput = await saveDataUrlAssetToCanvasDirectory(canvasDir, nextNode.outputDataUrl, {
             kind: getNodeOutputKind(nextNode),
@@ -437,18 +450,6 @@ async function persistCanvasAssets(rootPath: string, canvas: CanvasView): Promis
           nextNode = {
             ...nextNode,
             outputPath: savedOutput.assetPath,
-          };
-        }
-
-        if (nextNode.outputCoverDataUrl && !nextNode.outputCoverPath) {
-          const savedCover = await saveDataUrlAssetToCanvasDirectory(canvasDir, nextNode.outputCoverDataUrl, {
-            kind: 'image',
-            fileName: `${nextNode.id}-cover-${Date.now()}`,
-            directoryName: 'covers',
-          });
-          nextNode = {
-            ...nextNode,
-            outputCoverPath: savedCover.assetPath,
           };
         }
 
@@ -464,7 +465,7 @@ async function saveDataUrlAssetToCanvasDirectory(
   input: {
     kind: 'image' | 'video' | 'audio' | 'file';
     fileName: string;
-    directoryName?: 'images' | 'videos' | 'audios' | 'files' | 'covers';
+    directoryName?: 'images' | 'videos' | 'audios' | 'files';
   },
 ): Promise<{ assetName: string; assetPath: string; mimeType: string }> {
   const blob = dataUrlToBlob(dataUrl);
@@ -520,6 +521,34 @@ async function getCanvasDirectory(rootPath: string, canvas: CanvasView, create: 
 
 function getCanvasFolderName(canvas: CanvasView): string {
   return canvas.storageFolderName ?? `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+}
+
+async function removeCanvasFolderCandidates(rootPath: string, canvas: CanvasView): Promise<void> {
+  const candidateNames = [
+    getCanvasFolderName(canvas),
+    `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`,
+    sanitizeFolderName(canvas.name),
+  ];
+  let lastError: unknown;
+
+  for (const folderName of Array.from(new Set(candidateNames))) {
+    const canvasDir = await join(rootPath, folderName);
+
+    try {
+      if (!(await exists(canvasDir))) {
+        continue;
+      }
+
+      await remove(canvasDir, { recursive: true });
+      lastError = undefined;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
 }
 
 function mergeDiscoveredCanvases(
@@ -689,7 +718,6 @@ async function ensureProjectDirectories(canvasDir: string): Promise<void> {
   await mkdir(await join(canvasDir, 'assets', 'videos'), { recursive: true });
   await mkdir(await join(canvasDir, 'assets', 'audios'), { recursive: true });
   await mkdir(await join(canvasDir, 'assets', 'files'), { recursive: true });
-  await mkdir(await join(canvasDir, 'assets', 'covers'), { recursive: true });
   await mkdir(await join(canvasDir, 'exports'), { recursive: true });
 }
 

@@ -85,12 +85,16 @@ export const browserWorkspaceStore: WorkspaceStore = {
       canvasId,
     );
   },
-  async readWorkspaceFromFolder(handle, fallback) {
+  async readWorkspaceFromFolder(handle, fallback, options) {
     if (handle.kind !== 'browser-directory') {
       return fallback;
     }
 
-    return readWorkspaceFromBrowserFolder(handle.directoryHandle as ShotAgentDirectoryHandle, fallback);
+    return readWorkspaceFromBrowserFolder(
+      handle.directoryHandle as ShotAgentDirectoryHandle,
+      fallback,
+      options,
+    );
   },
   async deleteCanvasFolder(handle, canvas) {
     if (handle.kind !== 'browser-directory') {

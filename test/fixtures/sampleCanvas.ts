@@ -16,7 +16,6 @@ export const sampleCanvasProject: CanvasProject = {
       images: 'assets/images',
       videos: 'assets/videos',
       files: 'assets/files',
-      covers: 'assets/covers',
     },
     exports: 'exports',
   },

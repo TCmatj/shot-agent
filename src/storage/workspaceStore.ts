@@ -30,7 +30,7 @@ export type SavedGeneratedMedia = {
   assetDataUrl?: string;
 };
 
-export type CanvasAssetFileKind = 'image' | 'video' | 'audio' | 'file' | 'cover';
+export type CanvasAssetFileKind = 'image' | 'video' | 'audio' | 'file';
 
 export type CanvasAssetFile = {
   name: string;
@@ -38,6 +38,10 @@ export type CanvasAssetFile = {
   kind: CanvasAssetFileKind;
   mimeType: string;
   dataUrl?: string;
+};
+
+export type ReadWorkspaceOptions = {
+  includeDiscoveredCanvases?: boolean;
 };
 
 export type WorkspaceStore = {
@@ -62,6 +66,7 @@ export type WorkspaceStore = {
   readWorkspaceFromFolder(
     handle: WorkspaceRootHandle,
     fallback: CanvasWorkspaceState,
+    options?: ReadWorkspaceOptions,
   ): Promise<CanvasWorkspaceState>;
   deleteCanvasFolder(
     handle: WorkspaceRootHandle,
@@ -96,7 +101,7 @@ export type WorkspaceStore = {
     input: {
       blob: Blob;
       fileName: string;
-      kind: 'image' | 'video' | 'cover';
+      kind: 'image' | 'video';
     },
   ): Promise<SavedGeneratedMedia>;
   renameCanvasFolder(
@@ -110,7 +115,7 @@ export type WorkspaceStore = {
     input: {
       url: string;
       fileName: string;
-      kind: 'image' | 'video' | 'cover';
+      kind: 'image' | 'video';
     },
   ): Promise<SavedGeneratedMedia>;
 };

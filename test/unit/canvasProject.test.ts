@@ -29,7 +29,6 @@ describe('path utils', () => {
       'assets/images',
       'assets/videos',
       'assets/files',
-      'assets/covers',
       'exports',
     ]);
   });

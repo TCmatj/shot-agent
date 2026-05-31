@@ -38,6 +38,11 @@ const openaiProvider: ProviderConfig = {
       providerModelId: 'gpt-5.4-mini',
       enabled: true,
     },
+    {
+      canonicalModelId: 'seedance-sora',
+      providerModelId: 'sora-2',
+      enabled: true,
+    },
   ],
 };
 
@@ -483,6 +488,115 @@ describe('generation client request building', () => {
         },
       ],
     });
+  });
+
+  it('builds a Sora video task request for the Seedance-Sora model option', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'video_1'
+            ? {
+                ...node,
+                title: 'seedance-sora',
+                modelId: 'seedance-sora',
+                videoDurationSeconds: 5,
+                videoResolution: '1080p',
+                videoRatio: '16:9',
+                videoSeed: 12345,
+              }
+            : node,
+        ),
+      },
+      nodeId: 'video_1',
+      provider: openaiProvider,
+      token: 'openai-token',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      request: {
+        url: 'https://api.openai.com/v1/videos',
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer openai-token',
+        },
+        responseKind: 'video-task',
+      },
+    });
+
+    const formData = result.ok ? result.request.body as FormData : new FormData();
+    expect(formData.get('prompt')).toBe('Slow camera orbit 「图片 1」');
+    expect(formData.get('model')).toBe('sora-2');
+    expect(formData.get('seconds')).toBe('5');
+    expect(formData.get('size')).toBe('1920x1080');
+    expect(formData.get('input_reference')).toBeInstanceOf(File);
+  });
+
+  it('queries Seedance-Sora video task status with the Sora videos endpoint', async () => {
+    const fetcher = vi.fn<GenerationFetch>(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({
+          id: 'video_123',
+          model: 'sora-2',
+          status: 'succeeded',
+          url: 'https://example.com/video.mp4',
+        }),
+        text: async () => '',
+      }) as Response,
+    );
+
+    const result = await queryGenerationTask({
+      provider: openaiProvider,
+      taskId: 'video_123',
+      token: 'openai-token',
+      fetcher,
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://api.openai.com/v1/videos/video_123',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer openai-token',
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        kind: 'video-task',
+        taskId: 'video_123',
+        status: 'succeeded',
+        videoUrl: 'https://example.com/video.mp4',
+      },
+    });
+  });
+
+  it('uses landscape 16:9 as the default Seedance-Sora video ratio', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'video_1'
+            ? {
+                ...node,
+                modelId: 'seedance-sora',
+                videoResolution: '720p',
+              }
+            : node,
+        ),
+      },
+      nodeId: 'video_1',
+      provider: openaiProvider,
+      token: 'openai-token',
+    });
+
+    const formData = result.ok ? result.request.body as FormData : new FormData();
+    expect(formData.get('size')).toBe('1280x720');
   });
 
   it('builds first-last-frame seedance requests', () => {

@@ -66,6 +66,9 @@ describe('canvas workspace persistence', () => {
         folderPath: '/Users/zz/Shot Agent',
       },
       generationHistory: [],
+      assetUploadCache: {
+        'sha256:test': 'https://assets.example.com/input.png',
+      },
     };
 
     expect(parseWorkspaceState(serializeWorkspaceState(state), createWorkspaceState(canvases))).toEqual(
@@ -121,6 +124,7 @@ describe('canvas workspace persistence', () => {
         mode: 'custom-folder',
       },
       generationHistory: [],
+      assetUploadCache: {},
     });
   });
 
@@ -286,6 +290,7 @@ describe('canvas workspace persistence', () => {
         mode: 'custom-folder',
       },
       generationHistory: [],
+      assetUploadCache: {},
     });
   });
 

@@ -3,6 +3,7 @@ import { createWorkspaceState } from '../../src/app/canvasWorkspace';
 import {
   applyUploadedSeedanceAssetUrls,
   collectSeedanceUploadCandidates,
+  groupSeedanceUploadCandidatesByContent,
 } from '../../src/models/seedanceReferenceAssets';
 
 describe('seedanceReferenceAssets', () => {
@@ -126,5 +127,49 @@ describe('seedanceReferenceAssets', () => {
       outputDataUrl: 'https://assets.example.com/video-output.mp4',
       outputUrl: 'https://assets.example.com/video-output.mp4',
     });
+  });
+
+  it('groups duplicate local upload candidates so identical content uploads once', () => {
+    const groups = groupSeedanceUploadCandidatesByContent([
+      {
+        nodeId: 'image_asset_1',
+        kind: 'image',
+        content: 'data:image/png;base64,AAAA',
+        mimeType: 'image/png',
+      },
+      {
+        nodeId: 'image_asset_2',
+        kind: 'image',
+        content: 'data:image/png;base64,AAAA',
+        mimeType: 'image/png',
+      },
+      {
+        nodeId: 'image_asset_3',
+        kind: 'image',
+        content: 'data:image/png;base64,BBBB',
+        mimeType: 'image/png',
+      },
+    ]);
+
+    expect(groups).toEqual([
+      {
+        candidate: {
+          nodeId: 'image_asset_1',
+          kind: 'image',
+          content: 'data:image/png;base64,AAAA',
+          mimeType: 'image/png',
+        },
+        nodeIds: ['image_asset_1', 'image_asset_2'],
+      },
+      {
+        candidate: {
+          nodeId: 'image_asset_3',
+          kind: 'image',
+          content: 'data:image/png;base64,BBBB',
+          mimeType: 'image/png',
+        },
+        nodeIds: ['image_asset_3'],
+      },
+    ]);
   });
 });

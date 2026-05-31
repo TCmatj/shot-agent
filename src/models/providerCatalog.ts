@@ -55,6 +55,7 @@ const providerSeeds: ProviderSeed[] = [
     enabled: true,
     models: [
       { id: 'model_openai_gpt_image_2', providerModelId: 'gpt-image-2', canonicalModelId: 'gpt-image-2', enabled: true },
+      { id: 'model_openai_sora_2', providerModelId: 'sora-2', canonicalModelId: 'seedance-sora', enabled: true },
       ...defaultChatModels.openai,
     ],
   },

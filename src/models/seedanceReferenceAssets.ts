@@ -8,6 +8,11 @@ export type SeedanceUploadCandidate = {
   mimeType?: string;
 };
 
+export type SeedanceUploadCandidateGroup = {
+  candidate: SeedanceUploadCandidate;
+  nodeIds: string[];
+};
+
 export function collectSeedanceUploadCandidates(
   canvas: CanvasView,
   nodeIds: string[],
@@ -70,6 +75,31 @@ export function applyUploadedSeedanceAssetUrls(
   };
 }
 
+export function groupSeedanceUploadCandidatesByContent(
+  candidates: SeedanceUploadCandidate[],
+): SeedanceUploadCandidateGroup[] {
+  const groups: SeedanceUploadCandidateGroup[] = [];
+  const groupIndexes = new Map<string, number>();
+
+  for (const candidate of candidates) {
+    const key = getSeedanceUploadCandidateContentKey(candidate);
+    const groupIndex = groupIndexes.get(key);
+
+    if (typeof groupIndex === 'number') {
+      groups[groupIndex].nodeIds.push(candidate.nodeId);
+      continue;
+    }
+
+    groupIndexes.set(key, groups.length);
+    groups.push({
+      candidate,
+      nodeIds: [candidate.nodeId],
+    });
+  }
+
+  return groups;
+}
+
 export function getSeedanceUploadCandidate(
   node: CanvasNodeView,
 ): SeedanceUploadCandidate | null {
@@ -125,4 +155,12 @@ export function getSeedanceUploadCandidate(
   }
 
   return null;
+}
+
+function getSeedanceUploadCandidateContentKey(candidate: SeedanceUploadCandidate): string {
+  return [
+    candidate.kind,
+    candidate.mimeType ?? '',
+    candidate.content,
+  ].join('\n');
 }

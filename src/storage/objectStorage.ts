@@ -14,6 +14,17 @@ type UploadBlobToR2Input = {
   now?: Date;
 };
 
+type UploadBlobToAssetEndpointInput = {
+  endpoint: string;
+  blob: Blob;
+  canvasId: string;
+  nodeId: string;
+  filename: string;
+  fetcher?: typeof fetch;
+};
+
+type ObjectStorageEnv = Record<string, unknown>;
+
 export function createObjectStorageConfig(
   value?: Partial<ObjectStorageConfig>,
 ): ObjectStorageConfig {
@@ -24,6 +35,25 @@ export function createObjectStorageConfig(
     secretAccessKey: value?.secretAccessKey?.trim() ?? '',
     publicBaseURL: value?.publicBaseURL?.trim() ?? '',
   };
+}
+
+export function createObjectStorageConfigFromEnv(
+  env: ObjectStorageEnv = import.meta.env,
+): ObjectStorageConfig {
+  const accountId = readEnvString(env, 'VITE_R2_ACCOUNT_ID');
+  const endpoint = readEnvString(env, 'VITE_R2_ENDPOINT');
+
+  return createObjectStorageConfig({
+    endpoint: endpoint || (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : ''),
+    bucket: readEnvString(env, 'VITE_R2_BUCKET_NAME'),
+    accessKeyId: readEnvString(env, 'VITE_R2_ACCESS_KEY_ID'),
+    secretAccessKey: readEnvString(env, 'VITE_R2_SECRET_ACCESS_KEY'),
+    publicBaseURL: readEnvString(env, 'VITE_R2_PUBLIC_BASE_URL'),
+  });
+}
+
+export function getAssetUploadEndpointFromEnv(env: ObjectStorageEnv = import.meta.env): string {
+  return readEnvString(env, 'VITE_ASSET_UPLOAD_ENDPOINT');
 }
 
 export function parseObjectStorageConfig(
@@ -125,6 +155,42 @@ export async function uploadBlobToR2(input: UploadBlobToR2Input): Promise<string
   return `${publicBaseURL}/${encodeObjectKey(objectKey)}`;
 }
 
+export async function uploadBlobToAssetEndpoint(
+  input: UploadBlobToAssetEndpointInput,
+): Promise<string> {
+  const endpoint = input.endpoint.trim();
+  if (!endpoint) {
+    throw new Error('未配置素材上传服务地址');
+  }
+
+  const formData = new FormData();
+  formData.set('canvasId', input.canvasId);
+  formData.set('nodeId', input.nodeId);
+  formData.set('file', input.blob, input.filename);
+
+  const response = await (input.fetcher ?? fetch)(endpoint, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const payload = await response.json().catch(() => null) as
+    | { url?: unknown; error?: unknown }
+    | null;
+
+  if (!response.ok) {
+    const message = typeof payload?.error === 'string'
+      ? payload.error
+      : `上传参考素材失败，HTTP ${response.status}`;
+    throw new Error(message);
+  }
+
+  if (!payload || typeof payload.url !== 'string' || !payload.url.trim()) {
+    throw new Error('素材上传服务未返回有效 URL');
+  }
+
+  return payload.url.trim();
+}
+
 export async function readAssetSourceAsBlob(source: string): Promise<Blob> {
   const response = await fetch(source);
   if (!response.ok) {
@@ -132,6 +198,17 @@ export async function readAssetSourceAsBlob(source: string): Promise<Blob> {
   }
 
   return response.blob();
+}
+
+export async function createAssetContentHash(blob: Blob): Promise<string> {
+  const bytes = await readBlobAsArrayBuffer(blob);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return `sha256:${toHex(digest)}`;
+}
+
+function readEnvString(env: ObjectStorageEnv, key: string): string {
+  const value = env[key];
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function normalizeUrlBase(value: string): string {
@@ -199,6 +276,21 @@ const encoder = new TextEncoder();
 async function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
   if (typeof blob.arrayBuffer === 'function') {
     return blob.arrayBuffer();
+  }
+
+  if (typeof FileReader !== 'undefined') {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error ?? new Error('读取 Blob 失败'));
+      reader.onload = () => {
+        if (reader.result instanceof ArrayBuffer) {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error('读取 Blob 结果格式错误'));
+      };
+      reader.readAsArrayBuffer(blob);
+    });
   }
 
   return new Response(blob).arrayBuffer();
