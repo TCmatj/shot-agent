@@ -366,7 +366,7 @@ describe('App image preview', () => {
   });
 });
 
-describe('App Cloudflare settings', () => {
+describe('App object storage settings', () => {
   beforeEach(() => {
     window.localStorage.clear();
     HTMLElement.prototype.setPointerCapture = vi.fn();
@@ -386,22 +386,14 @@ describe('App Cloudflare settings', () => {
     );
   });
 
-  it('opens Cloudflare configuration from the sidebar under provider management', async () => {
+  it('does not show Cloudflare configuration in the application UI', async () => {
     render(<App />);
 
-    const providerButton = screen.getByRole('button', { name: '供应商管理' });
-    const cloudflareButton = screen.getByRole('button', { name: 'Cloudflare 配置' });
+    await userEvent.click(screen.getByRole('button', { name: /供应商管理/ }));
 
-    expect(screen.queryByRole('button', { name: '打开 Cloudflare 配置' })).toBeNull();
-    expect(
-      providerButton.compareDocumentPosition(cloudflareButton) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-
-    await userEvent.click(cloudflareButton);
-
-    expect(screen.getByRole('heading', { name: 'Cloudflare R2 配置' })).toBeTruthy();
-    expect(screen.getByLabelText('Bucket 名称')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Cloudflare/ })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /Cloudflare/ })).toBeNull();
+    expect(screen.queryByLabelText(/Bucket/)).toBeNull();
   });
 });
 
@@ -425,10 +417,77 @@ describe('App empty startup', () => {
     expect(screen.getAllByRole('button', { name: /新建画布/ }).length).toBeGreaterThan(0);
     expect(screen.queryByText('默认画布')).toBeNull();
   });
+
+  it('removes legacy starter canvases from stored browser state', () => {
+    const state = createWorkspaceState([
+      {
+        id: 'canvas_default',
+        name: '默认画布',
+        updatedAt: '刚刚',
+        nodes: [
+          {
+            id: 'node_image',
+            title: '图片生成',
+            modelId: 'gpt-image-2',
+            kind: 'image',
+            x: 0,
+            y: 0,
+          },
+          {
+            id: 'node_video',
+            title: '视频生成',
+            modelId: 'seedance2.0',
+            kind: 'video',
+            x: 360,
+            y: 0,
+          },
+          {
+            id: 'node_chat',
+            title: '文本生成',
+            modelId: 'gpt-4o-mini',
+            kind: 'chat',
+            x: 720,
+            y: 0,
+          },
+        ],
+        edges: [],
+      },
+      {
+        id: 'canvas_product',
+        name: '产品短片',
+        updatedAt: '示例',
+        nodes: [],
+        edges: [],
+      },
+      {
+        id: 'canvas_user',
+        name: '用户画布',
+        updatedAt: 'now',
+        nodes: [],
+        edges: [],
+      },
+    ]);
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    expect(screen.queryByText('默认画布')).toBeNull();
+    expect(screen.queryByText('产品短片')).toBeNull();
+    expect(screen.getAllByText('用户画布').length).toBeGreaterThan(0);
+  });
 });
 
 describe('App video node inspector', () => {
   beforeEach(() => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('VITE_ASSET_UPLOAD_ENDPOINT', '');
+    vi.stubEnv('VITE_R2_ACCOUNT_ID', '');
+    vi.stubEnv('VITE_R2_BUCKET_NAME', '');
+    vi.stubEnv('VITE_R2_ACCESS_KEY_ID', '');
+    vi.stubEnv('VITE_R2_SECRET_ACCESS_KEY', '');
+    vi.stubEnv('VITE_R2_ENDPOINT', '');
+    vi.stubEnv('VITE_R2_PUBLIC_BASE_URL', '');
     window.localStorage.clear();
     seedDefaultVideoWorkspace();
 
@@ -791,6 +850,44 @@ describe('App video node inspector', () => {
     expect((screen.getByLabelText('类型') as HTMLSelectElement).value).toBe(
       'multimodal_reference_video',
     );
+  });
+
+  it('hides Seedance-Sora from the model dropdown when object storage is not configured', async () => {
+    render(<App />);
+
+    await openNodeInspectorByTitle('视频生成');
+
+    expect(screen.queryByRole('option', { name: 'seedance-sora' })).toBeNull();
+    expect(screen.queryByText(/当前模型使用 Sora 格式调用/)).toBeNull();
+  });
+
+  it('selects Seedance-Sora from the Seedance video node model dropdown when object storage is configured', async () => {
+    vi.stubEnv('VITE_ASSET_UPLOAD_ENDPOINT', 'http://localhost:8787/api/assets/reference-upload');
+    render(<App />);
+
+    await userEvent.click(screen.getAllByRole('button', { name: '新建画布' })[0]);
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }));
+    expect(screen.queryByRole('button', { name: 'seedance-sora' })).toBeNull();
+    await userEvent.click(await screen.findByRole('button', { name: 'seedance2.0 生成节点' }));
+
+    expect(screen.getByRole('heading', { name: '视频生成' })).toBeTruthy();
+    await openNodeInspectorByTitle('视频生成');
+    expect(screen.getByLabelText('模型')).toBeTruthy();
+    await userEvent.selectOptions(screen.getByLabelText('模型'), 'seedance-sora');
+    expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe('seedance-sora');
+    expect((screen.getByLabelText('比例') as HTMLSelectElement).value).toBe('16:9');
+    const durationInput = screen.getByLabelText('时长');
+    expect(durationInput.getAttribute('min')).toBe('4');
+    expect(durationInput.getAttribute('max')).toBe('15');
+    expect(screen.getByLabelText('自动时长')).toBeTruthy();
+    expect(
+      Array.from((screen.getByLabelText('比例') as HTMLSelectElement).options).map(
+        (option) => option.value,
+      ),
+    ).toEqual(['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive']);
+    expect(screen.queryByText('预计消耗：0 tokens（本地预估）')).toBeNull();
+    expect(screen.queryByText('调用格式')).toBeNull();
+    expect(screen.getByText(/当前模型使用 Sora 格式调用/)).toBeTruthy();
   });
 
   it('grows model node width with prompt length and caps it at three times the base width', () => {

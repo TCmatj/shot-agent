@@ -9,11 +9,13 @@ import {
   type SeedanceInputPortId,
   type SeedanceRatio,
 } from '../domain/seedance';
+import type { DiamondMaskColor, DiamondMaskRect } from '../models/diamondMask';
 
 export type CanvasNodeKind =
   | 'image'
   | 'video'
   | 'chat'
+  | 'diamondMask'
   | 'textAsset'
   | 'imageAsset'
   | 'videoAsset'
@@ -57,9 +59,17 @@ export type CanvasNodeView = {
   outputUrl?: string;
   outputDataUrl?: string;
   outputPath?: string;
-  outputCoverPath?: string;
-  outputCoverDataUrl?: string;
   generationId?: string;
+  maskImageName?: string;
+  maskImagePath?: string;
+  maskImageDataUrl?: string;
+  maskImageMimeType?: string;
+  maskImageWidth?: number;
+  maskImageHeight?: number;
+  maskLineWidth?: number;
+  maskGridDensity?: number;
+  maskColor?: DiamondMaskColor;
+  maskRect?: DiamondMaskRect;
   textContent?: string;
   assetName?: string;
   assetPath?: string;
@@ -110,6 +120,7 @@ export type CanvasWorkspaceState = {
   canvases: CanvasView[];
   storage: CanvasStorageConfig;
   generationHistory: GenerationRecord[];
+  assetUploadCache?: Record<string, string>;
 };
 
 const canvasNodeBaseWidth = 320;
@@ -148,6 +159,7 @@ function isCanvasNodeKind(kind: unknown): kind is CanvasNodeKind {
     kind === 'image' ||
     kind === 'video' ||
     kind === 'chat' ||
+    kind === 'diamondMask' ||
     kind === 'textAsset' ||
     kind === 'imageAsset' ||
     kind === 'videoAsset' ||
@@ -248,6 +260,7 @@ export function createWorkspaceState(canvases: CanvasView[]): CanvasWorkspaceSta
       mode: 'custom-folder',
     },
     generationHistory: [],
+    assetUploadCache: {},
   };
 }
 
@@ -258,6 +271,7 @@ export function serializeWorkspaceState(state: CanvasWorkspaceState): string {
     canvases: stripTransientAssetData(state.canvases),
     storage: normalizeStorageConfig(state.storage),
     generationHistory: state.generationHistory,
+    assetUploadCache: normalizeAssetUploadCache(state.assetUploadCache),
   });
 }
 
@@ -267,8 +281,8 @@ export function stripTransientAssetData(canvases: CanvasView[]): CanvasView[] {
     nodes: canvas.nodes.map((node) => ({
       ...node,
       assetDataUrl: node.assetPath ? undefined : node.assetDataUrl,
+      maskImageDataUrl: node.maskImagePath ? undefined : node.maskImageDataUrl,
       outputDataUrl: node.outputPath ? undefined : node.outputDataUrl,
-      outputCoverDataUrl: node.outputCoverPath ? undefined : node.outputCoverDataUrl,
     })),
   }));
 }
@@ -305,10 +319,27 @@ export function parseWorkspaceState(
       generationHistory: Array.isArray(parsed.generationHistory)
         ? parsed.generationHistory.filter(isGenerationRecord).map(normalizeGenerationRecord)
         : [],
+      assetUploadCache: normalizeAssetUploadCache(parsed.assetUploadCache),
     };
   } catch {
     return fallback;
   }
+}
+
+function normalizeAssetUploadCache(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[0] === 'string' &&
+        typeof entry[1] === 'string' &&
+        entry[0].trim().length > 0 &&
+        entry[1].trim().length > 0,
+    ),
+  );
 }
 
 function normalizeGenerationRecord(record: GenerationRecord): GenerationRecord {
@@ -517,7 +548,13 @@ export function getNodeCenter(node: CanvasNodeView): { x: number; y: number } {
 }
 
 export function getCanvasNodeWidth(node: CanvasNodeView): number {
-  if (node.kind === 'textAsset' || node.kind === 'imageAsset' || node.kind === 'videoAsset' || node.kind === 'audioAsset') {
+  if (
+    node.kind === 'textAsset' ||
+    node.kind === 'imageAsset' ||
+    node.kind === 'videoAsset' ||
+    node.kind === 'audioAsset' ||
+    node.kind === 'diamondMask'
+  ) {
     return canvasNodeBaseWidth;
   }
 

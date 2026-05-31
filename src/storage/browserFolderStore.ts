@@ -7,6 +7,7 @@ import {
   type CanvasView,
   type CanvasWorkspaceState,
 } from '../app/canvasWorkspace';
+import type { ReadWorkspaceOptions } from './workspaceStore';
 
 type FileSystemPermissionMode = 'read' | 'readwrite';
 
@@ -164,6 +165,7 @@ export async function persistCanvasToFolder(
 export async function readWorkspaceFromFolder(
   rootHandle: ShotAgentDirectoryHandle,
   fallback: CanvasWorkspaceState,
+  options?: ReadWorkspaceOptions,
 ): Promise<CanvasWorkspaceState> {
   let restoredState: CanvasWorkspaceState | null = null;
 
@@ -175,7 +177,10 @@ export async function readWorkspaceFromFolder(
     restoredState = null;
   }
 
-  const discoveredCanvases = await discoverCanvasFolders(rootHandle);
+  const shouldIncludeDiscoveredCanvases = options?.includeDiscoveredCanvases ?? true;
+  const discoveredCanvases = shouldIncludeDiscoveredCanvases
+    ? await discoverCanvasFolders(rootHandle)
+    : [];
   const mergedState = mergeDiscoveredCanvases(restoredState, discoveredCanvases, fallback);
 
   if (!mergedState) {
@@ -189,27 +194,26 @@ export async function deleteCanvasFolder(
   rootHandle: ShotAgentDirectoryHandle,
   canvas: CanvasView,
 ): Promise<void> {
-  await rootHandle.removeEntry(getCanvasFolderName(canvas), { recursive: true });
+  await removeCanvasFolderCandidates(rootHandle, canvas);
 }
 
 export async function listCanvasAssets(
   rootHandle: ShotAgentDirectoryHandle,
   canvas: CanvasView,
-): Promise<Array<{ name: string; path: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover'; mimeType: string; dataUrl?: string }>> {
+): Promise<Array<{ name: string; path: string; kind: 'image' | 'video' | 'audio' | 'file'; mimeType: string; dataUrl?: string }>> {
   const canvasDir = await getCanvasDirectory(rootHandle, canvas, false);
   const assetsDir = await canvasDir.getDirectoryHandle('assets');
-  const folders: Array<{ directoryName: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover' }> = [
+  const folders: Array<{ directoryName: string; kind: 'image' | 'video' | 'audio' | 'file' }> = [
     { directoryName: 'images', kind: 'image' },
     { directoryName: 'videos', kind: 'video' },
     { directoryName: 'audios', kind: 'audio' },
     { directoryName: 'files', kind: 'file' },
-    { directoryName: 'covers', kind: 'cover' },
   ];
   const assets = await Promise.all(
     folders.map(async ({ directoryName, kind }) => {
       try {
         const directory = await assetsDir.getDirectoryHandle(directoryName);
-        const entries: Array<{ name: string; path: string; kind: 'image' | 'video' | 'audio' | 'file' | 'cover'; mimeType: string; dataUrl?: string }> = [];
+        const entries: Array<{ name: string; path: string; kind: 'image' | 'video' | 'audio' | 'file'; mimeType: string; dataUrl?: string }> = [];
         const iterableDirectory = directory as FileSystemDirectoryHandle & {
           entries(): AsyncIterable<[string, FileSystemHandle]>;
         };
@@ -319,13 +323,12 @@ export async function saveGeneratedMediaBlobToCanvasFolder(
   input: {
     blob: Blob;
     fileName: string;
-    kind: 'image' | 'video' | 'cover';
+    kind: 'image' | 'video';
   },
 ): Promise<{ assetName: string; assetPath: string; mimeType: string }> {
   const canvasDir = await getCanvasDirectory(rootHandle, canvas, true);
   const assetsDir = await canvasDir.getDirectoryHandle('assets', { create: true });
-  const mediaDirName =
-    input.kind === 'video' ? 'videos' : input.kind === 'cover' ? 'covers' : 'images';
+  const mediaDirName = input.kind === 'video' ? 'videos' : 'images';
   const mediaDir = await assetsDir.getDirectoryHandle(mediaDirName, { create: true });
   const extension = getExtensionFromMimeType(
     input.blob.type,
@@ -384,12 +387,12 @@ async function hydrateWorkspaceAssetUrls(
           assetDataUrl: node.assetPath
             ? await readAssetObjectUrl(rootHandle, canvas, node.assetPath)
             : node.assetDataUrl,
+          maskImageDataUrl: node.maskImagePath
+            ? await readAssetObjectUrl(rootHandle, canvas, node.maskImagePath)
+            : node.maskImageDataUrl,
           outputDataUrl: node.outputPath
             ? await readAssetObjectUrl(rootHandle, canvas, node.outputPath)
             : node.outputDataUrl,
-          outputCoverDataUrl: node.outputCoverPath
-            ? await readAssetObjectUrl(rootHandle, canvas, node.outputCoverPath)
-            : node.outputCoverDataUrl,
         })),
       ),
     })),
@@ -431,6 +434,23 @@ async function persistCanvasAssets(
           };
         }
 
+        if (nextNode.maskImageDataUrl && !nextNode.maskImagePath) {
+          const savedMaskImage = await saveDataUrlAssetToCanvasDirectory(
+            canvasDir,
+            nextNode.maskImageDataUrl,
+            {
+              kind: 'image',
+              fileName: nextNode.maskImageName ?? `${nextNode.id}-mask-source`,
+            },
+          );
+          nextNode = {
+            ...nextNode,
+            maskImageName: savedMaskImage.assetName,
+            maskImagePath: savedMaskImage.assetPath,
+            maskImageMimeType: nextNode.maskImageMimeType ?? savedMaskImage.mimeType,
+          };
+        }
+
         if (nextNode.outputDataUrl && !nextNode.outputPath) {
           const savedOutput = await saveDataUrlAssetToCanvasDirectory(
             canvasDir,
@@ -446,22 +466,6 @@ async function persistCanvasAssets(
           };
         }
 
-        if (nextNode.outputCoverDataUrl && !nextNode.outputCoverPath) {
-          const savedCover = await saveDataUrlAssetToCanvasDirectory(
-            canvasDir,
-            nextNode.outputCoverDataUrl,
-            {
-              kind: 'image',
-              fileName: `${nextNode.id}-cover-${Date.now()}`,
-              directoryName: 'covers',
-            },
-          );
-          nextNode = {
-            ...nextNode,
-            outputCoverPath: savedCover.assetPath,
-          };
-        }
-
         return nextNode;
       }),
     ),
@@ -474,7 +478,7 @@ async function saveDataUrlAssetToCanvasDirectory(
   input: {
     kind: 'image' | 'video' | 'audio' | 'file';
     fileName: string;
-    directoryName?: 'images' | 'videos' | 'audios' | 'files' | 'covers';
+    directoryName?: 'images' | 'videos' | 'audios' | 'files';
   },
 ): Promise<{ assetName: string; assetPath: string; mimeType: string }> {
   const blob = dataUrlToBlob(dataUrl);
@@ -597,6 +601,35 @@ async function getCanvasDirectory(
 
 function getCanvasFolderName(canvas: CanvasView): string {
   return canvas.storageFolderName ?? `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`;
+}
+
+async function removeCanvasFolderCandidates(
+  rootHandle: ShotAgentDirectoryHandle,
+  canvas: CanvasView,
+): Promise<void> {
+  const candidateNames = [
+    getCanvasFolderName(canvas),
+    `${sanitizeFolderName(canvas.name)}__${sanitizeFolderName(canvas.id)}`,
+    sanitizeFolderName(canvas.name),
+  ];
+  let lastError: unknown;
+
+  for (const folderName of Array.from(new Set(candidateNames))) {
+    try {
+      await rootHandle.removeEntry(folderName, { recursive: true });
+      lastError = undefined;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') {
+        continue;
+      }
+
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
 }
 
 function mergeDiscoveredCanvases(
@@ -821,7 +854,6 @@ async function ensureProjectDirectories(canvasDir: FileSystemDirectoryHandle): P
   await assetsDir.getDirectoryHandle('videos', { create: true });
   await assetsDir.getDirectoryHandle('audios', { create: true });
   await assetsDir.getDirectoryHandle('files', { create: true });
-  await assetsDir.getDirectoryHandle('covers', { create: true });
   await canvasDir.getDirectoryHandle('exports', { create: true });
 }
 

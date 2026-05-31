@@ -102,6 +102,9 @@ describe('desktop workspace store permissions', () => {
 
   it('removes the persisted folder for a deleted canvas', async () => {
     const { desktopWorkspaceStore } = await import('../../src/storage/desktopWorkspaceStore');
+    vi.mocked(exists).mockImplementation(async (path) =>
+      ['D:\\Workspace/Canvas__canvas_1', 'D:\\Workspace/Canvas'].includes(String(path)),
+    );
     vi.mocked(remove).mockResolvedValue(undefined);
     const canvas = createWorkspaceState([
       { id: 'canvas_1', name: 'Canvas', updatedAt: 'now', nodes: [], edges: [] },
@@ -117,6 +120,7 @@ describe('desktop workspace store permissions', () => {
     );
 
     expect(remove).toHaveBeenCalledWith('D:\\Workspace/Canvas__canvas_1', { recursive: true });
+    expect(remove).toHaveBeenCalledWith('D:\\Workspace/Canvas', { recursive: true });
   });
 
   it('renames the persisted folder when a canvas name changes', async () => {

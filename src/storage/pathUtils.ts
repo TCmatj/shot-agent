@@ -6,7 +6,6 @@ export function getCanvasDirectories(): string[] {
     'assets/images',
     'assets/videos',
     'assets/files',
-    'assets/covers',
     'exports',
   ];
 }

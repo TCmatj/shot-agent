@@ -4,6 +4,7 @@
   useRef,
   useState,
   type CompositionEvent as ReactCompositionEvent,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent,
   type WheelEvent,
@@ -26,7 +27,6 @@ import VolcengineIcon from '@lobehub/icons/es/Volcengine/components/Mono';
 import XAIIcon from '@lobehub/icons/es/XAI/components/Mono';
 import {
   BoxSelect,
-  Cloud,
   FilePlus2,
   FileText,
   FolderPlus,
@@ -52,8 +52,6 @@ import {
   Undo2,
   Redo2,
   Video,
-  Volume2,
-  VolumeX,
   X,
 } from 'lucide-react';
 import {
@@ -118,6 +116,7 @@ import {
 import {
   applyUploadedSeedanceAssetUrls,
   collectSeedanceUploadCandidates,
+  groupSeedanceUploadCandidatesByContent,
 } from '../models/seedanceReferenceAssets';
 import { renderMarkdownToHtml, shouldCollapseMarkdown } from '../lib/markdown';
 import {
@@ -131,6 +130,7 @@ import {
   canConnectCanvasNodes,
   canNodeReceiveInput,
   copyCanvasSelection,
+  createCanvasEdge,
   createWorkspaceState,
   deleteCanvas,
   exportCanvas,
@@ -174,6 +174,17 @@ import {
   type WorkspaceHistory,
 } from './workspaceHistory';
 import {
+  buildDiamondMaskLineSegments,
+  createDefaultDiamondMaskRect,
+  createDiamondMaskImageDataUrl,
+  diamondMaskColorValues,
+  normalizeDiamondMaskDensity,
+  normalizeDiamondMaskLineWidth,
+  normalizeDiamondMaskRect,
+  type DiamondMaskColor,
+  type DiamondMaskRect,
+} from '../models/diamondMask';
+import {
   calculateCanvasCenterFromMinimapFrame,
   calculateMinimapViewportFrame,
   parseStoredCanvasViewports,
@@ -184,10 +195,13 @@ import {
   getWorkspaceStore,
 } from '../storage';
 import {
+  createObjectStorageConfigFromEnv,
+  createAssetContentHash,
+  getAssetUploadEndpointFromEnv,
   isObjectStorageConfigured,
   readAssetSourceAsBlob,
+  uploadBlobToAssetEndpoint,
   uploadBlobToR2,
-  type ObjectStorageConfig,
 } from '../storage/objectStorage';
 import type { CanvasAssetFile, CanvasAssetFileKind, WorkspaceRootHandle } from '../storage/workspaceStore';
 import { createSeedanceTaskTracker } from '../models/seedanceTaskTracker';
@@ -200,6 +214,35 @@ type NodeTemplate = {
   kind: CanvasNodeKind;
   icon: typeof Image;
   outputOnly?: boolean;
+};
+
+type DiamondMaskResizeHandle = 'n' | 'e' | 's' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
+
+type DiamondMaskNodeBodyProps = {
+  node: CanvasNodeView;
+  onReplaceImage: (file: File) => void;
+  onSelectAsset: () => void;
+  onUpdateNode: (updater: (node: CanvasNodeView) => CanvasNodeView) => void;
+  onGenerate: () => void;
+};
+
+type AssetPickerTarget = {
+  nodeId: string;
+  kind: 'image' | 'video';
+  purpose: 'assetNode' | 'diamondMask';
+};
+
+type VideoModelId = SeedanceModelId | 'seedance-sora';
+
+type VideoCapabilities = {
+  supportedResolutions: Array<'480p' | '720p' | '1080p'>;
+  supportedRatios: SeedanceRatio[];
+  durationRangeSeconds: {
+    min: number;
+    max: number;
+    supportsAuto: boolean;
+  };
+  fixedFrameRate: number;
 };
 
 type AddMenuState = {
@@ -397,6 +440,15 @@ const nodeTemplates: NodeTemplate[] = [
     icon: MessageSquare,
   },
   {
+    id: 'diamond-mask',
+    label: '菱形遮罩节点',
+    title: '菱形遮罩',
+    modelId: 'diamond-mask',
+    kind: 'diamondMask',
+    icon: BoxSelect,
+    outputOnly: true,
+  },
+  {
     id: 'asset-text',
     label: '文本节点',
     title: '文本',
@@ -437,8 +489,8 @@ const nodeTemplates: NodeTemplate[] = [
 const initialCanvases: CanvasView[] = [];
 const initialWorkspaceState = createWorkspaceState(initialCanvases);
 const workspaceStorageKey = 'shot-agent:canvas-workspace';
+const desktopRootDirectoryStorageKey = 'shot-agent:desktop-root-directory-path';
 const providerStorageKey = 'shot-agent:providers';
-const cloudflareStorageKey = 'shot-agent:cloudflare-r2';
 const deletedProviderStorageKey = 'shot-agent:deleted-providers';
 const canvasViewportStorageKey = 'shot-agent:canvas-viewports';
 const canvasNodeSize = { width: 320, height: 220 };
@@ -446,8 +498,6 @@ const edgeHandleHitSize = 18;
 const minimapSize = { width: 220, height: 150 };
 const defaultViewport: CanvasViewport = { x: 80, y: 72, scale: 1 };
 const edgeSnapRadius = 52;
-
-type ProviderSettingsView = 'providers' | 'cloudflare';
 
 type UnsavedChangesPrompt = {
   title: string;
@@ -464,24 +514,6 @@ type TauriWindowCloseHandle = {
 };
 
 type TauriInvoke = (command: string) => Promise<unknown>;
-
-type CloudflareR2Config = {
-  accountId: string;
-  bucketName: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-  endpoint: string;
-  publicBaseUrl: string;
-};
-
-const emptyCloudflareR2Config: CloudflareR2Config = {
-  accountId: '',
-  bucketName: '',
-  accessKeyId: '',
-  secretAccessKey: '',
-  endpoint: '',
-  publicBaseUrl: '',
-};
 
 function summarizeOutputText(value: string, maxLength = 160): string {
   const summary = value
@@ -1615,6 +1647,18 @@ function buildSeedanceReferenceObjectKey(
   ].join('/');
 }
 
+function buildSeedanceReferenceFilename(
+  node: CanvasNodeView,
+  candidate: {
+    nodeId: string;
+    kind: 'image' | 'video' | 'audio';
+  },
+  mimeType?: string,
+): string {
+  const extension = getMediaExtensionFromMimeType(mimeType, candidate.kind);
+  return `${sanitizeObjectKeySegment(node.id)}-${sanitizeObjectKeySegment(candidate.nodeId)}-${Date.now()}${extension}`;
+}
+
 function sanitizeObjectKeySegment(value: string): string {
   return value.trim().replace(/[^a-zA-Z0-9._-]+/g, '-');
 }
@@ -1656,56 +1700,6 @@ function getMediaExtensionFromMimeType(
   }
 
   return kind === 'image' ? '.png' : kind === 'video' ? '.mp4' : '.mp3';
-}
-
-function loadCloudflareR2Config(): CloudflareR2Config {
-  if (typeof window === 'undefined') {
-    return emptyCloudflareR2Config;
-  }
-
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(cloudflareStorageKey) ?? '');
-
-    if (!parsed || typeof parsed !== 'object') {
-      return emptyCloudflareR2Config;
-    }
-
-    const record = parsed as Partial<Record<keyof CloudflareR2Config, unknown>>;
-
-    return {
-      accountId: typeof record.accountId === 'string' ? record.accountId : '',
-      bucketName: typeof record.bucketName === 'string' ? record.bucketName : '',
-      accessKeyId: typeof record.accessKeyId === 'string' ? record.accessKeyId : '',
-      secretAccessKey: typeof record.secretAccessKey === 'string' ? record.secretAccessKey : '',
-      endpoint: typeof record.endpoint === 'string' ? record.endpoint : '',
-      publicBaseUrl: typeof record.publicBaseUrl === 'string' ? record.publicBaseUrl : '',
-    };
-  } catch {
-    return emptyCloudflareR2Config;
-  }
-}
-
-function isCloudflareR2Configured(config: CloudflareR2Config): boolean {
-  return Boolean(
-    config.accountId.trim() &&
-      config.bucketName.trim() &&
-      config.accessKeyId.trim() &&
-      config.secretAccessKey.trim() &&
-      config.endpoint.trim() &&
-      config.publicBaseUrl.trim(),
-  );
-}
-
-function createObjectStorageConfigFromCloudflare(
-  config: CloudflareR2Config,
-): ObjectStorageConfig {
-  return {
-    endpoint: config.endpoint.trim(),
-    bucket: config.bucketName.trim(),
-    accessKeyId: config.accessKeyId.trim(),
-    secretAccessKey: config.secretAccessKey.trim(),
-    publicBaseURL: config.publicBaseUrl.trim(),
-  };
 }
 
 function parseDeletedProviderIds(value: string | null): Set<string> {
@@ -1847,7 +1841,7 @@ function getGenerationTokenUsage(record: GenerationRecord): string {
   return typeof totalTokens === 'number' ? `${totalTokens}` : '-';
 }
 
-function getAssetFilterLabel(filter: AssetFilter): string {
+function getAssetFilterLabel(filter: AssetFilter | CanvasAssetFileKind): string {
   switch (filter) {
     case 'image':
       return '图片';
@@ -1857,8 +1851,6 @@ function getAssetFilterLabel(filter: AssetFilter): string {
       return '音频';
     case 'file':
       return '文件';
-    case 'cover':
-      return '封面';
     case 'all':
     default:
       return '全部';
@@ -1907,11 +1899,89 @@ function getImageNodeSettingBadges(node: CanvasNodeView): string[] {
   return [resolutionLabel, aspectLabel, qualityLabel];
 }
 
+function isSeedanceVideoModel(modelId: string): modelId is SeedanceModelId {
+  return modelId === 'seedance2.0' || modelId === 'seedance2.0-fast';
+}
+
+function isSeedanceSoraVideoModel(modelId: string): modelId is 'seedance-sora' {
+  return modelId === 'seedance-sora' || modelId === 'sora-2';
+}
+
+function getSeedanceConfigModel(modelId: string): SeedanceModelId | null {
+  if (isSeedanceVideoModel(modelId)) {
+    return modelId;
+  }
+
+  if (isSeedanceSoraVideoModel(modelId)) {
+    return 'seedance2.0';
+  }
+
+  return null;
+}
+
+function getVideoCapabilities(modelId: string): VideoCapabilities {
+  const seedanceConfigModel = getSeedanceConfigModel(modelId);
+  if (seedanceConfigModel) {
+    return getSeedanceCapabilities(seedanceConfigModel);
+  }
+
+  return {
+    supportedResolutions: ['720p', '1080p'],
+    supportedRatios: ['16:9', '9:16', '1:1'],
+    durationRangeSeconds: {
+      min: 1,
+      max: 20,
+      supportsAuto: false,
+    },
+    fixedFrameRate: 24,
+  };
+}
+
+function getDefaultVideoRatio(modelId: string): SeedanceRatio {
+  const seedanceConfigModel = getSeedanceConfigModel(modelId);
+  return seedanceConfigModel ? getDefaultSeedanceRatio(seedanceConfigModel) : '16:9';
+}
+
+function normalizeVideoDurationSeconds(modelId: string, value: number): number {
+  const seedanceConfigModel = getSeedanceConfigModel(modelId);
+  if (seedanceConfigModel) {
+    return normalizeSeedanceDurationSeconds(seedanceConfigModel, value);
+  }
+
+  const capabilities = getVideoCapabilities(modelId);
+  if (!Number.isFinite(value)) {
+    return capabilities.durationRangeSeconds.min;
+  }
+
+  return Math.min(
+    capabilities.durationRangeSeconds.max,
+    Math.max(capabilities.durationRangeSeconds.min, Math.round(value)),
+  );
+}
+
+function getVideoDurationInputBounds(modelId: string): { min: number; max: number } {
+  const seedanceConfigModel = getSeedanceConfigModel(modelId);
+  if (seedanceConfigModel) {
+    return getSeedanceDurationInputBounds(seedanceConfigModel);
+  }
+
+  return getVideoCapabilities(modelId).durationRangeSeconds;
+}
+
+function getVisibleVideoFields(modelId: string, scenario: SeedanceScenario) {
+  const seedanceConfigModel = getSeedanceConfigModel(modelId);
+  if (seedanceConfigModel) {
+    return getVisibleSeedanceFields({ model: seedanceConfigModel, scenario });
+  }
+
+  return ['prompt', 'resolution', 'ratio', 'duration', 'framespersecond'] as const;
+}
+
 function getVideoNodeSettingBadges(node: CanvasNodeView): string[] {
-  const model = (node.modelId as SeedanceModelId) ?? 'seedance2.0';
-  const capabilities = getSeedanceCapabilities(model);
+  const model = node.modelId || 'seedance2.0';
+  const capabilities = getVideoCapabilities(model);
   const resolution = node.videoResolution ?? capabilities.supportedResolutions[0] ?? '720p';
-  const ratio = node.videoRatio ?? getDefaultSeedanceRatio(model);
+  const ratio = node.videoRatio ?? getDefaultVideoRatio(model);
   const duration = node.videoDurationSeconds ?? 5;
   const durationLabel = duration === -1 ? 'Auto 时长' : `${duration}s`;
   const frameRate = node.videoFramesPerSecond ?? capabilities.fixedFrameRate;
@@ -1948,8 +2018,8 @@ function getVideoOutputStorageStatus(node: CanvasNodeView): {
 }
 
 function getEstimatedVideoDurationSeconds(node: CanvasNodeView): number {
-  const model = (node.modelId as SeedanceModelId) ?? 'seedance2.0';
-  const capabilities = getSeedanceCapabilities(model);
+  const model = node.modelId || 'seedance2.0';
+  const capabilities = getVideoCapabilities(model);
   const duration = node.videoDurationSeconds;
 
   if (duration === -1) {
@@ -1968,11 +2038,19 @@ function getVideoScenarioOptions(): Array<{ value: SeedanceScenario; label: stri
   ];
 }
 
-function getVideoModelOptions(): Array<{ value: SeedanceModelId; label: string }> {
-  return [
+function getVideoModelOptions(input?: {
+  allowSoraFormat?: boolean;
+}): Array<{ value: VideoModelId; label: string }> {
+  const options: Array<{ value: VideoModelId; label: string }> = [
     { value: 'seedance2.0', label: 'seedance2.0' },
     { value: 'seedance2.0-fast', label: 'seedance2.0-fast' },
   ];
+
+  if (input?.allowSoraFormat) {
+    options.push({ value: 'seedance-sora', label: 'seedance-sora' });
+  }
+
+  return options;
 }
 
 function getVideoScenarioLabel(scenario: SeedanceScenario): string {
@@ -2017,6 +2095,361 @@ function getVideoScenarioHint(scenario: SeedanceScenario): string | null {
   }
 
   return null;
+}
+
+function getVideoModelFormatHint(modelId: string): string | null {
+  if (isSeedanceSoraVideoModel(modelId)) {
+    return '当前模型使用 Sora 格式调用，配置项与 Seedance 节点保持一致。';
+  }
+
+  return null;
+}
+
+function getDiamondMaskColorLabel(color: DiamondMaskColor): string {
+  const labels: Record<DiamondMaskColor, string> = {
+    white: '白色',
+    red: '红色',
+    yellow: '黄色',
+    blue: '蓝色',
+    green: '绿色',
+  };
+
+  return labels[color];
+}
+
+function getDiamondMaskSource(node: CanvasNodeView): string | undefined {
+  return node.maskImageDataUrl;
+}
+
+function DiamondMaskNodeBody({
+  node,
+  onReplaceImage,
+  onSelectAsset,
+  onUpdateNode,
+  onGenerate,
+}: DiamondMaskNodeBodyProps) {
+  const imageSource = getDiamondMaskSource(node);
+  const imageWidth = Math.max(1, node.maskImageWidth ?? 1);
+  const imageHeight = Math.max(1, node.maskImageHeight ?? 1);
+  const rect = node.maskRect
+    ? normalizeDiamondMaskRect(node.maskRect, imageWidth, imageHeight)
+    : createDefaultDiamondMaskRect(imageWidth, imageHeight);
+  const lineWidth = normalizeDiamondMaskLineWidth(node.maskLineWidth ?? 1);
+  const density = normalizeDiamondMaskDensity(node.maskGridDensity ?? 38);
+  const color = node.maskColor ?? 'white';
+  const lines = useMemo(
+    () => buildDiamondMaskLineSegments(rect, density),
+    [rect.x, rect.y, rect.width, rect.height, density],
+  );
+
+  function updateMaskRect(nextRect: DiamondMaskRect) {
+    onUpdateNode((current) => ({
+      ...current,
+      maskRect: normalizeDiamondMaskRect(nextRect, imageWidth, imageHeight),
+    }));
+  }
+
+  function startMove(event: PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.currentTarget.closest('.diamond-mask-stage');
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const bounds = target.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startRect = rect;
+    const scaleX = imageWidth / bounds.width;
+    const scaleY = imageHeight / bounds.height;
+
+    const onPointerMove = (moveEvent: globalThis.PointerEvent) => {
+      updateMaskRect({
+        ...startRect,
+        x: startRect.x + (moveEvent.clientX - startX) * scaleX,
+        y: startRect.y + (moveEvent.clientY - startY) * scaleY,
+      });
+    };
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp, { once: true });
+  }
+
+  function startResize(event: PointerEvent<HTMLButtonElement>, handle: DiamondMaskResizeHandle) {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.currentTarget.closest('.diamond-mask-stage');
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const bounds = target.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startRect = rect;
+    const scaleX = imageWidth / bounds.width;
+    const scaleY = imageHeight / bounds.height;
+
+    const onPointerMove = (moveEvent: globalThis.PointerEvent) => {
+      const dx = (moveEvent.clientX - startX) * scaleX;
+      const dy = (moveEvent.clientY - startY) * scaleY;
+      let nextRect = { ...startRect };
+
+      if (handle.includes('w')) {
+        nextRect = {
+          ...nextRect,
+          x: startRect.x + dx,
+          width: startRect.width - dx,
+        };
+      }
+
+      if (handle.includes('e')) {
+        nextRect = {
+          ...nextRect,
+          width: startRect.width + dx,
+        };
+      }
+
+      if (handle.includes('n')) {
+        nextRect = {
+          ...nextRect,
+          y: startRect.y + dy,
+          height: startRect.height - dy,
+        };
+      }
+
+      if (handle.includes('s')) {
+        nextRect = {
+          ...nextRect,
+          height: startRect.height + dy,
+        };
+      }
+
+      updateMaskRect(nextRect);
+    };
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp, { once: true });
+  }
+
+  return (
+    <div className="diamond-mask-node">
+      {imageSource ? (
+        <div
+          className="diamond-mask-stage"
+          style={{ aspectRatio: `${imageWidth} / ${imageHeight}` }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <img
+            src={imageSource}
+            alt={node.maskImageName ?? '遮罩图片'}
+            onLoad={(event) => {
+              const image = event.currentTarget;
+              const nextWidth = image.naturalWidth;
+              const nextHeight = image.naturalHeight;
+              const needsUpdate =
+                node.maskImageWidth !== nextWidth ||
+                node.maskImageHeight !== nextHeight ||
+                !node.maskRect;
+
+              if (!needsUpdate) {
+                return;
+              }
+
+              onUpdateNode((current) => ({
+                ...current,
+                maskImageWidth: nextWidth,
+                maskImageHeight: nextHeight,
+                maskRect: current.maskRect
+                  ? normalizeDiamondMaskRect(current.maskRect, nextWidth, nextHeight)
+                  : createDefaultDiamondMaskRect(nextWidth, nextHeight),
+              }));
+            }}
+          />
+          <svg
+            className="diamond-mask-overlay"
+            viewBox={`0 0 ${imageWidth} ${imageHeight}`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <defs>
+              <clipPath id={`diamond-mask-clip-${node.id}`}>
+                <rect x={rect.x} y={rect.y} width={rect.width} height={rect.height} />
+              </clipPath>
+            </defs>
+            <g clipPath={`url(#diamond-mask-clip-${node.id})`}>
+              {lines.map((line, index) => (
+                <line
+                  key={`${index}-${line.x1}-${line.y1}`}
+                  x1={line.x1}
+                  y1={line.y1}
+                  x2={line.x2}
+                  y2={line.y2}
+                  stroke={diamondMaskColorValues[color]}
+                  strokeWidth={lineWidth}
+                  opacity={0.82}
+                />
+              ))}
+            </g>
+          </svg>
+          <div
+            className="diamond-mask-box"
+            style={{
+              left: `${(rect.x / imageWidth) * 100}%`,
+              top: `${(rect.y / imageHeight) * 100}%`,
+              width: `${(rect.width / imageWidth) * 100}%`,
+              height: `${(rect.height / imageHeight) * 100}%`,
+            }}
+            onPointerDown={startMove}
+          >
+            {(['nw', 'ne', 'sw', 'se', 'n', 'e', 's', 'w'] as DiamondMaskResizeHandle[]).map(
+              (handle) => (
+                <button
+                  key={handle}
+                  type="button"
+                  className={`diamond-mask-handle diamond-mask-handle-${handle}`}
+                  aria-label={`缩放遮罩范围 ${handle}`}
+                  onPointerDown={(event) => startResize(event, handle)}
+                />
+              ),
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="diamond-mask-actions">
+          <label className="asset-upload diamond-mask-upload">
+            选择图片
+            <input
+              type="file"
+              accept="image/*"
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                  onReplaceImage(file);
+                  event.target.value = '';
+                }
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={onSelectAsset}
+          >
+            选择资产
+          </button>
+        </div>
+      )}
+      <div className="diamond-mask-controls">
+        <label>
+          <span>
+            线宽
+            <strong>{lineWidth}px</strong>
+          </span>
+          <input
+            type="range"
+            min={1}
+            max={5}
+            step={1}
+            value={lineWidth}
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) =>
+              onUpdateNode((current) => ({
+                ...current,
+                maskLineWidth: normalizeDiamondMaskLineWidth(Number(event.target.value)),
+              }))
+            }
+          />
+        </label>
+        <label>
+          <span>
+            网格密度
+            <strong>{density}</strong>
+          </span>
+          <input
+            type="range"
+            min={20}
+            max={70}
+            step={1}
+            value={density}
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) =>
+              onUpdateNode((current) => ({
+                ...current,
+                maskGridDensity: normalizeDiamondMaskDensity(Number(event.target.value)),
+              }))
+            }
+          />
+        </label>
+      </div>
+      <div className="diamond-mask-color-row" aria-label="遮罩颜色">
+        <span className="diamond-mask-color-label">颜色</span>
+        {(['white', 'red', 'yellow', 'blue', 'green'] as DiamondMaskColor[]).map((option) => (
+          <button
+            key={option}
+            type="button"
+            aria-label={`选择${getDiamondMaskColorLabel(option)}`}
+            title={getDiamondMaskColorLabel(option)}
+            className={option === color ? 'is-active' : ''}
+            style={{ '--mask-color': diamondMaskColorValues[option] } as CSSProperties}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() =>
+              onUpdateNode((current) => ({
+                ...current,
+                maskColor: option,
+              }))
+            }
+          />
+        ))}
+      </div>
+      <div className="diamond-mask-actions diamond-mask-bottom-actions">
+        {imageSource ? (
+          <label className="asset-upload diamond-mask-replace">
+            替换图片
+            <input
+              type="file"
+              accept="image/*"
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                  onReplaceImage(file);
+                  event.target.value = '';
+                }
+              }}
+            />
+          </label>
+        ) : null}
+        {imageSource ? (
+          <button
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={onSelectAsset}
+          >
+            选择资产
+          </button>
+        ) : null}
+        <button
+          type="button"
+          disabled={!imageSource || !node.maskImageWidth || !node.maskImageHeight}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={onGenerate}
+        >
+          生成遮罩图
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function getProviderInitial(providerName: string): string {
@@ -2071,6 +2504,51 @@ function mergeWorkspaceStateForDirectory(
       : mergedCanvases[0]?.id ?? '',
     canvases: mergedCanvases,
   };
+}
+
+function isLegacyStarterCanvas(canvas: CanvasView): boolean {
+  const name = canvas.name.trim();
+
+  if (name === '产品短片') {
+    return canvas.updatedAt === '示例' || (canvas.nodes.length === 0 && canvas.edges.length === 0);
+  }
+
+  if (name === '新画布 1') {
+    return canvas.nodes.length === 0 && canvas.edges.length === 0;
+  }
+
+  if (name !== '默认画布' || canvas.updatedAt !== '刚刚' || canvas.nodes.length < 3) {
+    return false;
+  }
+
+  const modelIds = new Set(canvas.nodes.map((node) => node.modelId));
+  return modelIds.has('gpt-image-2') && modelIds.has('seedance2.0');
+}
+
+function removeLegacyStarterCanvases(state: CanvasWorkspaceState): CanvasWorkspaceState {
+  const canvases = state.canvases.filter((canvas) => !isLegacyStarterCanvas(canvas));
+
+  if (canvases.length === state.canvases.length) {
+    return state;
+  }
+
+  const canvasIds = new Set(canvases.map((canvas) => canvas.id));
+  const nodeIds = new Set(canvases.flatMap((canvas) => canvas.nodes.map((node) => node.id)));
+
+  return {
+    ...state,
+    activeCanvasId: canvasIds.has(state.activeCanvasId) ? state.activeCanvasId : canvases[0]?.id ?? '',
+    canvases,
+    generationHistory: state.generationHistory?.filter((record) => nodeIds.has(record.nodeId)) ?? [],
+  };
+}
+
+function persistWorkspaceStateToLocalStorage(state: CanvasWorkspaceState) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
 }
 
 type ProviderBrandIconConfig = {
@@ -2203,26 +2681,21 @@ export function App() {
   const [providerVideoHistoryTotal, setProviderVideoHistoryTotal] = useState(0);
   const providerVideoHistoryRequestIdRef = useRef(0);
   const [showProviderManager, setShowProviderManager] = useState(false);
-  const [providerSettingsView, setProviderSettingsView] = useState<ProviderSettingsView>('providers');
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [providerSearchQuery, setProviderSearchQuery] = useState('');
   const [showAssetPanel, setShowAssetPanel] = useState(false);
   const [assetFilter, setAssetFilter] = useState<AssetFilter>('all');
   const [canvasAssets, setCanvasAssets] = useState<CanvasAssetFile[]>([]);
   const [loadingCanvasAssets, setLoadingCanvasAssets] = useState(false);
-  const [mutedAssetPaths, setMutedAssetPaths] = useState<string[]>([]);
-  const [cloudflareConfig, setCloudflareConfig] = useState<CloudflareR2Config>(loadCloudflareR2Config);
-  const [cloudflareConfigDraft, setCloudflareConfigDraft] =
-    useState<CloudflareR2Config>(cloudflareConfig);
+  const [assetPickerTarget, setAssetPickerTarget] = useState<AssetPickerTarget | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [workspaceState, setWorkspaceStateRaw] = useState(() => {
     if (typeof window === 'undefined') {
       return initialWorkspaceState;
     }
 
-    return parseWorkspaceState(
-      window.localStorage.getItem(workspaceStorageKey),
-      initialWorkspaceState,
+    return removeLegacyStarterCanvases(
+      parseWorkspaceState(window.localStorage.getItem(workspaceStorageKey), initialWorkspaceState),
     );
   });
   const [rootDirectoryHandle, setRootDirectoryHandle] = useState<WorkspaceRootHandle | null>(
@@ -2424,6 +2897,9 @@ export function App() {
     assetFilter === 'all'
       ? canvasAssets
       : canvasAssets.filter((asset) => asset.kind === assetFilter);
+  const assetPickerAssets = assetPickerTarget
+    ? canvasAssets.filter((asset) => asset.kind === assetPickerTarget.kind)
+    : [];
   const renderedCanvasNodes = useMemo(() => {
     if (!activeCanvas) {
       return [];
@@ -2458,32 +2934,31 @@ export function App() {
       : 'text_to_video';
   const selectedVideoModel =
     selectedNode?.kind === 'video'
-      ? ((selectedNode.modelId as SeedanceModelId) ?? 'seedance2.0')
+      ? selectedNode.modelId || 'seedance2.0'
       : 'seedance2.0';
   const selectedVideoCapabilities =
     selectedNode?.kind === 'video'
-      ? getSeedanceCapabilities(selectedVideoModel)
+      ? getVideoCapabilities(selectedVideoModel)
       : null;
+  const selectedSeedanceConfigModel =
+    selectedNode?.kind === 'video' ? getSeedanceConfigModel(selectedVideoModel) : null;
   const visibleVideoFields =
     selectedNode?.kind === 'video'
-      ? getVisibleSeedanceFields({
-          model: selectedVideoModel,
-          scenario: selectedVideoScenario,
-        })
+      ? getVisibleVideoFields(selectedVideoModel, selectedVideoScenario)
       : [];
   const selectedVideoReferenceCount =
     selectedNode?.kind === 'video' && activeCanvas
       ? countDirectVideoReferenceInputs(activeCanvas, selectedNode.id)
       : 0;
   const estimatedVideoTokens =
-    selectedNode?.kind === 'video'
+    selectedNode?.kind === 'video' && selectedSeedanceConfigModel
       ? estimateSeedanceTokens({
-          model: selectedVideoModel,
+          model: selectedSeedanceConfigModel,
           resolution:
             selectedNode.videoResolution ??
             selectedVideoCapabilities?.supportedResolutions[0] ??
             '720p',
-          ratio: selectedNode.videoRatio ?? getDefaultSeedanceRatio(selectedVideoModel),
+          ratio: selectedNode.videoRatio ?? getDefaultVideoRatio(selectedVideoModel),
           duration: getEstimatedVideoDurationSeconds(selectedNode),
           framespersecond: selectedVideoCapabilities?.fixedFrameRate ?? 24,
           scenario: selectedVideoScenario,
@@ -2552,9 +3027,9 @@ export function App() {
     1,
     Math.ceil(providerVideoHistoryTotal / providerVideoHistoryPageSize) || 1,
   );
-  const cloudflareConfigIsDirty =
-    JSON.stringify(cloudflareConfigDraft) !== JSON.stringify(cloudflareConfig);
-  const cloudflareConfigIsConfigured = isCloudflareR2Configured(cloudflareConfigDraft);
+  const soraFormatAvailable =
+    Boolean(getAssetUploadEndpointFromEnv()) ||
+    isObjectStorageConfigured(createObjectStorageConfigFromEnv());
   const minimapBounds = getCanvasContentBounds(renderedCanvasNodes, canvasNodeSize);
   const minimapScale = Math.min(
     minimapSize.width / minimapBounds.width,
@@ -2828,6 +3303,9 @@ export function App() {
 
     async function restoreFolderWorkspace() {
       try {
+        const hasExplicitDesktopWorkspace =
+          workspaceStore.kind !== 'desktop'
+          || window.localStorage.getItem(desktopRootDirectoryStorageKey) !== null;
         const handle = await workspaceStore.getStoredRootDirectoryHandle();
         if (!handle || !(await workspaceStore.ensureDirectoryPermission(handle, 'readwrite'))) {
           if (!canceled) {
@@ -2844,12 +3322,18 @@ export function App() {
         const restoredState = await workspaceStore.readWorkspaceFromFolder(
           handle,
           workspaceStateRef.current,
+          {
+            includeDiscoveredCanvases: hasExplicitDesktopWorkspace,
+          },
         );
+        const nextState = hasExplicitDesktopWorkspace
+          ? restoredState
+          : removeLegacyStarterCanvases(restoredState);
         if (!canceled) {
           setRootDirectoryHandle(handle);
-          workspaceStateRef.current = restoredState;
-          savedWorkspaceStateRef.current = restoredState;
-          setWorkspaceState(restoredState);
+          workspaceStateRef.current = nextState;
+          savedWorkspaceStateRef.current = nextState;
+          setWorkspaceState(nextState);
           setFolderStorageReady(true);
           setCanvasMessage(`已连接画布存储文件夹：${handle.name}`);
         }
@@ -2978,10 +3462,6 @@ export function App() {
       return;
     }
 
-    if (providerSettingsView !== 'providers') {
-      return;
-    }
-
     if (providerRows.length === 0) {
       setSelectedProviderId(null);
       return;
@@ -2990,7 +3470,7 @@ export function App() {
     if (!selectedProviderId || !providerRows.some((provider) => provider.id === selectedProviderId)) {
       setSelectedProviderId(providerRows[0].id);
     }
-  }, [providerRows, providerSettingsView, selectedProviderId, showProviderManager]);
+  }, [providerRows, selectedProviderId, showProviderManager]);
 
   useEffect(() => {
     setProviderVideoHistoryPage(1);
@@ -3373,8 +3853,7 @@ export function App() {
     setShowProviderManager(false);
   }
 
-  function openProviderSettingsView(view: ProviderSettingsView) {
-    setProviderSettingsView(view);
+  function openProviderSettingsView() {
     setShowProviderManager(true);
   }
 
@@ -3454,13 +3933,59 @@ export function App() {
     }
   }
 
+  function openAssetPicker(target: AssetPickerTarget) {
+    if (!rootDirectoryHandle || !folderStorageReady || !activeCanvas) {
+      setCanvasMessage('请先选择画布存储文件夹，再选择当前画布资产。');
+      return;
+    }
+
+    setAssetPickerTarget(target);
+    void refreshCanvasAssets();
+  }
+
+  function selectCanvasAssetForTarget(asset: CanvasAssetFile) {
+    const target = assetPickerTarget;
+    if (!target || asset.kind !== target.kind || !asset.dataUrl) {
+      setCanvasMessage('当前资产暂时无法读取，请刷新资产后重试。');
+      return;
+    }
+
+    updateNode(target.nodeId, (current) => {
+      if (target.purpose === 'diamondMask') {
+        return {
+          ...current,
+          maskImageName: asset.name,
+          maskImagePath: asset.path,
+          maskImageDataUrl: asset.dataUrl,
+          maskImageMimeType: asset.mimeType,
+          maskImageWidth: undefined,
+          maskImageHeight: undefined,
+          maskRect: undefined,
+        };
+      }
+
+      return {
+        ...current,
+        title:
+          current.title === '图片' || current.title === '视频'
+            ? getAssetKindLabel(asset.kind)
+            : current.title,
+        assetName: asset.name,
+        assetPath: asset.path,
+        assetDataUrl: asset.dataUrl,
+        assetMimeType: asset.mimeType,
+      };
+    });
+    setAssetPickerTarget(null);
+    setCanvasMessage(`已选择资产：${asset.name}`);
+  }
+
   function clearCanvasAssetReferences(assetPath: string) {
     updateActiveCanvasNodes((nodes) =>
       nodes.map((node) => {
         if (
           node.assetPath !== assetPath &&
-          node.outputPath !== assetPath &&
-          node.outputCoverPath !== assetPath
+          node.outputPath !== assetPath
         ) {
           return node;
         }
@@ -3473,9 +3998,6 @@ export function App() {
           assetMimeType: node.assetPath === assetPath ? undefined : node.assetMimeType,
           outputPath: node.outputPath === assetPath ? undefined : node.outputPath,
           outputDataUrl: node.outputPath === assetPath ? undefined : node.outputDataUrl,
-          outputCoverPath: node.outputCoverPath === assetPath ? undefined : node.outputCoverPath,
-          outputCoverDataUrl:
-            node.outputCoverPath === assetPath ? undefined : node.outputCoverDataUrl,
         };
       }),
     );
@@ -3627,13 +4149,16 @@ export function App() {
         imageQuality: template.kind === 'image' ? defaultImageQuality : undefined,
         videoRatio:
           template.kind === 'video'
-            ? getDefaultSeedanceRatio(template.modelId as SeedanceModelId)
+            ? getDefaultVideoRatio(template.modelId)
             : undefined,
         videoFramesPerSecond:
           template.kind === 'video'
-            ? getSeedanceCapabilities(template.modelId as SeedanceModelId).fixedFrameRate
+            ? getVideoCapabilities(template.modelId).fixedFrameRate
             : undefined,
         seedanceScenario: defaultVideoScenario,
+        maskLineWidth: template.kind === 'diamondMask' ? 1 : undefined,
+        maskGridDensity: template.kind === 'diamondMask' ? 38 : undefined,
+        maskColor: template.kind === 'diamondMask' ? 'white' : undefined,
         textContent: template.kind === 'textAsset' ? '在这里输入文本' : undefined,
       },
     ]);
@@ -3798,6 +4323,177 @@ export function App() {
     }
   }
 
+  async function replaceDiamondMaskImage(nodeId: string, file: File) {
+    if (!file.type.startsWith('image/')) {
+      setCanvasMessage('请选择图片文件。');
+      return;
+    }
+
+    if (!activeCanvas) {
+      return;
+    }
+
+    if (!rootDirectoryHandle || !folderStorageReady) {
+      setCanvasMessage('请先选择画布存储文件夹，再导入遮罩图片。');
+      return;
+    }
+
+    try {
+      const savedAsset = await workspaceStore.saveAssetFileToCanvasFolder(
+        rootDirectoryHandle,
+        activeCanvas,
+        file,
+      );
+
+      if (!savedAsset.assetDataUrl) {
+        setCanvasMessage('读取遮罩图片失败，请重新选择图片。');
+        return;
+      }
+
+      updateNode(nodeId, (current) => ({
+        ...current,
+        maskImageName: savedAsset.assetName,
+        maskImagePath: savedAsset.assetPath,
+        maskImageDataUrl: savedAsset.assetDataUrl,
+        maskImageMimeType: savedAsset.assetMimeType,
+        maskImageWidth: undefined,
+        maskImageHeight: undefined,
+        maskRect: undefined,
+      }));
+      setCanvasMessage(null);
+    } catch {
+      setCanvasMessage(`保存遮罩图片 ${file.name} 到画布文件夹失败，请检查文件夹权限后重试。`);
+    }
+  }
+
+  async function generateDiamondMaskAsset(node: CanvasNodeView) {
+    if (!activeCanvas || node.kind !== 'diamondMask') {
+      return;
+    }
+
+    const imageSource = getDiamondMaskSource(node);
+    if (!imageSource) {
+      setCanvasMessage('请先为菱形遮罩节点选择图片。');
+      return;
+    }
+
+    if (!node.maskImageWidth || !node.maskImageHeight) {
+      setCanvasMessage('图片还在读取中，请稍后再生成。');
+      return;
+    }
+
+    const imageWidth = node.maskImageWidth;
+    const imageHeight = node.maskImageHeight;
+    const maskRect = node.maskRect ?? createDefaultDiamondMaskRect(imageWidth, imageHeight);
+
+    try {
+      const dataUrl = await createDiamondMaskImageDataUrl({
+        imageUrl: imageSource,
+        imageWidth,
+        imageHeight,
+        settings: {
+          lineWidth: normalizeDiamondMaskLineWidth(node.maskLineWidth ?? 1),
+          density: normalizeDiamondMaskDensity(node.maskGridDensity ?? 38),
+          color: node.maskColor ?? 'white',
+          rect: maskRect,
+        },
+      });
+      const blob = await (await fetch(dataUrl)).blob();
+      const timestamp = Date.now();
+      const generatedNodeId = `node_diamond_mask_output_${timestamp}`;
+      const generatedName = `diamond-mask-${timestamp}.png`;
+      const savedAsset =
+        rootDirectoryHandle && folderStorageReady
+          ? await workspaceStore.saveGeneratedMediaBlobToCanvasFolder(
+              rootDirectoryHandle,
+              activeCanvas,
+              {
+                blob,
+                fileName: generatedName,
+                kind: 'image',
+              },
+            )
+          : {
+              assetName: generatedName,
+              assetPath: undefined,
+              mimeType: blob.type || 'image/png',
+            };
+      const assetNodeCreated = addGeneratedAssetNode({
+        sourceNode: node,
+        nodeId: generatedNodeId,
+        title: '遮罩图片',
+        kind: 'imageAsset',
+        assetName: savedAsset.assetName,
+        assetPath: savedAsset.assetPath,
+        assetDataUrl: dataUrl,
+        assetMimeType: savedAsset.mimeType || 'image/png',
+      });
+      if (assetNodeCreated) {
+        selectSingleNode(generatedNodeId);
+      }
+      setCanvasMessage('已生成遮罩图片并保存到图片资产。');
+    } catch (error) {
+      setCanvasMessage(
+        `生成遮罩图片失败：${error instanceof Error ? error.message : '未知错误'}`,
+      );
+    }
+  }
+
+  function addGeneratedAssetNode(input: {
+    sourceNode: CanvasNodeView;
+    nodeId: string;
+    title: string;
+    kind: 'imageAsset' | 'videoAsset';
+    assetName: string;
+    assetPath?: string;
+    assetDataUrl?: string;
+    assetMimeType: string;
+  }): boolean {
+    const targetCanvas = workspaceStateRef.current.canvases.find((canvas) =>
+      canvas.nodes.some((candidate) => candidate.id === input.sourceNode.id),
+    );
+
+    if (!targetCanvas) {
+      return false;
+    }
+
+    markCanvasDirty(targetCanvas.id);
+    setWorkspaceStateWithHistory((current) => ({
+      ...current,
+      canvases: current.canvases.map((canvas) => {
+        if (canvas.id !== targetCanvas.id) {
+          return canvas;
+        }
+
+        const outputIndex = canvas.edges.filter((edge) => {
+          const targetNode = canvas.nodes.find((candidate) => candidate.id === edge.toNodeId);
+          return edge.fromNodeId === input.sourceNode.id && targetNode?.kind === input.kind;
+        }).length;
+        const outputNode: CanvasNodeView = {
+          id: input.nodeId,
+          title: input.title,
+          modelId: input.kind === 'imageAsset' ? 'asset-image' : 'asset-video',
+          kind: input.kind,
+          x: input.sourceNode.x + getCanvasNodeWidth(input.sourceNode) + 120,
+          y: input.sourceNode.y + outputIndex * (canvasNodeSize.height + 32),
+          assetName: input.assetName,
+          assetPath: input.assetPath,
+          assetDataUrl: input.assetDataUrl,
+          assetMimeType: input.assetMimeType,
+        };
+
+        return {
+          ...canvas,
+          updatedAt: '刚刚',
+          nodes: [...canvas.nodes, outputNode],
+          edges: [...canvas.edges, createCanvasEdge(input.sourceNode.id, input.nodeId)],
+        };
+      }),
+    }));
+    void refreshCanvasAssets();
+    return true;
+  }
+
   function getFirstSupportedMediaFile(fileList?: FileList | null): File | null {
     return Array.from(fileList ?? []).find(isSupportedMediaFile) ?? null;
   }
@@ -3924,7 +4620,12 @@ export function App() {
     canvas: CanvasView,
     node: CanvasNodeView,
   ): Promise<
-    | { ok: true; canvas: CanvasView; uploadedUrls: Map<string, string> }
+    | {
+        ok: true;
+        canvas: CanvasView;
+        uploadedUrls: Map<string, string>;
+        cacheUpdates: Map<string, string>;
+      }
     | { ok: false; error: string }
   > {
     const inputAssetIds = collectGenerationInputAssetIds({
@@ -3934,27 +4635,47 @@ export function App() {
     const uploadCandidates = collectSeedanceUploadCandidates(canvas, inputAssetIds);
 
     if (uploadCandidates.length === 0) {
-      return { ok: true, canvas, uploadedUrls: new Map() };
+      return { ok: true, canvas, uploadedUrls: new Map(), cacheUpdates: new Map() };
     }
 
-    const objectStorageConfig = createObjectStorageConfigFromCloudflare(cloudflareConfig);
+    const assetUploadEndpoint = getAssetUploadEndpointFromEnv();
+    const objectStorageConfig = createObjectStorageConfigFromEnv();
+    const canUploadReferenceAssets =
+      Boolean(assetUploadEndpoint) || isObjectStorageConfigured(objectStorageConfig);
 
-    if (!isObjectStorageConfigured(objectStorageConfig)) {
-      return { ok: true, canvas, uploadedUrls: new Map() };
+    if (!canUploadReferenceAssets) {
+      return { ok: true, canvas, uploadedUrls: new Map(), cacheUpdates: new Map() };
     }
 
     const uploadedUrls = new Map<string, string>();
+    const cacheUpdates = new Map<string, string>();
+    const cachedUrls = workspaceStateRef.current.assetUploadCache ?? {};
+    const uploadGroups = groupSeedanceUploadCandidatesByContent(uploadCandidates);
 
     try {
       await Promise.all(
-        uploadCandidates.map(async (candidate) => {
+        uploadGroups.map(async ({ candidate, nodeIds }) => {
           const sourceBlob = await readAssetSourceAsBlob(candidate.content);
-          const uploadUrl = await uploadBlobToR2({
-            config: objectStorageConfig,
-            key: buildSeedanceReferenceObjectKey(canvas, node, candidate, sourceBlob.type),
-            blob: sourceBlob,
-          });
-          uploadedUrls.set(candidate.nodeId, uploadUrl);
+          const contentHash = await createAssetContentHash(sourceBlob);
+          const uploadUrl = cachedUrls[contentHash] ?? (
+            assetUploadEndpoint
+              ? await uploadBlobToAssetEndpoint({
+                  endpoint: assetUploadEndpoint,
+                  canvasId: canvas.id,
+                  nodeId: candidate.nodeId,
+                  filename: buildSeedanceReferenceFilename(node, candidate, sourceBlob.type),
+                  blob: sourceBlob,
+                })
+              : await uploadBlobToR2({
+                  config: objectStorageConfig,
+                  key: buildSeedanceReferenceObjectKey(canvas, node, candidate, sourceBlob.type),
+                  blob: sourceBlob,
+                })
+          );
+          if (!cachedUrls[contentHash]) {
+            cacheUpdates.set(contentHash, uploadUrl);
+          }
+          nodeIds.forEach((nodeId) => uploadedUrls.set(nodeId, uploadUrl));
         }),
       );
     } catch (error) {
@@ -3971,6 +4692,7 @@ export function App() {
       ok: true,
       canvas: applyUploadedSeedanceAssetUrls(canvas, uploadedUrls),
       uploadedUrls,
+      cacheUpdates,
     };
   }
 
@@ -4059,36 +4781,57 @@ export function App() {
       return;
     }
 
-    void deletePersistedCanvasFolder(activeCanvas);
-    setWorkspaceStateWithHistory((current) => deleteCanvas(current, current.activeCanvasId));
-    clearDirtyCanvasIds([activeCanvasId]);
-    clearSelection();
-    setAddMenu(null);
-    setViewport(defaultViewport);
-    setCanvasMessage(null);
+    void deleteCanvasAndPersist(activeCanvasId);
   }
 
   function deleteCanvasById(canvasId: string) {
-    const canvasToDelete = workspaceStateRef.current.canvases.find((canvas) => canvas.id === canvasId);
-    if (canvasToDelete) {
-      void deletePersistedCanvasFolder(canvasToDelete);
+    void deleteCanvasAndPersist(canvasId);
+  }
+
+  async function deleteCanvasAndPersist(canvasId: string) {
+    const currentState = workspaceStateRef.current;
+    const canvasToDelete = currentState.canvases.find((canvas) => canvas.id === canvasId);
+
+    if (!canvasToDelete) {
+      return;
     }
 
-    setWorkspaceStateWithHistory((current) => deleteCanvas(current, canvasId));
+    const nextState = deleteCanvas(currentState, canvasId);
+    setWorkspaceStateWithHistory(() => nextState);
     clearDirtyCanvasIds([canvasId]);
     clearSelection();
     setAddMenu(null);
     setEditingCanvasId(null);
     setViewport(defaultViewport);
-  }
 
-  async function deletePersistedCanvasFolder(canvas: CanvasView) {
     if (!rootDirectoryHandle || !folderStorageReady) {
+      try {
+        persistWorkspaceStateToLocalStorage(nextState);
+        savedWorkspaceStateRef.current = nextState;
+      } catch {
+        setCanvasMessage('画布已删除，但本地索引写入失败，刷新后可能恢复。');
+        return;
+      }
+
+      setCanvasMessage('画布已删除。');
       return;
     }
 
     try {
-      await workspaceStore.deleteCanvasFolder(rootDirectoryHandle, canvas);
+      await workspaceStore.deleteCanvasFolder(rootDirectoryHandle, canvasToDelete);
+      const persistedState = await workspaceStore.persistWorkspaceToFolder(rootDirectoryHandle, nextState);
+      persistWorkspaceStateToLocalStorage(persistedState);
+
+      if (workspaceStateRef.current === nextState) {
+        workspaceStateRef.current = persistedState;
+        savedWorkspaceStateRef.current = persistedState;
+        setWorkspaceState(persistedState);
+        clearDirtyCanvasIds();
+      } else {
+        savedWorkspaceStateRef.current = persistedState;
+      }
+
+      setCanvasMessage('画布已删除。');
     } catch {
       setCanvasMessage('删除画布文件夹失败，请检查存储目录权限。');
     }
@@ -4202,41 +4945,24 @@ export function App() {
     });
   }
 
-  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
-    if (edgeDraft) {
-      const to = getCanvasPointFromClient(event.clientX, event.clientY);
-      const snapTarget = findNearestEdgeDraftTarget(to);
-
-      setEdgeDraft({
-        ...edgeDraft,
-        to,
-        snapTarget: snapTarget
-          ? {
-              nodeId: snapTarget.nodeId,
-              portId: snapTarget.portId,
-            }
-          : undefined,
-      });
-      return;
-    }
-
+  function updateActiveDragFromPointer(input: { pointerId: number; clientX: number; clientY: number }) {
     const activeDragState = dragStateRef.current;
 
-    if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
+    if (!activeDragState || activeDragState.pointerId !== input.pointerId) {
       return;
     }
 
     if (activeDragState.mode === 'select') {
       updateDragState({
         ...activeDragState,
-        current: getCanvasPointFromClient(event.clientX, event.clientY),
+        current: getCanvasPointFromClient(input.clientX, input.clientY),
       });
       return;
     }
 
     const clientDelta = {
-      dx: event.clientX - activeDragState.lastX,
-      dy: event.clientY - activeDragState.lastY,
+      dx: input.clientX - activeDragState.lastX,
+      dy: input.clientY - activeDragState.lastY,
     };
     const delta = getCanvasDeltaFromClientDelta(clientDelta);
 
@@ -4256,9 +4982,66 @@ export function App() {
 
     dragStateRef.current = {
       ...activeDragState,
-      lastX: event.clientX,
-      lastY: event.clientY,
+      lastX: input.clientX,
+      lastY: input.clientY,
     };
+  }
+
+  function finishActiveDragFromPointer(input: { pointerId: number; clientX: number; clientY: number }) {
+    const activeDragState = dragStateRef.current;
+
+    if (activeDragState?.pointerId !== input.pointerId) {
+      return;
+    }
+
+    if (activeDragState.mode === 'select') {
+      const rect = normalizeCanvasSelectionRect(
+        activeDragState.start,
+        getCanvasPointFromClient(input.clientX, input.clientY),
+      );
+      const selectedIds =
+        rect.width < 4 && rect.height < 4
+          ? []
+          : findNodesInSelectionRect(activeCanvas?.nodes ?? [], rect, canvasNodeSize);
+
+      setSelectedNodeIds(selectedIds);
+      setSelectedNodeId(selectedIds.length === 1 ? selectedIds[0] : null);
+      setSelectedEdgeId(null);
+    } else if (activeDragState.mode === 'node' && dragPreviewRef.current) {
+      const preview = dragPreviewRef.current;
+      flushDragPreview();
+
+      if (preview.dx !== 0 || preview.dy !== 0) {
+        updateActiveCanvasNodes(
+          (nodes) => moveCanvasNodes(nodes, preview.nodeIds, preview),
+          { history: false },
+        );
+      }
+    }
+
+    updateDragState(null);
+    clearDragPreview();
+  }
+
+  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (edgeDraft) {
+      const to = getCanvasPointFromClient(event.clientX, event.clientY);
+      const snapTarget = findNearestEdgeDraftTarget(to);
+
+      setEdgeDraft({
+        ...edgeDraft,
+        to,
+        snapTarget: snapTarget
+          ? {
+              nodeId: snapTarget.nodeId,
+              portId: snapTarget.portId,
+            }
+          : undefined,
+      });
+      return;
+    }
+
+    updateActiveDragFromPointer(event);
   }
 
   function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
@@ -4267,38 +5050,30 @@ export function App() {
       return;
     }
 
-    const activeDragState = dragStateRef.current;
-
-    if (activeDragState?.pointerId === event.pointerId) {
-      if (activeDragState.mode === 'select') {
-        const rect = normalizeCanvasSelectionRect(
-          activeDragState.start,
-          getCanvasPointFromClient(event.clientX, event.clientY),
-        );
-        const selectedIds =
-          rect.width < 4 && rect.height < 4
-            ? []
-            : findNodesInSelectionRect(activeCanvas?.nodes ?? [], rect, canvasNodeSize);
-
-        setSelectedNodeIds(selectedIds);
-        setSelectedNodeId(selectedIds.length === 1 ? selectedIds[0] : null);
-        setSelectedEdgeId(null);
-      } else if (activeDragState.mode === 'node' && dragPreviewRef.current) {
-        const preview = dragPreviewRef.current;
-        flushDragPreview();
-
-        if (preview.dx !== 0 || preview.dy !== 0) {
-          updateActiveCanvasNodes(
-            (nodes) => moveCanvasNodes(nodes, preview.nodeIds, preview),
-            { history: false },
-          );
-        }
-      }
-
-      updateDragState(null);
-      clearDragPreview();
-    }
+    finishActiveDragFromPointer(event);
   }
+
+  useEffect(() => {
+    if (!dragState) {
+      return;
+    }
+
+    const handleWindowPointerEnd = (event: globalThis.PointerEvent) => {
+      finishActiveDragFromPointer({
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    };
+
+    window.addEventListener('pointerup', handleWindowPointerEnd);
+    window.addEventListener('pointercancel', handleWindowPointerEnd);
+
+    return () => {
+      window.removeEventListener('pointerup', handleWindowPointerEnd);
+      window.removeEventListener('pointercancel', handleWindowPointerEnd);
+    };
+  }, [dragState]);
 
   function startEdgeDraft(event: PointerEvent<HTMLButtonElement>, node: CanvasNodeView) {
     if (!activeCanvas) {
@@ -4717,28 +5492,7 @@ export function App() {
     setProviderDrafts((current) => ({ ...current, [id]: draft }));
     setEditingProviderIds((current) => [...current, id]);
     setSelectedProviderId(id);
-    openProviderSettingsView('providers');
-  }
-
-  function updateCloudflareConfigDraft(updates: Partial<CloudflareR2Config>) {
-    setCloudflareConfigDraft((current) => ({
-      ...current,
-      ...updates,
-    }));
-  }
-
-  function saveCloudflareConfig() {
-    try {
-      window.localStorage.setItem(cloudflareStorageKey, JSON.stringify(cloudflareConfigDraft));
-      setCloudflareConfig(cloudflareConfigDraft);
-      setCanvasMessage('Cloudflare R2 配置已保存。');
-    } catch (error) {
-      setCanvasMessage(getLocalStorageErrorMessage(error));
-    }
-  }
-
-  function resetCloudflareConfigDraft() {
-    setCloudflareConfigDraft(cloudflareConfig);
+    openProviderSettingsView();
   }
 
   function addProviderModel(providerId: string) {
@@ -5138,9 +5892,10 @@ export function App() {
     },
   ) {
     let savedVideoPath: string | undefined;
-    let savedCoverPath: string | undefined;
     let localVideoUrl: string | undefined;
-    let localCoverUrl: string | undefined;
+    let savedVideoAssetName: string | undefined;
+    let savedVideoMimeType: string | undefined;
+    let generatedAssetNodeId: string | undefined;
     const saveWarnings: string[] = [];
 
     const targetCanvas =
@@ -5160,8 +5915,10 @@ export function App() {
               url: task.videoUrl,
             },
           );
+          savedVideoAssetName = savedVideo.assetName;
           savedVideoPath = savedVideo.assetPath;
           localVideoUrl = savedVideo.assetDataUrl;
+          savedVideoMimeType = savedVideo.mimeType;
         } catch (error) {
           saveWarnings.push(
             `视频结果未能保存到本地文件夹：${error instanceof Error ? error.message : '未知错误'}`,
@@ -5169,25 +5926,21 @@ export function App() {
         }
       }
 
-      if (task.lastFrameUrl) {
-        try {
-          const savedCover = await workspaceStore.saveGeneratedMediaUrlToCanvasFolder(
-            rootDirectoryHandle,
-            targetCanvas,
-            {
-              fileName: `${task.taskId ?? node.id}.png`,
-              kind: 'cover',
-              url: task.lastFrameUrl,
-            },
-          );
-          savedCoverPath = savedCover.assetPath;
-          localCoverUrl = savedCover.assetDataUrl;
-        } catch (error) {
-          saveWarnings.push(
-            `视频封面未能保存到本地文件夹：${error instanceof Error ? error.message : '未知错误'}`,
-          );
-        }
-      }
+    }
+
+    if (task.videoUrl && (savedVideoPath || localVideoUrl || !rootDirectoryHandle || !folderStorageReady)) {
+      const nextAssetNodeId = `node_video_output_${Date.now()}`;
+      const assetNodeCreated = addGeneratedAssetNode({
+        sourceNode: node,
+        nodeId: nextAssetNodeId,
+        title: '生成视频',
+        kind: 'videoAsset',
+        assetName: savedVideoAssetName ?? `${task.taskId ?? node.id}.mp4`,
+        assetPath: savedVideoPath,
+        assetDataUrl: localVideoUrl ?? task.videoUrl,
+        assetMimeType: savedVideoMimeType ?? 'video/mp4',
+      });
+      generatedAssetNodeId = assetNodeCreated ? nextAssetNodeId : undefined;
     }
 
     updateNode(node.id, (current) => ({
@@ -5197,8 +5950,6 @@ export function App() {
       outputUrl: task.videoUrl ?? current.outputUrl,
       outputDataUrl: localVideoUrl ?? current.outputDataUrl,
       outputPath: savedVideoPath ?? current.outputPath,
-      outputCoverPath: savedCoverPath ?? current.outputCoverPath,
-      outputCoverDataUrl: localCoverUrl ?? current.outputCoverDataUrl,
       settledCompletionTokens: task.completionTokens,
       settledTotalTokens: task.totalTokens,
       outputText: [
@@ -5211,7 +5962,7 @@ export function App() {
     updateGenerationHistoryRecord(generationRecordId, (record) => ({
       ...record,
       status: 'succeeded',
-      outputAssetIds: [node.id],
+      outputAssetIds: [generatedAssetNodeId ?? node.id],
       usage: {
         completionTokens: task.completionTokens,
         totalTokens: task.totalTokens,
@@ -5321,22 +6072,20 @@ export function App() {
       canvas: activeCanvas,
       nodeId: node.id,
     });
+    const seedanceConfigModel = node.kind === 'video' ? getSeedanceConfigModel(node.modelId) : null;
     const estimatedVideoTokenCost =
-      node.kind === 'video'
+      node.kind === 'video' && seedanceConfigModel
         ? estimateSeedanceTokens({
-            model: (node.modelId as SeedanceModelId) ?? 'seedance2.0',
-              resolution:
-                node.videoResolution ??
-                getSeedanceCapabilities((node.modelId as SeedanceModelId) ?? 'seedance2.0')
-                  .supportedResolutions[0] ??
-                '720p',
+            model: seedanceConfigModel,
+            resolution:
+              node.videoResolution ??
+              getVideoCapabilities(node.modelId).supportedResolutions[0] ??
+              '720p',
             ratio:
-              node.videoRatio ??
-              getDefaultSeedanceRatio((node.modelId as SeedanceModelId) ?? 'seedance2.0'),
+              node.videoRatio ?? getDefaultVideoRatio(node.modelId),
             duration: getEstimatedVideoDurationSeconds(node),
             framespersecond:
-              getSeedanceCapabilities((node.modelId as SeedanceModelId) ?? 'seedance2.0')
-                .fixedFrameRate ?? 24,
+              getVideoCapabilities(node.modelId).fixedFrameRate ?? 24,
             scenario: node.seedanceScenario ?? 'text_to_video',
             generateAudio: node.videoGenerateAudio ?? true,
             multimodalCount: countDirectVideoReferenceInputs(activeCanvas, node.id),
@@ -5423,7 +6172,10 @@ export function App() {
 
     let generationCanvas = activeCanvas;
 
-    if (node.kind === 'video' && provider.protocol === 'volcengine') {
+    if (
+      node.kind === 'video' &&
+      (provider.protocol === 'volcengine' || isSeedanceSoraVideoModel(node.modelId))
+    ) {
       const prepared = await prepareSeedanceCanvasForSubmission(activeCanvas, node);
 
       if (!prepared.ok) {
@@ -5452,6 +6204,16 @@ export function App() {
           { history: false },
         );
       }
+
+      if (prepared.cacheUpdates.size > 0) {
+        setWorkspaceState((current) => ({
+          ...current,
+          assetUploadCache: {
+            ...(current.assetUploadCache ?? {}),
+            ...Object.fromEntries(prepared.cacheUpdates),
+          },
+        }));
+      }
     }
 
     const result = await submitGenerationNode({
@@ -5471,14 +6233,6 @@ export function App() {
       }));
       return;
     }
-
-    const savedImageOutput =
-      result.output.kind === 'image' && result.output.dataUrl && rootDirectoryHandle && folderStorageReady
-        ? await workspaceStore.saveDataUrlOutputToCanvasFolder(rootDirectoryHandle, activeCanvas, result.output.dataUrl, {
-            kind: 'image',
-            nodeId: node.id,
-          }).catch(() => null)
-        : null;
 
     if (result.output.kind === 'video-task') {
       const videoOutput = result.output;
@@ -5512,16 +6266,72 @@ export function App() {
       return;
     }
 
+    let savedImageAsset:
+      | {
+          assetName: string;
+          assetPath?: string;
+          assetDataUrl?: string;
+          mimeType: string;
+        }
+      | null = null;
+    let imageSaveError: string | undefined;
+    let generatedImageAssetNodeId: string | undefined;
+
+    if (result.output.kind === 'image' && (result.output.dataUrl || result.output.url)) {
+      const imageSource = result.output.dataUrl ?? result.output.url;
+
+      if (imageSource) {
+        try {
+          const blob = await (await fetch(imageSource)).blob();
+          const generatedName = `${node.id}-${Date.now()}.png`;
+          savedImageAsset =
+            rootDirectoryHandle && folderStorageReady
+              ? await workspaceStore.saveGeneratedMediaBlobToCanvasFolder(
+                  rootDirectoryHandle,
+                  activeCanvas,
+                  {
+                    blob,
+                    fileName: generatedName,
+                    kind: 'image',
+                  },
+                )
+              : {
+                  assetName: generatedName,
+                  assetPath: undefined,
+                  assetDataUrl: result.output.dataUrl ?? result.output.url,
+                  mimeType: blob.type || 'image/png',
+                };
+          const nextAssetNodeId = `node_image_output_${Date.now()}`;
+          const assetNodeCreated = addGeneratedAssetNode({
+            sourceNode: node,
+            nodeId: nextAssetNodeId,
+            title: '生成图片',
+            kind: 'imageAsset',
+            assetName: savedImageAsset.assetName,
+            assetPath: savedImageAsset.assetPath,
+            assetDataUrl:
+              savedImageAsset.assetDataUrl ?? result.output.dataUrl ?? result.output.url,
+            assetMimeType: savedImageAsset.mimeType || 'image/png',
+          });
+          generatedImageAssetNodeId = assetNodeCreated ? nextAssetNodeId : undefined;
+        } catch (error) {
+          imageSaveError = `图片结果未能保存到本地文件夹：${
+            error instanceof Error ? error.message : '未知错误'
+          }`;
+        }
+      }
+    }
+
     updateNode(node.id, (current) => {
       if (result.output.kind === 'image') {
         return {
           ...current,
           generationStatus: 'succeeded',
-          generationError: undefined,
-          outputDataUrl: savedImageOutput?.outputDataUrl ?? result.output.dataUrl,
-          outputPath: savedImageOutput?.outputPath ?? current.outputPath,
+          generationError: imageSaveError,
+          outputDataUrl: result.output.dataUrl,
+          outputPath: savedImageAsset?.assetPath ?? current.outputPath,
           outputUrl: result.output.url,
-          outputText: undefined,
+          outputText: imageSaveError,
         };
       }
 
@@ -5546,7 +6356,7 @@ export function App() {
       status: 'succeeded',
       outputAssetIds:
         result.output.kind === 'image' && (result.output.dataUrl || result.output.url)
-          ? [node.id]
+          ? [generatedImageAssetNodeId ?? node.id]
           : record.outputAssetIds,
       endedAt: new Date().toISOString(),
     }));
@@ -5698,19 +6508,11 @@ export function App() {
             <nav>
           <button
             type="button"
-            className={showProviderManager && providerSettingsView === 'providers' ? 'is-active' : ''}
-            onClick={() => openProviderSettingsView('providers')}
+            className={showProviderManager ? 'is-active' : ''}
+            onClick={() => openProviderSettingsView()}
           >
             <Settings size={18} />
             供应商管理
-          </button>
-          <button
-            type="button"
-            className={showProviderManager && providerSettingsView === 'cloudflare' ? 'is-active' : ''}
-            onClick={() => openProviderSettingsView('cloudflare')}
-          >
-            <Cloud size={18} />
-            Cloudflare 配置
           </button>
         </nav>
         <section className="panel storage-panel">
@@ -5843,12 +6645,12 @@ export function App() {
         <div className="toolbar">
           <div className="toolbar-title">
             {showProviderManager ? (
-              providerSettingsView === 'cloudflare' ? <Cloud size={18} /> : <Settings size={18} />
+              <Settings size={18} />
             ) : (
               <BoxSelect size={18} />
             )}
             {showProviderManager ? (
-              <span>{providerSettingsView === 'cloudflare' ? 'Cloudflare 配置' : '供应商管理'}</span>
+              <span>供应商管理</span>
             ) : isRenamingCanvas ? (
               <input
                 className="canvas-title-input"
@@ -5915,120 +6717,6 @@ export function App() {
           </div>
         </div>
         {showProviderManager ? (
-          providerSettingsView === 'cloudflare' ? (
-            <div className="provider-manager-view">
-              <section className="cloudflare-settings-detail">
-                <header className="provider-detail-header">
-                  <div className="provider-detail-title">
-                    <span className="provider-avatar provider-avatar-brand provider-avatar-large cloudflare-avatar">
-                      <Cloud size={26} />
-                    </span>
-                    <div>
-                      <h2>Cloudflare R2 配置</h2>
-                      <p>配置对象存储，用于后续将生成素材上传到 R2。</p>
-                    </div>
-                  </div>
-                  <div className="cloudflare-header-actions">
-                    <span
-                      className={`provider-config-chip ${
-                        cloudflareConfigIsConfigured ? 'is-configured' : ''
-                      }`}
-                    >
-                      {cloudflareConfigIsConfigured ? '已配置' : '未配置'}
-                    </span>
-                    <button
-                      type="button"
-                      className="provider-secondary-button"
-                      disabled={!cloudflareConfigIsDirty}
-                      onClick={resetCloudflareConfigDraft}
-                    >
-                      取消更改
-                    </button>
-                    <button
-                      type="button"
-                      className="provider-save-button"
-                      disabled={!cloudflareConfigIsDirty}
-                      onClick={saveCloudflareConfig}
-                    >
-                      <Save size={17} />
-                      保存 Cloudflare 配置
-                    </button>
-                  </div>
-                </header>
-                <div className="provider-detail-body cloudflare-detail-body">
-                  <section className="provider-form-section">
-                    <div className="provider-section-heading">
-                      <h3>R2 存储</h3>
-                      <p>这是可选配置。这些字段只保存在本机配置中，不会写入导出的画布文件。</p>
-                    </div>
-                    <div className="provider-form-grid">
-                      <label>
-                        Account ID
-                        <input
-                          value={cloudflareConfigDraft.accountId}
-                          placeholder="Cloudflare Account ID"
-                          onChange={(event) =>
-                            updateCloudflareConfigDraft({ accountId: event.target.value })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Bucket 名称
-                        <input
-                          value={cloudflareConfigDraft.bucketName}
-                          placeholder="shot-agent-assets"
-                          onChange={(event) =>
-                            updateCloudflareConfigDraft({ bucketName: event.target.value })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Access Key ID
-                        <input
-                          value={cloudflareConfigDraft.accessKeyId}
-                          placeholder="R2 Access Key ID"
-                          onChange={(event) =>
-                            updateCloudflareConfigDraft({ accessKeyId: event.target.value })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Secret Access Key
-                        <input
-                          type="password"
-                          value={cloudflareConfigDraft.secretAccessKey}
-                          placeholder="R2 Secret Access Key"
-                          onChange={(event) =>
-                            updateCloudflareConfigDraft({ secretAccessKey: event.target.value })
-                          }
-                        />
-                      </label>
-                      <label>
-                        S3 Endpoint
-                        <input
-                          value={cloudflareConfigDraft.endpoint}
-                          placeholder="https://<account-id>.r2.cloudflarestorage.com"
-                          onChange={(event) =>
-                            updateCloudflareConfigDraft({ endpoint: event.target.value })
-                          }
-                        />
-                      </label>
-                      <label>
-                        公开访问 URL
-                        <input
-                          value={cloudflareConfigDraft.publicBaseUrl}
-                          placeholder="https://assets.example.com"
-                          onChange={(event) =>
-                            updateCloudflareConfigDraft({ publicBaseUrl: event.target.value })
-                          }
-                        />
-                      </label>
-                    </div>
-                  </section>
-                </div>
-              </section>
-            </div>
-          ) : (
           <div className="provider-manager-view">
             <div className="provider-settings-shell">
               <aside className="provider-settings-sidebar" aria-label="供应商列表">
@@ -6448,7 +7136,6 @@ export function App() {
               </section>
             </div>
           </div>
-          )
         ) : (
         <div
           ref={canvasRef}
@@ -6522,7 +7209,7 @@ export function App() {
                 </div>
               </div>
               <div className="asset-filter-row" role="tablist" aria-label="资产类型">
-                {(['all', 'image', 'video', 'audio', 'file', 'cover'] as AssetFilter[]).map((filter) => (
+                {(['all', 'image', 'video', 'audio', 'file'] as AssetFilter[]).map((filter) => (
                   <button
                     key={filter}
                     type="button"
@@ -6538,21 +7225,25 @@ export function App() {
                   <div className="asset-empty-state">正在读取资产</div>
                 ) : filteredCanvasAssets.length > 0 ? (
                   filteredCanvasAssets.map((asset) => {
-                    const isMuted = mutedAssetPaths.includes(asset.path);
+                    const isMediaTile = asset.kind === 'image' || asset.kind === 'video';
                     return (
-                      <article className="asset-list-item" key={asset.path}>
+                      <article
+                        className={`asset-list-item ${isMediaTile ? 'is-media' : ''}`}
+                        key={asset.path}
+                        title={asset.name}
+                      >
                         <div className="asset-list-preview">
-                          {asset.kind === 'image' || asset.kind === 'cover' ? (
+                          {asset.kind === 'image' ? (
                             asset.dataUrl ? <img src={asset.dataUrl} alt={asset.name} /> : <Image size={22} />
                           ) : asset.kind === 'video' ? (
                             asset.dataUrl ? (
-                              <video src={asset.dataUrl} controls muted={isMuted} />
+                              <video src={asset.dataUrl} controls />
                             ) : (
                               <Video size={22} />
                             )
                           ) : asset.kind === 'audio' ? (
                             asset.dataUrl ? (
-                              <audio src={asset.dataUrl} controls muted={isMuted} />
+                              <audio src={asset.dataUrl} controls />
                             ) : (
                               <Music size={22} />
                             )
@@ -6560,28 +7251,13 @@ export function App() {
                             <FileText size={22} />
                           )}
                         </div>
-                        <div className="asset-list-meta">
-                          <strong title={asset.name}>{asset.name}</strong>
-                          <small>{getAssetKindLabel(asset.kind)} · {asset.mimeType}</small>
-                        </div>
+                        {isMediaTile ? null : (
+                          <div className="asset-list-meta">
+                            <strong title={asset.name}>{asset.name}</strong>
+                            <small>{getAssetKindLabel(asset.kind)} · {asset.mimeType}</small>
+                          </div>
+                        )}
                         <div className="asset-list-actions">
-                          {(asset.kind === 'video' || asset.kind === 'audio') ? (
-                            <button
-                              type="button"
-                              className="icon-button"
-                              aria-label={isMuted ? '取消静音' : '静音'}
-                              title={isMuted ? '取消静音' : '静音'}
-                              onClick={() =>
-                                setMutedAssetPaths((current) =>
-                                  current.includes(asset.path)
-                                    ? current.filter((path) => path !== asset.path)
-                                    : [...current, asset.path],
-                                )
-                              }
-                            >
-                              {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
-                            </button>
-                          ) : null}
                           <button
                             type="button"
                             className="icon-button danger-icon-button"
@@ -6600,6 +7276,67 @@ export function App() {
                 )}
               </div>
             </section>
+          ) : null}
+          {assetPickerTarget ? (
+            <div
+              className="asset-picker-layer"
+              onPointerDown={() => setAssetPickerTarget(null)}
+              onWheel={(event) => event.stopPropagation()}
+            >
+              <section
+                className="asset-picker-popover"
+                onPointerDown={(event) => event.stopPropagation()}
+                onWheel={(event) => event.stopPropagation()}
+              >
+                <header className="asset-picker-header">
+                  <div>
+                    <h2>选择{getAssetKindLabel(assetPickerTarget.kind)}资产</h2>
+                    <p>从当前画布资产中选择</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="关闭资产选择"
+                    title="关闭资产选择"
+                    onClick={() => setAssetPickerTarget(null)}
+                  >
+                    <X size={15} />
+                  </button>
+                </header>
+                <div className="asset-picker-body">
+                  <div className="asset-picker-list">
+                    {loadingCanvasAssets ? (
+                      <div className="asset-empty-state">正在读取资产</div>
+                    ) : assetPickerAssets.length > 0 ? (
+                      assetPickerAssets.map((asset) => (
+                        <button
+                          key={asset.path}
+                          type="button"
+                          className="asset-picker-item"
+                          title={asset.name}
+                          onClick={() => selectCanvasAssetForTarget(asset)}
+                        >
+                          <span className="asset-picker-preview">
+                            {asset.kind === 'image' ? (
+                              asset.dataUrl ? <img src={asset.dataUrl} alt={asset.name} /> : <Image size={22} />
+                            ) : asset.dataUrl ? (
+                              <video src={asset.dataUrl} muted />
+                            ) : (
+                              <Video size={22} />
+                            )}
+                          </span>
+                          <span>{asset.name}</span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="asset-empty-state">
+                        当前画布没有{getAssetKindLabel(assetPickerTarget.kind)}资产
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+            </div>
           ) : null}
           {addMenu ? (
             <div
@@ -6850,7 +7587,7 @@ export function App() {
                           </button>
                         </div>
                       )}
-                      <p>{node.modelId}</p>
+                      {node.kind === 'diamondMask' ? null : <p>{node.modelId}</p>}
                       {node.kind === 'image' ? (
                         <div className="node-image-settings-meta" aria-label="图片生成参数">
                           {getImageNodeSettingBadges(node).map((badge) => (
@@ -6892,7 +7629,21 @@ export function App() {
                       openImagePreview(node.title, imageUrl);
                     }}
                   >
-                    {node.kind === 'textAsset' ? (
+                    {node.kind === 'diamondMask' ? (
+                      <DiamondMaskNodeBody
+                        node={node}
+                        onReplaceImage={(file) => void replaceDiamondMaskImage(node.id, file)}
+                        onSelectAsset={() =>
+                          openAssetPicker({
+                            nodeId: node.id,
+                            kind: 'image',
+                            purpose: 'diamondMask',
+                          })
+                        }
+                        onUpdateNode={(updater) => updateNode(node.id, updater)}
+                        onGenerate={() => void generateDiamondMaskAsset(node)}
+                      />
+                    ) : node.kind === 'textAsset' ? (
                       <textarea
                         value={node.textContent ?? ''}
                         placeholder="输入文本"
@@ -6927,6 +7678,20 @@ export function App() {
                             }}
                           />
                         </label>
+                        <button
+                          type="button"
+                          className="asset-upload asset-select-button"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() =>
+                            openAssetPicker({
+                              nodeId: node.id,
+                              kind: 'image',
+                              purpose: 'assetNode',
+                            })
+                          }
+                        >
+                          选择资产
+                        </button>
                       </>
                     ) : node.kind === 'videoAsset' ? (
                       <>
@@ -6951,6 +7716,20 @@ export function App() {
                             }}
                           />
                         </label>
+                        <button
+                          type="button"
+                          className="asset-upload asset-select-button"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() =>
+                            openAssetPicker({
+                              nodeId: node.id,
+                              kind: 'video',
+                              purpose: 'assetNode',
+                            })
+                          }
+                        >
+                          选择资产
+                        </button>
                       </>
                     ) : node.kind === 'audioAsset' ? (
                       <>
@@ -7203,12 +7982,27 @@ export function App() {
                     </button>
                   </div>
                 )}
-                <p>{selectedNode.modelId}</p>
+                {selectedNode.kind === 'diamondMask' ? null : <p>{selectedNode.modelId}</p>}
               </header>
               <button type="button" className="danger-button" onClick={deleteSelectedNode}>
                 <Trash2 size={16} />
                 删除节点
               </button>
+              {selectedNode.kind === 'diamondMask' ? (
+                <DiamondMaskNodeBody
+                  node={selectedNode}
+                  onReplaceImage={(file) => void replaceDiamondMaskImage(selectedNode.id, file)}
+                  onSelectAsset={() =>
+                    openAssetPicker({
+                      nodeId: selectedNode.id,
+                      kind: 'image',
+                      purpose: 'diamondMask',
+                    })
+                  }
+                  onUpdateNode={(updater) => updateNode(selectedNode.id, updater)}
+                  onGenerate={() => void generateDiamondMaskAsset(selectedNode)}
+                />
+              ) : null}
               {selectedNode.kind === 'chat' ? (
                 <label>
                   调用格式
@@ -7239,63 +8033,65 @@ export function App() {
               ) : null}
               {selectedNode.kind === 'video' ? (
                 <div className="video-generation-settings">
-                  <label>
-                    类型
-                    <select
-                      className="video-mode-select"
-                      aria-label="类型"
-                      value={selectedVideoScenario}
-                      onChange={(event) =>
-                        handleVideoScenarioChange(
-                          selectedNode.id,
-                          event.target.value as SeedanceScenario,
-                        )
-                      }
-                    >
-                      {getVideoScenarioOptions().map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    模型
-                    <select
-                      aria-label="模型"
-                      value={selectedVideoModel}
-                      onChange={(event) => {
-                        const nextModel = event.target.value as SeedanceModelId;
-                        const nextCapabilities = getSeedanceCapabilities(nextModel);
-                        updateNode(selectedNode.id, (current) => ({
-                          ...current,
-                          modelId: nextModel,
-                          providerModelId: undefined,
-                          videoResolution: nextCapabilities.supportedResolutions.includes(
-                            current.videoResolution ?? '720p',
+                  <div className="video-format-row">
+                    <label>
+                      类型
+                      <select
+                        className="video-mode-select"
+                        aria-label="类型"
+                        value={selectedVideoScenario}
+                        onChange={(event) =>
+                          handleVideoScenarioChange(
+                            selectedNode.id,
+                            event.target.value as SeedanceScenario,
                           )
-                            ? current.videoResolution
-                            : nextCapabilities.supportedResolutions[0],
-                          videoRatio: nextCapabilities.supportedRatios.includes(
-                            current.videoRatio ?? getDefaultSeedanceRatio(nextModel),
-                          )
-                            ? current.videoRatio ?? getDefaultSeedanceRatio(nextModel)
-                            : getDefaultSeedanceRatio(nextModel),
-                          videoDurationSeconds: normalizeSeedanceDurationSeconds(
-                            nextModel,
-                            current.videoDurationSeconds ?? 5,
-                          ),
-                          videoFramesPerSecond: nextCapabilities.fixedFrameRate,
-                        }));
-                      }}
-                    >
-                      {getVideoModelOptions().map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                        }
+                      >
+                        {getVideoScenarioOptions().map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      模型
+                      <select
+                        aria-label="模型"
+                        value={selectedVideoModel}
+                        onChange={(event) => {
+                          const nextModel = event.target.value as VideoModelId;
+                          const nextCapabilities = getVideoCapabilities(nextModel);
+                          updateNode(selectedNode.id, (current) => ({
+                            ...current,
+                            modelId: nextModel,
+                            providerModelId: undefined,
+                            videoResolution: nextCapabilities.supportedResolutions.includes(
+                              current.videoResolution ?? '720p',
+                            )
+                              ? current.videoResolution
+                              : nextCapabilities.supportedResolutions[0],
+                            videoRatio: nextCapabilities.supportedRatios.includes(
+                              current.videoRatio ?? getDefaultVideoRatio(nextModel),
+                            )
+                              ? current.videoRatio ?? getDefaultVideoRatio(nextModel)
+                              : getDefaultVideoRatio(nextModel),
+                            videoDurationSeconds: normalizeVideoDurationSeconds(
+                              nextModel,
+                              current.videoDurationSeconds ?? 5,
+                            ),
+                            videoFramesPerSecond: nextCapabilities.fixedFrameRate,
+                          }));
+                        }}
+                      >
+                        {getVideoModelOptions({ allowSoraFormat: soraFormatAvailable }).map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                   {visibleVideoFields.includes('resolution') ||
                   visibleVideoFields.includes('ratio') ||
                   visibleVideoFields.includes('duration') ? (
@@ -7335,7 +8131,7 @@ export function App() {
                             value={
                               selectedNode.videoRatio ??
                               (selectedVideoCapabilities
-                                ? getDefaultSeedanceRatio(selectedVideoModel)
+                                ? getDefaultVideoRatio(selectedVideoModel)
                                 : '16:9')
                             }
                             onChange={(event) =>
@@ -7379,19 +8175,23 @@ export function App() {
                               id="video-duration-range"
                               aria-label="时长"
                               type="range"
-                              min={Math.max(4, getSeedanceDurationInputBounds(selectedVideoModel).min)}
-                              max={getSeedanceDurationInputBounds(selectedVideoModel).max}
+                              min={
+                                selectedSeedanceConfigModel
+                                  ? Math.max(4, getVideoDurationInputBounds(selectedVideoModel).min)
+                                  : getVideoDurationInputBounds(selectedVideoModel).min
+                              }
+                              max={getVideoDurationInputBounds(selectedVideoModel).max}
                               step={1}
                               value={
                                 selectedNode.videoDurationSeconds === -1
-                                  ? getSeedanceCapabilities(selectedVideoModel).durationRangeSeconds.min
+                                  ? getVideoCapabilities(selectedVideoModel).durationRangeSeconds.min
                                   : selectedNode.videoDurationSeconds ?? 5
                               }
                               disabled={selectedNode.videoDurationSeconds === -1}
                               onChange={(event) =>
                                 updateNode(selectedNode.id, (current) => ({
                                   ...current,
-                                  videoDurationSeconds: normalizeSeedanceDurationSeconds(
+                                  videoDurationSeconds: normalizeVideoDurationSeconds(
                                     selectedVideoModel,
                                     Number(event.target.value),
                                   ),
@@ -7410,10 +8210,10 @@ export function App() {
                                   ...current,
                                   videoDurationSeconds: event.target.checked
                                     ? -1
-                                    : normalizeSeedanceDurationSeconds(
+                                    : normalizeVideoDurationSeconds(
                                         selectedVideoModel,
                                         current.videoDurationSeconds === -1
-                                          ? getSeedanceCapabilities(selectedVideoModel)
+                                          ? getVideoCapabilities(selectedVideoModel)
                                               .durationRangeSeconds.min
                                           : current.videoDurationSeconds ?? 5,
                                       ),
@@ -7427,6 +8227,9 @@ export function App() {
                   ) : null}
                   {getVideoScenarioHint(selectedVideoScenario) ? (
                     <p className="video-scene-hint">{getVideoScenarioHint(selectedVideoScenario)}</p>
+                  ) : null}
+                  {getVideoModelFormatHint(selectedVideoModel) ? (
+                    <p className="video-scene-hint">{getVideoModelFormatHint(selectedVideoModel)}</p>
                   ) : null}
                   <p className="video-usage-line">预计消耗：{estimatedVideoTokens ?? 0} tokens（本地预估）</p>
                   <p className="video-usage-line">
@@ -7450,68 +8253,74 @@ export function App() {
                   ) : null}
                 </div>
               ) : null}
-              <label>
-                供应商
-                <select
-                  value={selectedNode.providerId ?? ''}
-                  onChange={(event) => {
-                    const nextProviderId = event.target.value || undefined;
-                    const nextProvider = nextProviderId
-                      ? findProvidersForNode(selectedNode).find(
-                          (provider) => provider.id === nextProviderId,
-                        )
-                      : findProvidersForNode(selectedNode)[0];
-                    const nextModel = nextProvider
-                      ? findProviderModelsForNodeWithProvider(selectedNode, nextProvider)[0]
-                      : undefined;
+              {selectedNode.kind === 'chat' ||
+              selectedNode.kind === 'image' ||
+              selectedNode.kind === 'video' ? (
+                <>
+                  <label>
+                    供应商
+                    <select
+                      value={selectedNode.providerId ?? ''}
+                      onChange={(event) => {
+                        const nextProviderId = event.target.value || undefined;
+                        const nextProvider = nextProviderId
+                          ? findProvidersForNode(selectedNode).find(
+                              (provider) => provider.id === nextProviderId,
+                            )
+                          : findProvidersForNode(selectedNode)[0];
+                        const nextModel = nextProvider
+                          ? findProviderModelsForNodeWithProvider(selectedNode, nextProvider)[0]
+                          : undefined;
 
-                    updateNode(selectedNode.id, (current) => ({
-                      ...current,
-                      providerId: nextProviderId,
-                      providerModelId: nextProviderId ? nextModel?.providerModelId : undefined,
-                      modelId:
-                        selectedNode.kind === 'chat' && nextModel
-                          ? nextModel.providerModelId
-                          : current.modelId,
-                    }));
-                  }}
-                >
-                  <option value="">
-                    自动选择供应商
-                  </option>
-                  {findProvidersForNode(selectedNode).map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                供应商模型
-                <select
-                  value={selectedNode.providerModelId ?? ''}
-                  onChange={(event) =>
-                    updateNode(selectedNode.id, (current) => ({
-                      ...current,
-                      providerModelId: event.target.value || undefined,
-                      modelId:
-                        selectedNode.kind === 'chat' && event.target.value
-                          ? event.target.value
-                          : current.modelId,
-                    }))
-                  }
-                >
-                  <option value="">自动选择模型</option>
-                  {findProviderModelsForNode(selectedNode).map((model) => (
-                    <option
-                      key={`${model.canonicalModelId}:${model.providerModelId}`}
-                      value={model.providerModelId}
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          providerId: nextProviderId,
+                          providerModelId: nextProviderId ? nextModel?.providerModelId : undefined,
+                          modelId:
+                            selectedNode.kind === 'chat' && nextModel
+                              ? nextModel.providerModelId
+                              : current.modelId,
+                        }));
+                      }}
                     >
-                      {model.displayName ?? model.providerModelId}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                      <option value="">
+                        自动选择供应商
+                      </option>
+                      {findProvidersForNode(selectedNode).map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    供应商模型
+                    <select
+                      value={selectedNode.providerModelId ?? ''}
+                      onChange={(event) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          providerModelId: event.target.value || undefined,
+                          modelId:
+                            selectedNode.kind === 'chat' && event.target.value
+                              ? event.target.value
+                              : current.modelId,
+                        }))
+                      }
+                    >
+                      <option value="">自动选择模型</option>
+                      {findProviderModelsForNode(selectedNode).map((model) => (
+                        <option
+                          key={`${model.canonicalModelId}:${model.providerModelId}`}
+                          value={model.providerModelId}
+                        >
+                          {model.displayName ?? model.providerModelId}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </>
+              ) : null}
               {selectedNode.kind === 'image' ? (
                 <div className="image-generation-settings">
                   <label>
@@ -7582,20 +8391,24 @@ export function App() {
                   </label>
                 </div>
               ) : null}
-              <label>
-                提示词
-                <PromptTextarea
-                  canvas={activeCanvas}
-                  node={selectedNode}
-                  placeholder="输入节点提示词，支持 @文本 / @图片 / @视频 引用已连线的上游资产"
-                  onChange={(value) =>
-                    updateNode(selectedNode.id, (current) => ({
-                      ...current,
-                      prompt: value,
-                    }))
-                  }
-                />
-              </label>
+              {selectedNode.kind === 'chat' ||
+              selectedNode.kind === 'image' ||
+              selectedNode.kind === 'video' ? (
+                <label>
+                  提示词
+                  <PromptTextarea
+                    canvas={activeCanvas}
+                    node={selectedNode}
+                    placeholder="输入节点提示词，支持 @文本 / @图片 / @视频 引用已连线的上游资产"
+                    onChange={(value) =>
+                      updateNode(selectedNode.id, (current) => ({
+                        ...current,
+                        prompt: value,
+                      }))
+                    }
+                  />
+                </label>
+              ) : null}
             </aside>
             );
           })() : null}

@@ -250,6 +250,11 @@ function isChatProviderModel(model: ProviderModelConfig, format: ChatFormat): bo
 function isKnownNonChatModel(modelId: string): boolean {
   return (
     modelId.startsWith('gpt-image') ||
+    modelId.startsWith('sora') ||
+    modelId.startsWith('wan') ||
+    modelId.startsWith('kling') ||
+    modelId.startsWith('jimeng') ||
+    modelId.startsWith('vidu') ||
     modelId.startsWith('seedance') ||
     modelId.startsWith('doubao-seedance') ||
     modelId.startsWith('asset-') ||

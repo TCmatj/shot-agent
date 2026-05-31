@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deleteCanvasFolder,
   persistWorkspaceToFolder,
   readWorkspaceFromFolder,
   renameCanvasFolder,
@@ -144,6 +145,17 @@ describe('browser folder store', () => {
               y: 0,
               outputDataUrl: 'data:image/png;base64,b3V0cHV0',
             },
+            {
+              id: 'node_mask',
+              title: '菱形遮罩',
+              modelId: 'diamond-mask',
+              kind: 'diamondMask',
+              x: 600,
+              y: 0,
+              maskImageName: 'mask-source.png',
+              maskImageDataUrl: 'data:image/png;base64,bWFzaw==',
+              maskImageMimeType: 'image/png',
+            },
           ],
           edges: [],
         },
@@ -159,10 +171,13 @@ describe('browser folder store', () => {
     expect(canvas.nodes[0].assetDataUrl).toMatch(/^data:image\/png;base64,/);
     expect(canvas.nodes[1].outputPath).toMatch(/^assets\/images\/node_image_output-\d+\.png$/);
     expect(canvas.nodes[1].outputDataUrl).toMatch(/^data:image\/png;base64,/);
+    expect(canvas.nodes[2].maskImagePath).toBe('assets/images/mask-source.png');
+    expect(canvas.nodes[2].maskImageDataUrl).toMatch(/^data:image\/png;base64,/);
 
     const canvasDir = root.directories.get('素材画布__canvas_assets');
     const imageDir = canvasDir?.directories.get('assets')?.directories.get('images');
     expect(imageDir?.files.has('input.png')).toBe(true);
+    expect(imageDir?.files.has('mask-source.png')).toBe(true);
     expect([...imageDir?.files.keys() ?? []].some((fileName) => fileName.startsWith('node_image_output-'))).toBe(true);
     expect(String(root.files.get('workspace.json'))).not.toContain('data:image/png;base64');
   });
@@ -184,25 +199,6 @@ describe('browser folder store', () => {
     );
 
     expect(result.assetPath).toBe('assets/videos/task_1.mp4');
-  });
-
-  it('saves last frame cover into assets/covers', async () => {
-    const root = new MemoryDirectoryHandle('Shot Agent');
-    const canvas = createWorkspaceState([
-      { id: 'canvas_1', name: 'Canvas', updatedAt: 'now', nodes: [], edges: [] },
-    ]).canvases[0];
-
-    const result = await saveGeneratedMediaBlobToCanvasFolder(
-      root as unknown as FileSystemDirectoryHandle,
-      canvas,
-      {
-        blob: new Blob(['image'], { type: 'image/png' }),
-        fileName: 'task_1.png',
-        kind: 'cover',
-      },
-    );
-
-    expect(result.assetPath).toBe('assets/covers/task_1.png');
   });
 
   it('stores imported audio assets in a dedicated audio directory', async () => {
@@ -321,6 +317,20 @@ describe('browser folder store', () => {
     ).toBe(true);
   });
 
+  it('removes legacy canvas folder names when deleting a canvas', async () => {
+    const root = new MemoryDirectoryHandle('Shot Agent');
+    await root.getDirectoryHandle('Legacy Canvas', { create: true });
+    await root.getDirectoryHandle('Legacy Canvas__canvas_legacy', { create: true });
+    const canvas = createWorkspaceState([
+      { id: 'canvas_legacy', name: 'Legacy Canvas', updatedAt: 'now', nodes: [], edges: [] },
+    ]).canvases[0];
+
+    await deleteCanvasFolder(root as unknown as FileSystemDirectoryHandle, canvas);
+
+    expect(root.directories.has('Legacy Canvas')).toBe(false);
+    expect(root.directories.has('Legacy Canvas__canvas_legacy')).toBe(false);
+  });
+
   it('loads canvases from subfolders when workspace.json is missing', async () => {
     const root = new MemoryDirectoryHandle('Shot Agent');
     const canvasDir = await root.getDirectoryHandle('外部画布__canvas_external', { create: true });
@@ -353,6 +363,33 @@ describe('browser folder store', () => {
 
     expect(restored.canvases.map((canvas) => canvas.id)).toEqual(['canvas_external']);
     expect(restored.activeCanvasId).toBe('canvas_external');
+  });
+
+  it('can skip discovered subfolders when restoring an automatic default workspace', async () => {
+    const root = new MemoryDirectoryHandle('Shot Agent');
+    const canvasDir = await root.getDirectoryHandle('Legacy Canvas__canvas_legacy', { create: true });
+
+    root.files.delete('workspace.json');
+    canvasDir.files.set(
+      'canvas.json',
+      JSON.stringify({
+        id: 'canvas_legacy',
+        name: 'Legacy Canvas',
+        storageFolderName: 'Legacy Canvas__canvas_legacy',
+        updatedAt: 'now',
+        nodes: [],
+        edges: [],
+      }),
+    );
+
+    const fallback = createWorkspaceState([]);
+    const restored = await readWorkspaceFromFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      fallback,
+      { includeDiscoveredCanvases: false },
+    );
+
+    expect(restored).toEqual(fallback);
   });
 
   it('merges missing canvases from subfolders even when workspace.json exists', async () => {
