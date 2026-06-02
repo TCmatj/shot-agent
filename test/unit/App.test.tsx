@@ -55,6 +55,11 @@ async function openNodeInspectorByTitle(title: string) {
   return nodeCard!;
 }
 
+async function chooseInlineOption(ariaLabel: string, optionLabel: string) {
+  await userEvent.click(screen.getByRole('button', { name: ariaLabel }));
+  await userEvent.click(screen.getByRole('option', { name: optionLabel }));
+}
+
 function setPromptEditorValue(editor: HTMLDivElement, value: string) {
   editor.focus();
   editor.textContent = value;
@@ -497,6 +502,62 @@ describe('App empty startup', () => {
   });
 });
 
+describe('App diamond mask node', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      },
+    );
+  });
+
+  it('guides the user to connect a storage folder before selecting a mask image', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_mask',
+          name: '遮罩画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'node_mask',
+              title: '菱形遮罩',
+              modelId: 'diamond-mask',
+              kind: 'diamondMask',
+              x: 0,
+              y: 0,
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    const nodeCard = (await screen.findAllByRole('heading', { name: '菱形遮罩' }))[0].closest('article');
+    expect(nodeCard).toBeTruthy();
+    expect(within(nodeCard!).getByText('请先选择画布存储文件夹，再导入或选择遮罩图片。')).toBeTruthy();
+
+    const chooseImageButton = within(nodeCard!).getByRole('button', { name: '选择图片' });
+    const chooseAssetButton = within(nodeCard!).getByRole('button', { name: '选择资产' });
+
+    expect(chooseImageButton.getAttribute('aria-disabled')).toBe('true');
+    expect(chooseAssetButton.getAttribute('aria-disabled')).toBe('true');
+
+    await userEvent.click(chooseImageButton);
+    expect(document.querySelector('.canvas-message')?.textContent).toBe(
+      '请先选择画布存储文件夹，再导入或选择遮罩图片。',
+    );
+  });
+});
+
 describe('App video node inspector', () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
@@ -531,10 +592,33 @@ describe('App video node inspector', () => {
   });
 
   it('does not show 1080p for seedance2.0-fast', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_video_fast',
+          name: '默认画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'node_video_1',
+              title: '视频生成',
+              modelId: 'seedance2.0-fast',
+              kind: 'video',
+              x: 520,
+              y: 240,
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
     render(<App />);
 
     await openNodeInspectorByTitle('视频生成');
-    await userEvent.selectOptions(screen.getByLabelText('模型'), 'seedance2.0-fast');
+    await userEvent.click(screen.getByRole('button', { name: '分辨率' }));
 
     expect(screen.queryByRole('option', { name: '1080p' })).toBeNull();
   });
@@ -554,7 +638,6 @@ describe('App video node inspector', () => {
     await openNodeInspectorByTitle('视频生成');
 
     const durationInput = screen.getByLabelText('时长');
-    const ratioSelect = screen.getByLabelText('比例') as HTMLSelectElement;
     const autoDurationToggle = screen.getByLabelText('自动时长') as HTMLInputElement;
 
     expect(durationInput.getAttribute('type')).toBe('range');
@@ -567,9 +650,13 @@ describe('App video node inspector', () => {
     expect(screen.queryByText('自动时长')).toBeNull();
     expect(screen.queryByText('4s')).toBeNull();
     expect(screen.queryByText('15s')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '比例' }));
     expect(
-      Array.from(ratioSelect.options).map((option) => option.value),
+      screen
+        .getAllByRole('option')
+        .map((option) => option.textContent?.trim()),
     ).toEqual(['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive']);
+    await userEvent.click(screen.getByRole('option', { name: '16:9' }));
     expect(screen.getByLabelText('帧率 24fps（官方固定）')).toBeTruthy();
   });
 
@@ -715,7 +802,7 @@ describe('App video node inspector', () => {
     render(<App />);
 
     await openNodeInspectorByTitle('视频生成');
-    await userEvent.selectOptions(screen.getByLabelText('类型'), 'image_to_video_first_last_frame');
+    await chooseInlineOption('类型', '首尾帧图生视频');
 
     const videoNode = screen.getAllByRole('heading', { name: '视频生成' })[0].closest('article');
     expect(videoNode).toBeTruthy();
@@ -728,7 +815,7 @@ describe('App video node inspector', () => {
     render(<App />);
 
     await openNodeInspectorByTitle('视频生成');
-    await userEvent.selectOptions(screen.getByLabelText('类型'), 'multimodal_reference_video');
+    await chooseInlineOption('类型', '多模态参考视频');
 
     expect(
       screen.getByText(
@@ -787,9 +874,9 @@ describe('App video node inspector', () => {
     expect(videoNode).toBeTruthy();
     expect(within(videoNode!).getByText('首帧图')).toBeTruthy();
 
-    await userEvent.selectOptions(screen.getByLabelText('类型'), 'text_to_video');
+    await chooseInlineOption('类型', '文生视频');
 
-    expect((screen.getByLabelText('类型') as HTMLSelectElement).value).toBe('text_to_video');
+    expect(screen.getByRole('button', { name: '类型' }).textContent).toContain('文生视频');
     expect(within(videoNode!).queryByText('首帧图')).toBeNull();
     expect(within(videoNode!).queryByText('尾帧图')).toBeNull();
     expect(within(videoNode!).getByText('文本')).toBeTruthy();
@@ -866,9 +953,7 @@ describe('App video node inspector', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'seedance2.0 生成节点' }));
     await openNodeInspectorByTitle('视频生成');
 
-    expect((screen.getByLabelText('类型') as HTMLSelectElement).value).toBe(
-      'multimodal_reference_video',
-    );
+    expect(screen.getByRole('button', { name: '类型' }).textContent).toContain('多模态参考视频');
   });
 
   it('hides Seedance-Sora from the model dropdown when object storage is not configured', async () => {
@@ -891,22 +976,24 @@ describe('App video node inspector', () => {
 
     expect(screen.getByRole('heading', { name: '视频生成' })).toBeTruthy();
     await openNodeInspectorByTitle('视频生成');
-    expect(screen.getByLabelText('模型')).toBeTruthy();
-    await userEvent.selectOptions(screen.getByLabelText('模型'), 'seedance-sora');
-    expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe('seedance-sora');
-    expect((screen.getByLabelText('比例') as HTMLSelectElement).value).toBe('16:9');
+    expect(screen.getByRole('button', { name: '模型调用格式' })).toBeTruthy();
+    await chooseInlineOption('模型调用格式', 'sora');
+    expect(screen.getByRole('button', { name: '模型调用格式' }).textContent).toContain('sora');
+    expect(screen.getByRole('button', { name: '比例' }).textContent).toContain('16:9');
     const durationInput = screen.getByLabelText('时长');
     expect(durationInput.getAttribute('min')).toBe('4');
     expect(durationInput.getAttribute('max')).toBe('15');
     expect(screen.getByLabelText('自动时长')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '比例' }));
     expect(
-      Array.from((screen.getByLabelText('比例') as HTMLSelectElement).options).map(
-        (option) => option.value,
-      ),
+      screen
+        .getAllByRole('option')
+        .map((option) => option.textContent?.trim()),
     ).toEqual(['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive']);
+    await userEvent.click(screen.getByRole('option', { name: '16:9' }));
     expect(screen.queryByText('预计消耗：0 tokens（本地预估）')).toBeNull();
     expect(screen.queryByText('调用格式')).toBeNull();
-    expect(screen.getByText(/当前模型使用 Sora 格式调用/)).toBeTruthy();
+    expect(screen.getByText(/当前节点会按 sora 调用格式提交/)).toBeTruthy();
   });
 
   it('grows model node width with prompt length and caps it at three times the base width', () => {

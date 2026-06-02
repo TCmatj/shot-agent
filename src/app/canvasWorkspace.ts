@@ -4,6 +4,7 @@ import type {
   ImageQuality,
   ImageResolutionTier,
 } from '../domain/imageGenerationOptions';
+import type { VideoModelFormat } from '../domain/provider';
 import {
   getSeedanceInputPorts,
   type SeedanceInputPortId,
@@ -26,6 +27,7 @@ export type CanvasNodeView = {
   title: string;
   modelId: string;
   chatFormat?: 'openai' | 'anthropic';
+  videoModelFormat?: VideoModelFormat;
   providerId?: string;
   providerModelId?: string;
   imageResolutionTier?: ImageResolutionTier;

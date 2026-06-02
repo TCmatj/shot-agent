@@ -27,6 +27,8 @@ import VolcengineIcon from '@lobehub/icons/es/Volcengine/components/Mono';
 import XAIIcon from '@lobehub/icons/es/XAI/components/Mono';
 import {
   BoxSelect,
+  Check,
+  ChevronDown,
   FilePlus2,
   FileText,
   FolderPlus,
@@ -71,11 +73,11 @@ import {
   findChatProviders,
   findProviderModelsForNodeModel,
   findProvidersForCanonicalModel,
+  findProvidersForVideoFormat,
   mergeProviderDefaults,
   saveProviderDraft,
 } from '../domain/provider';
-import type { ProviderConfig } from '../domain/provider';
-import type { ChatFormat } from '../domain/provider';
+import type { ChatFormat, ProviderConfig, VideoModelFormat } from '../domain/provider';
 import { initialProviders } from '../models/providerCatalog';
 import { fetchProviderModelList, mergeFetchedProviderModels } from '../models/providerModelList';
 import {
@@ -220,8 +222,10 @@ type DiamondMaskResizeHandle = 'n' | 'e' | 's' | 'w' | 'nw' | 'ne' | 'sw' | 'se'
 
 type DiamondMaskNodeBodyProps = {
   node: CanvasNodeView;
+  canChooseSource: boolean;
   onReplaceImage: (file: File) => void;
   onSelectAsset: () => void;
+  onRequireStorage: () => void;
   onUpdateNode: (updater: (node: CanvasNodeView) => CanvasNodeView) => void;
   onGenerate: () => void;
 };
@@ -231,8 +235,6 @@ type AssetPickerTarget = {
   kind: 'image' | 'video';
   purpose: 'assetNode' | 'diamondMask';
 };
-
-type VideoModelId = SeedanceModelId | 'seedance-sora';
 
 type VideoCapabilities = {
   supportedResolutions: Array<'480p' | '720p' | '1080p'>;
@@ -320,6 +322,108 @@ type CanvasActionRailProps = {
   onZoomIn: () => void;
   onResetViewport: () => void;
 };
+
+type InlineSelectOption = {
+  value: string;
+  label: string;
+};
+
+function InlineOptionSelect({
+  value,
+  options,
+  ariaLabel,
+  onChange,
+  menuKey,
+  openMenuKey,
+  setOpenMenuKey,
+  variant = 'default',
+  disabled = false,
+}: {
+  value: string | number;
+  options: InlineSelectOption[];
+  ariaLabel: string;
+  onChange: (value: string) => void;
+  menuKey: string;
+  openMenuKey: string | null;
+  setOpenMenuKey: (value: string | null) => void;
+  variant?: 'default' | 'compact';
+  disabled?: boolean;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const isOpen = openMenuKey === menuKey;
+  const selectedOption =
+    options.find((option) => option.value === String(value)) ?? options[0];
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpenMenuKey(null);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setOpenMenuKey(null);
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, setOpenMenuKey]);
+
+  return (
+    <div
+      ref={rootRef}
+      className={`inline-option-select inline-option-select-${variant} ${
+        isOpen ? 'is-open' : ''
+      }`}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <button
+        type="button"
+        className="inline-option-trigger"
+        aria-label={ariaLabel}
+        aria-expanded={isOpen}
+        disabled={disabled}
+        onClick={() => setOpenMenuKey(isOpen ? null : menuKey)}
+      >
+        <span>{selectedOption?.label ?? value}</span>
+        <ChevronDown size={14} />
+      </button>
+      {isOpen ? (
+        <div className="inline-option-menu" role="listbox" aria-label={ariaLabel}>
+          {options.map((option) => {
+            const isActive = option.value === value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={isActive ? 'is-active' : ''}
+                role="option"
+                aria-selected={isActive}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpenMenuKey(null);
+                }}
+              >
+                <span>{option.label}</span>
+                {isActive ? <Check size={14} /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function CanvasActionRail({
   canUndo,
@@ -1761,7 +1865,7 @@ function getLocalStorageErrorMessage(error: unknown): string {
 function getProviderProtocolLabel(protocol: ProviderConfig['protocol']): string {
   switch (protocol) {
     case 'openai-compatible':
-      return 'OpenAI 格式';
+      return 'OpenAI / Sora 格式';
     case 'anthropic-compatible':
       return 'Anthropic 格式';
     case 'volcengine':
@@ -1907,6 +2011,43 @@ function isSeedanceSoraVideoModel(modelId: string): modelId is 'seedance-sora' {
   return modelId === 'seedance-sora' || modelId === 'sora-2';
 }
 
+function getVideoModelFormat(node: Pick<CanvasNodeView, 'modelId' | 'videoModelFormat'>): VideoModelFormat {
+  if (node.videoModelFormat) {
+    return node.videoModelFormat;
+  }
+
+  return isSeedanceSoraVideoModel(node.modelId) ? 'seedance-sora' : 'seedance';
+}
+
+function getResolvedVideoModelId(
+  node: Pick<CanvasNodeView, 'kind' | 'modelId' | 'videoModelFormat' | 'providerModelId'>,
+  providerModels: Array<{ canonicalModelId: string; providerModelId: string }>,
+): VideoModelFormat | SeedanceModelId {
+  if (getVideoModelFormat(node) === 'seedance-sora') {
+    return 'seedance-sora';
+  }
+
+  if (isSeedanceVideoModel(node.modelId)) {
+    return node.modelId;
+  }
+
+  const selectedModel = providerModels.find(
+    (model) => model.providerModelId === node.providerModelId,
+  );
+  if (selectedModel && isSeedanceVideoModel(selectedModel.canonicalModelId)) {
+    return selectedModel.canonicalModelId;
+  }
+
+  const firstSeedanceModel = providerModels.find((model) =>
+    isSeedanceVideoModel(model.canonicalModelId),
+  );
+  if (firstSeedanceModel && isSeedanceVideoModel(firstSeedanceModel.canonicalModelId)) {
+    return firstSeedanceModel.canonicalModelId;
+  }
+
+  return 'seedance2.0';
+}
+
 function getSeedanceConfigModel(modelId: string): SeedanceModelId | null {
   if (isSeedanceVideoModel(modelId)) {
     return modelId;
@@ -2040,14 +2181,13 @@ function getVideoScenarioOptions(): Array<{ value: SeedanceScenario; label: stri
 
 function getVideoModelOptions(input?: {
   allowSoraFormat?: boolean;
-}): Array<{ value: VideoModelId; label: string }> {
-  const options: Array<{ value: VideoModelId; label: string }> = [
-    { value: 'seedance2.0', label: 'seedance2.0' },
-    { value: 'seedance2.0-fast', label: 'seedance2.0-fast' },
+}): Array<{ value: VideoModelFormat; label: string }> {
+  const options: Array<{ value: VideoModelFormat; label: string }> = [
+    { value: 'seedance', label: 'seedance' },
   ];
 
   if (input?.allowSoraFormat) {
-    options.push({ value: 'seedance-sora', label: 'seedance-sora' });
+    options.push({ value: 'seedance-sora', label: 'sora' });
   }
 
   return options;
@@ -2097,12 +2237,12 @@ function getVideoScenarioHint(scenario: SeedanceScenario): string | null {
   return null;
 }
 
-function getVideoModelFormatHint(modelId: string): string | null {
-  if (isSeedanceSoraVideoModel(modelId)) {
-    return '当前模型使用 Sora 格式调用，配置项与 Seedance 节点保持一致。';
+function getVideoModelFormatHint(format: VideoModelFormat): string | null {
+  if (format === 'seedance-sora') {
+    return '当前节点会按 sora 调用格式提交，请在下方选择实际供应商模型。';
   }
 
-  return null;
+  return '当前节点会按 seedance 调用格式提交，下方供应商模型决定使用标准版还是 Fast。';
 }
 
 function getDiamondMaskColorLabel(color: DiamondMaskColor): string {
@@ -2123,11 +2263,14 @@ function getDiamondMaskSource(node: CanvasNodeView): string | undefined {
 
 function DiamondMaskNodeBody({
   node,
+  canChooseSource,
   onReplaceImage,
   onSelectAsset,
+  onRequireStorage,
   onUpdateNode,
   onGenerate,
 }: DiamondMaskNodeBodyProps) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageSource = getDiamondMaskSource(node);
   const imageWidth = Math.max(1, node.maskImageWidth ?? 1);
   const imageHeight = Math.max(1, node.maskImageHeight ?? 1);
@@ -2141,6 +2284,31 @@ function DiamondMaskNodeBody({
     () => buildDiamondMaskLineSegments(rect, density),
     [rect.x, rect.y, rect.width, rect.height, density],
   );
+  const storageHint = '请先选择画布存储文件夹，再导入或选择遮罩图片。';
+  const uploadButtonTitle = canChooseSource
+    ? '导入并保存遮罩图片到当前画布文件夹'
+    : storageHint;
+  const assetButtonTitle = canChooseSource
+    ? '从当前画布资产中选择遮罩图片'
+    : storageHint;
+
+  function handleChooseImage() {
+    if (!canChooseSource) {
+      onRequireStorage();
+      return;
+    }
+
+    fileInputRef.current?.click();
+  }
+
+  function handleChooseAsset() {
+    if (!canChooseSource) {
+      onRequireStorage();
+      return;
+    }
+
+    onSelectAsset();
+  }
 
   function updateMaskRect(nextRect: DiamondMaskRect) {
     onUpdateNode((current) => ({
@@ -2326,30 +2494,48 @@ function DiamondMaskNodeBody({
         </div>
       ) : (
         <div className="diamond-mask-actions">
-          <label className="asset-upload diamond-mask-upload">
-            选择图片
-            <input
-              type="file"
-              accept="image/*"
-              onPointerDown={(event) => event.stopPropagation()}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  onReplaceImage(file);
-                  event.target.value = '';
-                }
-              }}
-            />
-          </label>
           <button
             type="button"
+            className={`asset-upload diamond-mask-upload diamond-mask-upload-button${
+              canChooseSource ? '' : ' is-disabled'
+            }`}
+            aria-disabled={canChooseSource ? undefined : 'true'}
+            title={uploadButtonTitle}
             onPointerDown={(event) => event.stopPropagation()}
-            onClick={onSelectAsset}
+            onClick={handleChooseImage}
+          >
+            选择图片
+          </button>
+          <input
+            ref={fileInputRef}
+            className="hidden-file-input"
+            type="file"
+            accept="image/*"
+            disabled={!canChooseSource}
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) {
+                onReplaceImage(file);
+                event.target.value = '';
+              }
+            }}
+          />
+          <button
+            type="button"
+            aria-disabled={canChooseSource ? undefined : 'true'}
+            className={canChooseSource ? '' : 'is-disabled'}
+            title={assetButtonTitle}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={handleChooseAsset}
           >
             选择资产
           </button>
         </div>
       )}
+      {!imageSource && !canChooseSource ? (
+        <p className="diamond-mask-storage-hint">{storageHint}</p>
+      ) : null}
       <div className="diamond-mask-controls">
         <label>
           <span>
@@ -2750,6 +2936,7 @@ export function App() {
   const [editingNodeTitleSurface, setEditingNodeTitleSurface] = useState<
     'canvas' | 'inspector' | null
   >(null);
+  const [openInlineSelectKey, setOpenInlineSelectKey] = useState<string | null>(null);
   const [draftNodeTitle, setDraftNodeTitle] = useState('');
   const [selectedOutputVersionId, setSelectedOutputVersionId] = useState<string | null>(null);
   const [outputVersionPage, setOutputVersionPage] = useState(1);
@@ -2932,9 +3119,15 @@ export function App() {
     selectedNode?.kind === 'video'
       ? selectedNode.seedanceScenario ?? 'text_to_video'
       : 'text_to_video';
+  const selectedVideoFormat =
+    selectedNode?.kind === 'video'
+      ? getVideoModelFormat(selectedNode)
+      : 'seedance';
+  const selectedVideoProviderModels =
+    selectedNode?.kind === 'video' ? findProviderModelsForNode(selectedNode) : [];
   const selectedVideoModel =
     selectedNode?.kind === 'video'
-      ? selectedNode.modelId || 'seedance2.0'
+      ? getResolvedVideoModelId(selectedNode, selectedVideoProviderModels)
       : 'seedance2.0';
   const selectedVideoCapabilities =
     selectedNode?.kind === 'video'
@@ -3028,8 +3221,12 @@ export function App() {
     Math.ceil(providerVideoHistoryTotal / providerVideoHistoryPageSize) || 1,
   );
   const soraFormatAvailable =
-    Boolean(getAssetUploadEndpointFromEnv()) ||
-    isObjectStorageConfigured(createObjectStorageConfigFromEnv());
+    providers.some((provider) =>
+      provider.enabled &&
+      provider.models.some(
+        (model) => model.enabled && model.canonicalModelId === 'seedance-sora',
+      ),
+    );
   const minimapBounds = getCanvasContentBounds(renderedCanvasNodes, canvasNodeSize);
   const minimapScale = Math.min(
     minimapSize.width / minimapBounds.width,
@@ -4140,6 +4337,8 @@ export function App() {
         id: nodeId,
         title: template.title,
         modelId: template.modelId,
+        videoModelFormat:
+          template.kind === 'video' ? getVideoModelFormat({ modelId: template.modelId }) : undefined,
         kind: template.kind,
         x: point.x,
         y: point.y,
@@ -4167,6 +4366,8 @@ export function App() {
         id: nodeId,
         title: template.title,
         modelId: template.modelId,
+        videoModelFormat:
+          template.kind === 'video' ? getVideoModelFormat({ modelId: template.modelId }) : undefined,
         kind: template.kind,
         x: point.x,
         y: point.y,
@@ -4364,6 +4565,10 @@ export function App() {
     } catch {
       setCanvasMessage(`保存遮罩图片 ${file.name} 到画布文件夹失败，请检查文件夹权限后重试。`);
     }
+  }
+
+  function requestDiamondMaskStorageSetup() {
+    setCanvasMessage('请先选择画布存储文件夹，再导入或选择遮罩图片。');
   }
 
   async function generateDiamondMaskAsset(node: CanvasNodeView) {
@@ -5685,6 +5890,10 @@ export function App() {
       return findChatProviders(providers, getChatFormat(node));
     }
 
+    if (node.kind === 'video') {
+      return findProvidersForVideoFormat(providers, getVideoModelFormat(node));
+    }
+
     return findProvidersForCanonicalModel(providers, node.modelId);
   }
 
@@ -5700,11 +5909,12 @@ export function App() {
     const provider = findSelectedProviderForNode(node);
 
     return provider
-      ? findProviderModelsForNodeModel(
+        ? findProviderModelsForNodeModel(
           provider,
           node.modelId,
           getChatFormat(node),
           node.kind === 'chat' ? 'chat' : undefined,
+          node.kind === 'video' ? getVideoModelFormat(node) : undefined,
         )
       : [];
   }
@@ -5715,6 +5925,7 @@ export function App() {
       node.modelId,
       getChatFormat(node),
       node.kind === 'chat' ? 'chat' : undefined,
+      node.kind === 'video' ? getVideoModelFormat(node) : undefined,
     );
   }
 
@@ -6072,7 +6283,8 @@ export function App() {
       canvas: activeCanvas,
       nodeId: node.id,
     });
-    const seedanceConfigModel = node.kind === 'video' ? getSeedanceConfigModel(node.modelId) : null;
+    const seedanceConfigModel =
+      node.kind === 'video' ? getSeedanceConfigModel(node.modelId) : null;
     const estimatedVideoTokenCost =
       node.kind === 'video' && seedanceConfigModel
         ? estimateSeedanceTokens({
@@ -6174,7 +6386,7 @@ export function App() {
 
     if (
       node.kind === 'video' &&
-      (provider.protocol === 'volcengine' || isSeedanceSoraVideoModel(node.modelId))
+      (getVideoModelFormat(node) === 'seedance' || isSeedanceSoraVideoModel(node.modelId))
     ) {
       const prepared = await prepareSeedanceCanvasForSubmission(activeCanvas, node);
 
@@ -6501,21 +6713,25 @@ export function App() {
         </button>
         {!isSidebarCollapsed ? (
           <>
-            <header>
-              <h1>shot-agent</h1>
-              <p>无限画布视觉工作台</p>
+            <header className="sidebar-header">
+              <div className="sidebar-brand-copy">
+                <div className="sidebar-brand-row">
+                  <h1>shot-agent</h1>
+                </div>
+                <p>无限画布视觉创作空间</p>
+              </div>
             </header>
-            <nav>
-          <button
-            type="button"
-            className={showProviderManager ? 'is-active' : ''}
-            onClick={() => openProviderSettingsView()}
-          >
-            <Settings size={18} />
-            供应商管理
-          </button>
-        </nav>
-        <section className="panel storage-panel">
+            <nav className="sidebar-primary-nav">
+              <button
+                type="button"
+                className={showProviderManager ? 'is-active' : ''}
+                onClick={() => openProviderSettingsView()}
+              >
+                <Settings size={18} />
+                供应商管理
+              </button>
+            </nav>
+            <section className="panel storage-panel">
           <div className="panel-title-row">
             <h2>存储</h2>
             <div className="storage-title-actions">
@@ -6557,8 +6773,8 @@ export function App() {
               ? `当前：${rootDirectoryHandle.name} / 每个画布独立文件夹`
               : '当前：未连接存储文件夹，无法保存素材'}
           </p>
-        </section>
-        <section className="panel">
+            </section>
+            <section className="panel canvas-panel">
           <div className="panel-title-row">
             <h2>画布</h2>
             <button type="button" className="icon-button" aria-label="新建画布" onClick={createCanvas}>
@@ -6637,7 +6853,7 @@ export function App() {
             })}
           </div>
           {canvasMessage ? <p className="canvas-message">{canvasMessage}</p> : null}
-        </section>
+            </section>
           </>
         ) : null}
       </aside>
@@ -6650,7 +6866,10 @@ export function App() {
               <BoxSelect size={18} />
             )}
             {showProviderManager ? (
-              <span>供应商管理</span>
+              <div className="toolbar-title-copy">
+                <span>供应商管理</span>
+                <small>统一管理供应商、模型映射与历史任务</small>
+              </div>
             ) : isRenamingCanvas ? (
               <input
                 className="canvas-title-input"
@@ -6670,12 +6889,19 @@ export function App() {
               />
             ) : (
               <>
-                <span className="canvas-title-name">
-                  {activeCanvas?.name ?? '暂无画布'}
-                  {activeCanvasIsDirty ? (
-                    <span className="canvas-unsaved-dot" aria-label="未保存" title="未保存" />
-                  ) : null}
-                </span>
+                <div className="toolbar-title-copy">
+                  <span className="canvas-title-name">
+                    {activeCanvas?.name ?? '暂无画布'}
+                    {activeCanvasIsDirty ? (
+                      <span className="canvas-unsaved-dot" aria-label="未保存" title="未保存" />
+                    ) : null}
+                  </span>
+                  <small>
+                    {activeCanvas
+                      ? `${activeCanvas.nodes.length} 个节点 · ${filteredCanvasAssets.length} 个资产`
+                      : '选择一个画布开始创作'}
+                  </small>
+                </div>
                 {activeCanvas ? (
                   <>
                     <button
@@ -6703,6 +6929,15 @@ export function App() {
             )}
           </div>
           <div className="toolbar-actions">
+            {!showProviderManager ? (
+              <span
+                className={`toolbar-status-chip ${
+                  folderStorageReady && rootDirectoryHandle ? 'is-ready' : 'is-warning'
+                }`}
+              >
+                {folderStorageReady && rootDirectoryHandle ? '文件夹已连接' : '未连接存储文件夹'}
+              </span>
+            ) : null}
             {showProviderManager ? (
               <button
                 type="button"
@@ -6720,6 +6955,13 @@ export function App() {
           <div className="provider-manager-view">
             <div className="provider-settings-shell">
               <aside className="provider-settings-sidebar" aria-label="供应商列表">
+                <div className="provider-sidebar-header">
+                  <div>
+                    <h2>服务商</h2>
+                    <p>选择、映射并测试当前可用模型。</p>
+                  </div>
+                  <span className="provider-sidebar-count">{filteredProviderRows.length}</span>
+                </div>
                 <label className="provider-search">
                   <Search size={16} />
                   <input
@@ -6778,7 +7020,10 @@ export function App() {
                         <ProviderAvatar provider={selectedProviderView} large />
                         <div>
                           <h2>{selectedProviderView.name}</h2>
-                          <p>{getProviderProtocolLabel(selectedProviderView.protocol)}</p>
+                          <p>
+                            {getProviderProtocolLabel(selectedProviderView.protocol)} ·{' '}
+                            {selectedProviderView.models.filter((model) => model.enabled).length} 个启用模型
+                          </p>
                         </div>
                       </div>
                       <div className="provider-detail-actions">
@@ -6802,6 +7047,15 @@ export function App() {
                           />
                           <span />
                         </label>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label="关闭供应商管理"
+                          title="关闭供应商管理"
+                          onClick={returnToCanvas}
+                        >
+                          <X size={17} />
+                        </button>
                         <button
                           type="button"
                           className="icon-button"
@@ -6834,20 +7088,25 @@ export function App() {
                           </label>
                           <label>
                             API 风格
-                            <select
+                            <InlineOptionSelect
+                              ariaLabel="API 风格"
                               value={selectedProviderView.protocol}
-                              onChange={(event) =>
+                              menuKey={`provider-protocol:${selectedProvider.id}`}
+                              openMenuKey={openInlineSelectKey}
+                              setOpenMenuKey={setOpenInlineSelectKey}
+                              onChange={(value) =>
                                 updateProviderDraft(selectedProvider.id, (current) => ({
                                   ...current,
-                                  protocol: event.target.value as ProviderConfig['protocol'],
+                                  protocol: value as ProviderConfig['protocol'],
                                 }))
                               }
-                            >
-                              <option value="openai-compatible">OpenAI Compatible</option>
-                              <option value="anthropic-compatible">Anthropic Compatible</option>
-                              <option value="volcengine">火山方舟</option>
-                              <option value="custom">自定义</option>
-                            </select>
+                              options={[
+                                { value: 'openai-compatible', label: 'OpenAI / Sora Compatible' },
+                                { value: 'anthropic-compatible', label: 'Anthropic Compatible' },
+                                { value: 'volcengine', label: '火山方舟' },
+                                { value: 'custom', label: '自定义' },
+                              ]}
+                            />
                           </label>
                           <label>
                             API Key / 密钥引用
@@ -6955,25 +7214,6 @@ export function App() {
                                   }
                                 />
                               </label>
-                              <label>
-                                映射后标准模型 ID
-                                <input
-                                  value={model.canonicalModelId}
-                                  onChange={(event) =>
-                                    updateProviderDraft(selectedProvider.id, (current) => ({
-                                      ...current,
-                                      models: current.models.map((currentModel, currentIndex) =>
-                                        currentIndex === modelIndex
-                                          ? {
-                                              ...currentModel,
-                                              canonicalModelId: event.target.value,
-                                            }
-                                          : currentModel,
-                                      ),
-                                    }))
-                                  }
-                                />
-                              </label>
                               <button
                                 type="button"
                                 className="icon-button"
@@ -7000,19 +7240,21 @@ export function App() {
                         <div className="provider-history-toolbar">
                           <label>
                             每页展示
-                            <select
+                            <InlineOptionSelect
+                              ariaLabel="每页展示"
                               value={providerVideoHistoryPageSize}
-                              onChange={(event) => {
-                                setProviderVideoHistoryPageSize(Number(event.target.value));
+                              menuKey="provider-history-page-size"
+                              openMenuKey={openInlineSelectKey}
+                              setOpenMenuKey={setOpenInlineSelectKey}
+                              onChange={(value) => {
+                                setProviderVideoHistoryPageSize(Number(value));
                                 setProviderVideoHistoryPage(1);
                               }}
-                            >
-                              {[10, 20, 50, 100].map((size) => (
-                                <option key={size} value={size}>
-                                  {size}
-                                </option>
-                              ))}
-                            </select>
+                              options={[10, 20, 50, 100].map((size) => ({
+                                value: String(size),
+                                label: String(size),
+                              }))}
+                            />
                           </label>
                           <div className="provider-history-toolbar-actions">
                             <span className="provider-history-summary">
@@ -7633,6 +7875,7 @@ export function App() {
                     {node.kind === 'diamondMask' ? (
                       <DiamondMaskNodeBody
                         node={node}
+                        canChooseSource={Boolean(rootDirectoryHandle && folderStorageReady)}
                         onReplaceImage={(file) => void replaceDiamondMaskImage(node.id, file)}
                         onSelectAsset={() =>
                           openAssetPicker({
@@ -7641,6 +7884,7 @@ export function App() {
                             purpose: 'diamondMask',
                           })
                         }
+                        onRequireStorage={requestDiamondMaskStorageSetup}
                         onUpdateNode={(updater) => updateNode(node.id, updater)}
                         onGenerate={() => void generateDiamondMaskAsset(node)}
                       />
@@ -7786,23 +8030,24 @@ export function App() {
                             <div className="node-inline-video-actions">
                               <span className="node-inline-video-mode-label">模式</span>
                               <label className="node-inline-video-mode">
-                                <select
-                                  className="video-mode-select"
+                                <InlineOptionSelect
+                                  ariaLabel="模式"
                                   value={node.seedanceScenario ?? 'text_to_video'}
-                                  onPointerDown={(event) => event.stopPropagation()}
-                                  onChange={(event) =>
+                                  menuKey={`node-inline-video-scenario:${node.id}`}
+                                  openMenuKey={openInlineSelectKey}
+                                  setOpenMenuKey={setOpenInlineSelectKey}
+                                  variant="compact"
+                                  onChange={(value) =>
                                     handleVideoScenarioChange(
                                       node.id,
-                                      event.target.value as SeedanceScenario,
+                                      value as SeedanceScenario,
                                     )
                                   }
-                                >
-                                  {getVideoScenarioOptions().map((option) => (
-                                    <option key={option.value} value={option.value}>
-                                      {option.label}
-                                    </option>
-                                  ))}
-                                </select>
+                                  options={getVideoScenarioOptions().map((option) => ({
+                                    value: option.value,
+                                    label: option.label,
+                                  }))}
+                                />
                               </label>
                               <button
                                 type="button"
@@ -7931,9 +8176,10 @@ export function App() {
 
             return (
             <aside className="node-inspector">
-              <header>
-                {editingNodeTitleId === selectedNode.id &&
-                editingNodeTitleSurface === 'inspector' ? (
+              <header className="node-inspector-header">
+                <div className="node-inspector-title-block">
+                  {editingNodeTitleId === selectedNode.id &&
+                  editingNodeTitleSurface === 'inspector' ? (
                         <input
                           className="node-title-input"
                           value={draftNodeTitle}
@@ -7953,37 +8199,45 @@ export function App() {
                       }
                     }}
                   />
-                ) : (
-                  <div
-                    className="node-title-row"
-                    onMouseDown={(event) => {
-                      if (event.detail >= 2) {
-                        event.preventDefault();
-                        startRenameNode(selectedNode, 'inspector');
-                      }
-                    }}
-                    onDoubleClick={() => startRenameNode(selectedNode, 'inspector')}
-                  >
-                    <h2>
-                      {selectedNode.title}
-                    </h2>
-                    <button
-                      type="button"
-                      className="node-title-edit-button"
-                      aria-label="编辑节点名称"
-                      title="编辑节点名称"
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        startRenameNode(selectedNode, 'inspector');
+                  ) : (
+                    <div
+                      className="node-title-row"
+                      onMouseDown={(event) => {
+                        if (event.detail >= 2) {
+                          event.preventDefault();
+                          startRenameNode(selectedNode, 'inspector');
+                        }
                       }}
-                      onClick={(event) => event.stopPropagation()}
+                      onDoubleClick={() => startRenameNode(selectedNode, 'inspector')}
                     >
-                      <Pencil size={13} />
-                    </button>
-                  </div>
-                )}
-                {selectedNode.kind === 'diamondMask' ? null : <p>{selectedNode.modelId}</p>}
+                      <h2>{selectedNode.title}</h2>
+                      <button
+                        type="button"
+                        className="node-title-edit-button"
+                        aria-label="编辑节点名称"
+                        title="编辑节点名称"
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          startRenameNode(selectedNode, 'inspector');
+                        }}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <Pencil size={13} />
+                      </button>
+                    </div>
+                  )}
+                  {selectedNode.kind === 'diamondMask' ? null : <p>{selectedNode.modelId}</p>}
+                </div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="关闭节点详情"
+                  title="关闭节点详情"
+                  onClick={() => setInspectedNodeId(null)}
+                >
+                  <X size={15} />
+                </button>
               </header>
               <button type="button" className="danger-button" onClick={deleteSelectedNode}>
                 <Trash2 size={16} />
@@ -7992,6 +8246,7 @@ export function App() {
               {selectedNode.kind === 'diamondMask' ? (
                 <DiamondMaskNodeBody
                   node={selectedNode}
+                  canChooseSource={Boolean(rootDirectoryHandle && folderStorageReady)}
                   onReplaceImage={(file) => void replaceDiamondMaskImage(selectedNode.id, file)}
                   onSelectAsset={() =>
                     openAssetPicker({
@@ -8000,6 +8255,7 @@ export function App() {
                       purpose: 'diamondMask',
                     })
                   }
+                  onRequireStorage={requestDiamondMaskStorageSetup}
                   onUpdateNode={(updater) => updateNode(selectedNode.id, updater)}
                   onGenerate={() => void generateDiamondMaskAsset(selectedNode)}
                 />
@@ -8007,10 +8263,14 @@ export function App() {
               {selectedNode.kind === 'chat' ? (
                 <label>
                   调用格式
-                  <select
+                  <InlineOptionSelect
+                    ariaLabel="调用格式"
                     value={getChatFormat(selectedNode)}
-                    onChange={(event) => {
-                      const nextFormat = event.target.value as ChatFormat;
+                    menuKey={`chat-format:${selectedNode.id}`}
+                    openMenuKey={openInlineSelectKey}
+                    setOpenMenuKey={setOpenInlineSelectKey}
+                    onChange={(value) => {
+                      const nextFormat = value as ChatFormat;
                       const nextProviders = findChatProviders(providers, nextFormat);
                       const nextProvider = nextProviders[0];
                       const nodeForFormat = { ...selectedNode, chatFormat: nextFormat };
@@ -8026,10 +8286,11 @@ export function App() {
                         modelId: nextModel?.providerModelId ?? current.modelId,
                       }));
                     }}
-                  >
-                    <option value="openai">OpenAI Chat Completions</option>
-                    <option value="anthropic">Anthropic Messages</option>
-                  </select>
+                    options={[
+                      { value: 'openai', label: 'OpenAI Chat Completions' },
+                      { value: 'anthropic', label: 'Anthropic Messages' },
+                    ]}
+                  />
                 </label>
               ) : null}
               {selectedNode.kind === 'video' ? (
@@ -8037,60 +8298,81 @@ export function App() {
                   <div className="video-format-row">
                     <label>
                       类型
-                      <select
-                        className="video-mode-select"
-                        aria-label="类型"
+                      <InlineOptionSelect
+                        ariaLabel="类型"
                         value={selectedVideoScenario}
-                        onChange={(event) =>
+                        menuKey={`video-scenario:${selectedNode.id}`}
+                        openMenuKey={openInlineSelectKey}
+                        setOpenMenuKey={setOpenInlineSelectKey}
+                        onChange={(value) =>
                           handleVideoScenarioChange(
                             selectedNode.id,
-                            event.target.value as SeedanceScenario,
+                            value as SeedanceScenario,
                           )
                         }
-                      >
-                        {getVideoScenarioOptions().map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
+                        options={getVideoScenarioOptions().map((option) => ({
+                          value: option.value,
+                          label: option.label,
+                        }))}
+                      />
                     </label>
-                    <label>
-                      模型
-                      <select
-                        aria-label="模型"
-                        value={selectedVideoModel}
-                        onChange={(event) => {
-                          const nextModel = event.target.value as VideoModelId;
-                          const nextCapabilities = getVideoCapabilities(nextModel);
+                    <label className="video-format-field">
+                      模型调用格式
+                      <InlineOptionSelect
+                        ariaLabel="模型调用格式"
+                        value={selectedVideoFormat}
+                        menuKey={`video-format:${selectedNode.id}`}
+                        openMenuKey={openInlineSelectKey}
+                        setOpenMenuKey={setOpenInlineSelectKey}
+                        onChange={(value) => {
+                          const nextFormat = value as VideoModelFormat;
+                          const nodeForFormat = {
+                            ...selectedNode,
+                            videoModelFormat: nextFormat,
+                            modelId: nextFormat === 'seedance-sora' ? 'seedance-sora' : selectedNode.modelId,
+                          };
+                          const nextProviders = findProvidersForNode(nodeForFormat);
+                          const nextProvider = nextProviders.find(
+                            (provider) => provider.id === selectedNode.providerId,
+                          ) ?? nextProviders[0];
+                          const nextModel = nextProvider
+                            ? findProviderModelsForNodeWithProvider(nodeForFormat, nextProvider)[0]
+                            : undefined;
+                          const nextCanonicalModel =
+                            nextFormat === 'seedance-sora'
+                              ? 'seedance-sora'
+                              : nextModel && isSeedanceVideoModel(nextModel.canonicalModelId)
+                                ? nextModel.canonicalModelId
+                                : 'seedance2.0';
+                          const nextCapabilities = getVideoCapabilities(nextCanonicalModel);
                           updateNode(selectedNode.id, (current) => ({
                             ...current,
-                            modelId: nextModel,
-                            providerModelId: undefined,
+                            videoModelFormat: nextFormat,
+                            providerId: nextProvider?.id,
+                            providerModelId: nextModel?.providerModelId,
+                            modelId: nextCanonicalModel,
                             videoResolution: nextCapabilities.supportedResolutions.includes(
                               current.videoResolution ?? '720p',
                             )
                               ? current.videoResolution
                               : nextCapabilities.supportedResolutions[0],
                             videoRatio: nextCapabilities.supportedRatios.includes(
-                              current.videoRatio ?? getDefaultVideoRatio(nextModel),
+                              current.videoRatio ?? getDefaultVideoRatio(nextCanonicalModel),
                             )
-                              ? current.videoRatio ?? getDefaultVideoRatio(nextModel)
-                              : getDefaultVideoRatio(nextModel),
+                              ? current.videoRatio ?? getDefaultVideoRatio(nextCanonicalModel)
+                              : getDefaultVideoRatio(nextCanonicalModel),
                             videoDurationSeconds: normalizeVideoDurationSeconds(
-                              nextModel,
+                              nextCanonicalModel,
                               current.videoDurationSeconds ?? 5,
                             ),
                             videoFramesPerSecond: nextCapabilities.fixedFrameRate,
                           }));
                         }}
-                      >
-                        {getVideoModelOptions({ allowSoraFormat: soraFormatAvailable }).map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
+                        options={getVideoModelOptions({ allowSoraFormat: soraFormatAvailable }).map((option) => ({
+                          value: option.value,
+                          label: option.label,
+                        }))}
+                      />
                     </label>
                   </div>
                   {visibleVideoFields.includes('resolution') ||
@@ -8100,54 +8382,58 @@ export function App() {
                       {visibleVideoFields.includes('resolution') ? (
                         <label className="video-inline-setting">
                           <span>分辨率</span>
-                          <select
-                            aria-label="分辨率"
+                          <InlineOptionSelect
+                            ariaLabel="分辨率"
                             value={
                               selectedNode.videoResolution ??
                               selectedVideoCapabilities?.supportedResolutions[0] ??
                               '720p'
                             }
-                            onChange={(event) =>
+                            menuKey={`video-resolution:${selectedNode.id}`}
+                            openMenuKey={openInlineSelectKey}
+                            setOpenMenuKey={setOpenInlineSelectKey}
+                            variant="compact"
+                            options={(selectedVideoCapabilities?.supportedResolutions ?? ['720p']).map(
+                              (resolution) => ({
+                                value: resolution,
+                                label: resolution,
+                              }),
+                            )}
+                            onChange={(resolution) =>
                               updateNode(selectedNode.id, (current) => ({
                                 ...current,
-                                videoResolution: event.target.value as '480p' | '720p' | '1080p',
+                                videoResolution: resolution as '480p' | '720p' | '1080p',
                               }))
                             }
-                          >
-                            {(selectedVideoCapabilities?.supportedResolutions ?? ['720p']).map(
-                              (resolution) => (
-                                <option key={resolution} value={resolution}>
-                                  {resolution}
-                                </option>
-                              ),
-                            )}
-                          </select>
+                          />
                         </label>
                       ) : null}
                       {visibleVideoFields.includes('ratio') ? (
                         <label className="video-inline-setting">
                           <span>比例</span>
-                          <select
-                            aria-label="比例"
+                          <InlineOptionSelect
+                            ariaLabel="比例"
                             value={
                               selectedNode.videoRatio ??
                               (selectedVideoCapabilities
                                 ? getDefaultVideoRatio(selectedVideoModel)
                                 : '16:9')
                             }
-                            onChange={(event) =>
+                            menuKey={`video-ratio:${selectedNode.id}`}
+                            openMenuKey={openInlineSelectKey}
+                            setOpenMenuKey={setOpenInlineSelectKey}
+                            variant="compact"
+                            options={(selectedVideoCapabilities?.supportedRatios ?? ['16:9']).map((ratio) => ({
+                              value: ratio,
+                              label: ratio === 'adaptive' ? 'adaptive' : ratio,
+                            }))}
+                            onChange={(ratio) =>
                               updateNode(selectedNode.id, (current) => ({
                                 ...current,
-                                videoRatio: event.target.value as SeedanceRatio,
+                                videoRatio: ratio as SeedanceRatio,
                               }))
                             }
-                          >
-                            {(selectedVideoCapabilities?.supportedRatios ?? ['16:9']).map((ratio) => (
-                              <option key={ratio} value={ratio}>
-                                {ratio === 'adaptive' ? 'adaptive' : ratio}
-                              </option>
-                            ))}
-                          </select>
+                          />
                         </label>
                       ) : null}
                       {visibleVideoFields.includes('duration') ? (
@@ -8229,8 +8515,10 @@ export function App() {
                   {getVideoScenarioHint(selectedVideoScenario) ? (
                     <p className="video-scene-hint">{getVideoScenarioHint(selectedVideoScenario)}</p>
                   ) : null}
-                  {getVideoModelFormatHint(selectedVideoModel) ? (
-                    <p className="video-scene-hint">{getVideoModelFormatHint(selectedVideoModel)}</p>
+                  {getVideoModelFormatHint(selectedVideoFormat) ? (
+                    <p className="video-scene-hint video-format-hint">
+                      {getVideoModelFormatHint(selectedVideoFormat)}
+                    </p>
                   ) : null}
                   <p className="video-usage-line">预计消耗：{estimatedVideoTokens ?? 0} tokens（本地预估）</p>
                   <p className="video-usage-line">
@@ -8260,10 +8548,14 @@ export function App() {
                 <>
                   <label>
                     供应商
-                    <select
+                    <InlineOptionSelect
                       value={selectedNode.providerId ?? ''}
-                      onChange={(event) => {
-                        const nextProviderId = event.target.value || undefined;
+                      ariaLabel="供应商"
+                      menuKey={`node-provider:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) => {
+                        const nextProviderId = value || undefined;
                         const nextProvider = nextProviderId
                           ? findProvidersForNode(selectedNode).find(
                               (provider) => provider.id === nextProviderId,
@@ -8280,45 +8572,53 @@ export function App() {
                           modelId:
                             selectedNode.kind === 'chat' && nextModel
                               ? nextModel.providerModelId
+                              : selectedNode.kind === 'video' && nextModel
+                                ? nextModel.canonicalModelId
                               : current.modelId,
                         }));
                       }}
-                    >
-                      <option value="">
-                        自动选择供应商
-                      </option>
-                      {findProvidersForNode(selectedNode).map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.name}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        { value: '', label: '自动选择供应商' },
+                        ...findProvidersForNode(selectedNode).map((provider) => ({
+                          value: provider.id,
+                          label: provider.name,
+                        })),
+                      ]}
+                    />
                   </label>
                   <label>
                     供应商模型
-                    <select
+                    <InlineOptionSelect
                       value={selectedNode.providerModelId ?? ''}
-                      onChange={(event) =>
+                      ariaLabel="供应商模型"
+                      menuKey={`node-provider-model:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) => {
+                        const nextProviderModelId = value || undefined;
+                        const nextModel = findProviderModelsForNode(selectedNode).find(
+                          (model) => model.providerModelId === nextProviderModelId,
+                        );
+
                         updateNode(selectedNode.id, (current) => ({
                           ...current,
-                          providerModelId: event.target.value || undefined,
+                          providerModelId: nextProviderModelId,
                           modelId:
-                            selectedNode.kind === 'chat' && event.target.value
-                              ? event.target.value
-                              : current.modelId,
-                        }))
-                      }
-                    >
-                      <option value="">自动选择模型</option>
-                      {findProviderModelsForNode(selectedNode).map((model) => (
-                        <option
-                          key={`${model.canonicalModelId}:${model.providerModelId}`}
-                          value={model.providerModelId}
-                        >
-                          {model.displayName ?? model.providerModelId}
-                        </option>
-                      ))}
-                    </select>
+                            selectedNode.kind === 'chat' && nextProviderModelId
+                              ? nextProviderModelId
+                              : selectedNode.kind === 'video' && nextModel
+                                ? nextModel.canonicalModelId
+                                : current.modelId,
+                        }));
+                      }}
+                      options={[
+                        { value: '', label: '自动选择模型' },
+                        ...findProviderModelsForNode(selectedNode).map((model) => ({
+                          value: model.providerModelId,
+                          label: model.displayName ?? model.providerModelId,
+                        })),
+                      ]}
+                    />
                   </label>
                 </>
               ) : null}
@@ -8326,10 +8626,14 @@ export function App() {
                 <div className="image-generation-settings">
                   <label>
                     分辨率
-                    <select
+                    <InlineOptionSelect
                       value={selectedNode.imageResolutionTier ?? defaultImageResolutionTier}
-                      onChange={(event) => {
-                        const nextTier = event.target.value as ImageResolutionTier;
+                      ariaLabel="图片分辨率"
+                      menuKey={`image-resolution-tier:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) => {
+                        const nextTier = value as ImageResolutionTier;
                         const currentRatio =
                           selectedNode.imageAspectRatio ?? defaultImageAspectRatio;
                         const nextRatio = getImageAspectOptions(nextTier).some(
@@ -8344,51 +8648,53 @@ export function App() {
                           imageAspectRatio: nextRatio,
                         }));
                       }}
-                    >
-                      {imageResolutionOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={imageResolutionOptions.map((option) => ({
+                        value: option.value,
+                        label: option.label,
+                      }))}
+                    />
                   </label>
                   <label>
                     比例
-                    <select
+                    <InlineOptionSelect
                       value={selectedNode.imageAspectRatio ?? defaultImageAspectRatio}
-                      onChange={(event) =>
+                      ariaLabel="图片比例"
+                      menuKey={`image-aspect-ratio:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) =>
                         updateNode(selectedNode.id, (current) => ({
                           ...current,
-                          imageAspectRatio: event.target.value,
+                          imageAspectRatio: value,
                         }))
                       }
-                    >
-                      {getImageAspectOptions(
+                      options={getImageAspectOptions(
                         selectedNode.imageResolutionTier ?? defaultImageResolutionTier,
-                      ).map((option) => (
-                        <option key={option.ratio} value={option.ratio}>
-                          {getImageAspectOptionLabel(option)}
-                        </option>
-                      ))}
-                    </select>
+                      ).map((option) => ({
+                        value: option.ratio,
+                        label: getImageAspectOptionLabel(option),
+                      }))}
+                    />
                   </label>
                   <label>
                     质量
-                    <select
+                    <InlineOptionSelect
                       value={selectedNode.imageQuality ?? defaultImageQuality}
-                      onChange={(event) =>
+                      ariaLabel="图片质量"
+                      menuKey={`image-quality:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) =>
                         updateNode(selectedNode.id, (current) => ({
                           ...current,
-                          imageQuality: event.target.value as ImageQuality,
+                          imageQuality: value as ImageQuality,
                         }))
                       }
-                    >
-                      {imageQualityOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label} - {option.description}
-                        </option>
-                      ))}
-                    </select>
+                      options={imageQualityOptions.map((option) => ({
+                        value: option.value,
+                        label: `${option.label} - ${option.description}`,
+                      }))}
+                    />
                   </label>
                 </div>
               ) : null}

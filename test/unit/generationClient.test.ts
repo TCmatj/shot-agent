@@ -529,8 +529,13 @@ describe('generation client request building', () => {
     expect(formData.get('prompt')).toBe('Slow camera orbit 「图片 1」');
     expect(formData.get('model')).toBe('sora-2');
     expect(formData.get('seconds')).toBe('5');
-    expect(formData.get('size')).toBe('1920x1080');
-    expect(formData.get('input_reference')).toBeInstanceOf(File);
+    expect(formData.get('size')).toBeNull();
+    expect(formData.get('input_reference')).toBeNull();
+    expect(JSON.parse(String(formData.get('metadata')))).toMatchObject({
+      resolution: '1080p',
+      ratio: '16:9',
+      seed: 12345,
+    });
   });
 
   it('queries Seedance-Sora video task status with the Sora videos endpoint', async () => {
@@ -596,7 +601,10 @@ describe('generation client request building', () => {
     });
 
     const formData = result.ok ? result.request.body as FormData : new FormData();
-    expect(formData.get('size')).toBe('1280x720');
+    expect(JSON.parse(String(formData.get('metadata')))).toMatchObject({
+      resolution: '720p',
+      ratio: '16:9',
+    });
   });
 
   it('builds first-last-frame seedance requests', () => {
