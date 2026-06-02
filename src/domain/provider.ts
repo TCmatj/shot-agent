@@ -7,6 +7,7 @@ export type ProviderProtocol =
   | 'custom';
 
 export type ChatFormat = 'openai' | 'anthropic';
+export type VideoModelFormat = 'seedance' | 'seedance-sora';
 
 export type BillingConfig =
   | {
@@ -146,6 +147,30 @@ export function findProvidersForCanonicalModel(
   );
 }
 
+function getCanonicalModelIdsForVideoFormat(format: VideoModelFormat): string[] {
+  if (format === 'seedance-sora') {
+    return ['seedance-sora'];
+  }
+
+  return ['seedance2.0', 'seedance2.0-fast'];
+}
+
+export function findProvidersForVideoFormat(
+  providers: ProviderConfig[],
+  format: VideoModelFormat,
+): ProviderConfig[] {
+  const canonicalModelIds = getCanonicalModelIdsForVideoFormat(format);
+
+  return providers.filter(
+    (provider) =>
+      provider.enabled &&
+      provider.models.some(
+        (model) =>
+          model.enabled && canonicalModelIds.includes(model.canonicalModelId),
+      ),
+  );
+}
+
 export function findChatProviders(
   providers: ProviderConfig[],
   format: ChatFormat = 'openai',
@@ -172,10 +197,19 @@ export function findProviderModelsForNodeModel(
   nodeModelId: string,
   format: ChatFormat = 'openai',
   nodeKind?: 'chat',
+  videoFormat?: VideoModelFormat,
 ): ProviderModelConfig[] {
   if (nodeKind === 'chat' || isLegacyChatNodeModelId(nodeModelId)) {
     return provider.models.filter(
       (model) => model.enabled && isChatProviderModel(model, format),
+    );
+  }
+
+  if (videoFormat) {
+    const canonicalModelIds = getCanonicalModelIdsForVideoFormat(videoFormat);
+    return provider.models.filter(
+      (model) =>
+        model.enabled && canonicalModelIds.includes(model.canonicalModelId),
     );
   }
 

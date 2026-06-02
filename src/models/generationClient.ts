@@ -10,6 +10,7 @@ import {
   type PromptReferenceResolution,
 } from '../domain/promptReferences';
 import {
+  type VideoModelFormat,
   mapCanonicalModelToProviderModel,
   type ProviderConfig,
 } from '../domain/provider';
@@ -39,6 +40,16 @@ type SeedanceConnectedAsset = {
 };
 
 const chatImageInputLimit = 20;
+
+function getNodeVideoModelFormat(node: CanvasNodeView): VideoModelFormat {
+  if (node.videoModelFormat) {
+    return node.videoModelFormat;
+  }
+
+  return node.modelId === 'seedance-sora' || node.modelId === 'sora-2'
+    ? 'seedance-sora'
+    : 'seedance';
+}
 
 export type GenerationRequest = {
   url: string;
@@ -282,11 +293,24 @@ export function buildGenerationRequest(
     return { ok: false, error: '提交前必须填写提示词' };
   }
 
-  if (node.kind === 'video' && input.provider.protocol === 'volcengine') {
+  const videoModelFormat = node.kind === 'video' ? getNodeVideoModelFormat(node) : null;
+
+  if (node.kind === 'video' && videoModelFormat === 'seedance') {
     const validationError = validateSeedanceVideoNode(node, input.canvas);
     if (validationError) {
       return { ok: false, error: validationError };
     }
+  }
+
+  if (node.kind === 'video' && videoModelFormat === 'seedance') {
+    if (input.provider.protocol !== 'volcengine') {
+      return { ok: false, error: '当前供应商不支持 seedance 调用格式，请改用火山方舟协议。' };
+    }
+
+    return {
+      ok: true,
+      request: buildSeedanceVideoTaskRequest(input.provider, input.token, providerModelId, prompt, node, input.canvas),
+    };
   }
 
   if (input.provider.protocol === 'volcengine') {
@@ -294,10 +318,7 @@ export function buildGenerationRequest(
       return { ok: false, error: '火山方舟当前仅用于视频节点提交' };
     }
 
-    return {
-      ok: true,
-      request: buildSeedanceVideoTaskRequest(input.provider, input.token, providerModelId, prompt, node, input.canvas),
-    };
+    return { ok: false, error: '当前视频节点调用格式与所选供应商不匹配。' };
   }
 
   if (node.kind === 'chat') {
@@ -349,6 +370,10 @@ export function buildGenerationRequest(
   }
 
   if (node.kind === 'video') {
+    if (videoModelFormat !== 'seedance-sora') {
+      return { ok: false, error: '当前供应商仅支持 sora 调用格式。' };
+    }
+
     return {
       ok: true,
       request: buildOpenAIVideoTaskRequest(input.provider, input.token, providerModelId, prompt, node, input.canvas),
@@ -790,28 +815,11 @@ function buildOpenAIVideoTaskRequest(
   canvas: CanvasView,
 ): GenerationRequest {
   const body = new FormData();
-  const metadata = buildOpenAIVideoMetadata(node, canvas);
-  const referenceImage = collectOpenAIVideoReferenceImages(node, canvas)[0];
+  const metadata = buildOpenAIVideoMetadata(model, prompt, node, canvas);
 
   body.set('prompt', prompt);
   body.set('model', model);
   body.set('seconds', String(getOpenAIVideoSeconds(node)));
-  body.set('size', getOpenAIVideoSize(node));
-
-  if (referenceImage) {
-    if (isDataUrl(referenceImage.content)) {
-      const blob = dataUrlToBlob(referenceImage.content, referenceImage.mimeType);
-      if (blob) {
-        body.set(
-          'input_reference',
-          blob,
-          getOpenAIVideoReferenceFilename(referenceImage.node, referenceImage.mimeType),
-        );
-      }
-    } else if (isRemoteUrl(referenceImage.content) && !metadata.img_url) {
-      metadata.img_url = referenceImage.content;
-    }
-  }
 
   if (Object.keys(metadata).length > 0) {
     body.set('metadata', JSON.stringify(metadata));
@@ -829,51 +837,41 @@ function buildOpenAIVideoTaskRequest(
 }
 
 function buildOpenAIVideoMetadata(
+  model: string,
+  prompt: string,
   node: CanvasNodeView,
   canvas: CanvasView,
 ): Record<string, unknown> {
-  const metadata: Record<string, unknown> = {};
-  const imageAssets = collectConnectedSeedanceAssets(node, canvas).filter(
-    (asset) => asset.node.kind === 'image' || asset.node.kind === 'imageAsset',
-  );
+  const scenario = node.seedanceScenario ?? 'text_to_video';
+  const seedanceBody = buildSeedanceRequestBody({
+    providerModelId: model,
+    prompt,
+    node,
+    canvas,
+    scenario,
+  });
+  const {
+    model: _unusedModel,
+    duration: _unusedDuration,
+    content,
+    ...rest
+  } = seedanceBody;
+  const referencedContent = Array.isArray(content)
+    ? content.filter((item) => {
+        if (!item || typeof item !== 'object') {
+          return false;
+        }
 
-  for (const asset of imageAssets) {
-    if (!isRemoteUrl(asset.content)) {
-      continue;
-    }
+        return (item as { type?: unknown }).type !== 'text';
+      })
+    : [];
 
-    if (asset.portId === 'first_frame_image') {
-      metadata.first_frame_url = asset.content;
-    } else if (asset.portId === 'last_frame_image') {
-      metadata.last_frame_url = asset.content;
-    } else if (!metadata.img_url) {
-      metadata.img_url = asset.content;
-    }
-  }
-
-  return metadata;
-}
-
-function collectOpenAIVideoReferenceImages(
-  node: CanvasNodeView,
-  canvas: CanvasView,
-): InputAsset[] {
-  const promptImages = collectInputAssets(node, canvas).filter(
-    (asset) => asset.role === 'reference_image',
-  );
-
-  if (promptImages.length > 0) {
-    return promptImages;
-  }
-
-  return collectConnectedSeedanceAssets(node, canvas)
-    .filter((asset) => asset.node.kind === 'image' || asset.node.kind === 'imageAsset')
-    .map((asset) => ({
-      node: asset.node,
-      role: 'reference_image' as const,
-      content: asset.content,
-      mimeType: asset.mimeType,
-    }));
+  return referencedContent.length > 0
+    ? {
+        ...rest,
+        content: referencedContent,
+      }
+    : rest;
 }
 
 function getOpenAIVideoSeconds(node: CanvasNodeView): number {
@@ -884,59 +882,6 @@ function getOpenAIVideoSeconds(node: CanvasNodeView): number {
   }
 
   return 4;
-}
-
-function getOpenAIVideoSize(node: CanvasNodeView): string {
-  const { width, height } = getOpenAIVideoDimensions(node);
-  return `${width}x${height}`;
-}
-
-function getOpenAIVideoDimensions(node: CanvasNodeView): { width: number; height: number } {
-  const resolution = node.videoResolution ?? '720p';
-  const ratio = node.videoRatio && node.videoRatio !== 'adaptive' ? node.videoRatio : '16:9';
-  const sizes: Record<string, Record<string, { width: number; height: number }>> = {
-    '480p': {
-      '16:9': { width: 854, height: 480 },
-      '9:16': { width: 480, height: 854 },
-      '1:1': { width: 480, height: 480 },
-      '4:3': { width: 640, height: 480 },
-      '3:4': { width: 480, height: 640 },
-      '21:9': { width: 1120, height: 480 },
-    },
-    '720p': {
-      '16:9': { width: 1280, height: 720 },
-      '9:16': { width: 720, height: 1280 },
-      '1:1': { width: 720, height: 720 },
-      '4:3': { width: 960, height: 720 },
-      '3:4': { width: 720, height: 960 },
-      '21:9': { width: 1680, height: 720 },
-    },
-    '1080p': {
-      '16:9': { width: 1920, height: 1080 },
-      '9:16': { width: 1080, height: 1920 },
-      '1:1': { width: 1080, height: 1080 },
-      '4:3': { width: 1440, height: 1080 },
-      '3:4': { width: 1080, height: 1440 },
-      '21:9': { width: 2520, height: 1080 },
-    },
-  };
-
-  return sizes[resolution]?.[ratio] ?? { width: 1280, height: 720 };
-}
-
-function getOpenAIVideoReferenceFilename(node: CanvasNodeView, mimeType?: string): string {
-  if (node.assetName) {
-    return node.assetName;
-  }
-
-  const extension =
-    mimeType === 'image/jpeg'
-      ? '.jpg'
-      : mimeType === 'image/webp'
-        ? '.webp'
-        : '.png';
-
-  return `${node.id}${extension}`;
 }
 
 function buildAnthropicMessagesRequest(
@@ -1071,6 +1016,11 @@ function buildSeedanceRequestBody(input: {
   canvas: CanvasView;
   scenario: SeedanceScenario;
 }): Record<string, unknown> {
+  const defaultRatioModel =
+    (input.node.modelId === 'seedance2.0' || input.node.modelId === 'seedance2.0-fast')
+    ? input.node.modelId
+    : 'seedance2.0';
+
   return {
     model: input.providerModelId,
     content: [
@@ -1078,7 +1028,7 @@ function buildSeedanceRequestBody(input: {
       ...collectSeedanceScenarioAssets(input.node, input.canvas, input.scenario),
     ],
     ...(input.node.videoResolution ? { resolution: input.node.videoResolution } : {}),
-    ratio: input.node.videoRatio ?? getDefaultSeedanceRatio(input.node.modelId as SeedanceModelId),
+    ratio: input.node.videoRatio ?? getDefaultSeedanceRatio(defaultRatioModel),
     ...(typeof input.node.videoDurationSeconds === 'number'
       ? { duration: input.node.videoDurationSeconds }
       : {}),
