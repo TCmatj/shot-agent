@@ -956,6 +956,66 @@ describe('App video node inspector', () => {
     expect(screen.getByRole('button', { name: '类型' }).textContent).toContain('多模态参考视频');
   });
 
+  it('ignores edge draft pointer moves from a different pointer id', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_edge_pointer',
+          name: 'Edge pointer canvas',
+          updatedAt: 'now',
+          nodes: [
+            {
+              id: 'image_asset_1',
+              title: 'Image asset',
+              modelId: 'asset-image',
+              kind: 'imageAsset',
+              x: 0,
+              y: 0,
+              assetName: 'input.png',
+              assetDataUrl: 'data:image/png;base64,aW1hZ2U=',
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    const { container } = render(<App />);
+    const canvas = container.querySelector('.infinite-canvas') as HTMLDivElement | null;
+    const edgeHandle = container.querySelector('.edge-handle-output') as HTMLButtonElement | null;
+
+    expect(canvas).toBeTruthy();
+    expect(edgeHandle).toBeTruthy();
+
+    fireEvent.pointerDown(edgeHandle!, {
+      button: 0,
+      pointerId: 1,
+      clientX: 180,
+      clientY: 120,
+    });
+
+    const initialDraft = container.querySelector('.edge-draft')?.getAttribute('d');
+    expect(initialDraft).toBeTruthy();
+
+    fireEvent.pointerMove(canvas!, {
+      pointerId: 2,
+      clientX: 900,
+      clientY: 900,
+    });
+
+    expect(container.querySelector('.edge-draft')?.getAttribute('d')).toBe(initialDraft);
+
+    fireEvent.pointerMove(canvas!, {
+      pointerId: 1,
+      clientX: 360,
+      clientY: 180,
+    });
+
+    expect(container.querySelector('.edge-draft')?.getAttribute('d')).not.toBe(initialDraft);
+  });
+
   it('hides Seedance-Sora from the model dropdown when object storage is not configured', async () => {
     render(<App />);
 

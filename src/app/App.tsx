@@ -74,6 +74,7 @@ import {
   findProviderModelsForNodeModel,
   findProvidersForCanonicalModel,
   findProvidersForVideoFormat,
+  isSoraCompatibleVideoFormat,
   mergeProviderDefaults,
   saveProviderDraft,
 } from '../domain/provider';
@@ -260,6 +261,7 @@ type EdgeSnapTarget = {
 };
 
 type EdgeDraft = {
+  pointerId: number;
   fromNodeId: string;
   from: Point;
   to: Point;
@@ -2016,6 +2018,10 @@ function getVideoModelFormat(node: Pick<CanvasNodeView, 'modelId' | 'videoModelF
     return node.videoModelFormat;
   }
 
+  if (node.modelId === 'sora-ch1') {
+    return 'sora-ch1';
+  }
+
   return isSeedanceSoraVideoModel(node.modelId) ? 'seedance-sora' : 'seedance';
 }
 
@@ -2023,8 +2029,9 @@ function getResolvedVideoModelId(
   node: Pick<CanvasNodeView, 'kind' | 'modelId' | 'videoModelFormat' | 'providerModelId'>,
   providerModels: Array<{ canonicalModelId: string; providerModelId: string }>,
 ): VideoModelFormat | SeedanceModelId {
-  if (getVideoModelFormat(node) === 'seedance-sora') {
-    return 'seedance-sora';
+  const videoFormat = getVideoModelFormat(node);
+  if (isSoraCompatibleVideoFormat(videoFormat)) {
+    return videoFormat;
   }
 
   if (isSeedanceVideoModel(node.modelId)) {
@@ -2054,6 +2061,10 @@ function getSeedanceConfigModel(modelId: string): SeedanceModelId | null {
   }
 
   if (isSeedanceSoraVideoModel(modelId)) {
+    return 'seedance2.0';
+  }
+
+  if (modelId === 'sora-ch1') {
     return 'seedance2.0';
   }
 
@@ -2188,6 +2199,7 @@ function getVideoModelOptions(input?: {
 
   if (input?.allowSoraFormat) {
     options.push({ value: 'seedance-sora', label: 'sora' });
+    options.push({ value: 'sora-ch1', label: 'sora-ch1' });
   }
 
   return options;
@@ -2240,6 +2252,10 @@ function getVideoScenarioHint(scenario: SeedanceScenario): string | null {
 function getVideoModelFormatHint(format: VideoModelFormat): string | null {
   if (format === 'seedance-sora') {
     return '当前节点会按 sora 调用格式提交，请在下方选择实际供应商模型。';
+  }
+
+  if (format === 'sora-ch1') {
+    return '当前节点会按 sora-ch1 调用格式提交，参考图写入 metadata.refrenceImage，参考视频写入 metadata.refrenceVideo。';
   }
 
   return '当前节点会按 seedance 调用格式提交，下方供应商模型决定使用标准版还是 Fast。';
@@ -5228,13 +5244,21 @@ export function App() {
     clearDragPreview();
   }
 
-  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
-    if (edgeDraft) {
-      const to = getCanvasPointFromClient(event.clientX, event.clientY);
-      const snapTarget = findNearestEdgeDraftTarget(to);
+  function updateEdgeDraftFromPointer(input: { pointerId: number; clientX: number; clientY: number }) {
+    if (!edgeDraft || edgeDraft.pointerId !== input.pointerId) {
+      return false;
+    }
 
-      setEdgeDraft({
-        ...edgeDraft,
+    const to = getCanvasPointFromClient(input.clientX, input.clientY);
+    const snapTarget = findNearestEdgeDraftTarget(to);
+
+    setEdgeDraft((current) => {
+      if (!current || current.pointerId !== input.pointerId) {
+        return current;
+      }
+
+      return {
+        ...current,
         to,
         snapTarget: snapTarget
           ? {
@@ -5242,7 +5266,15 @@ export function App() {
               portId: snapTarget.portId,
             }
           : undefined,
-      });
+      };
+    });
+
+    return true;
+  }
+
+  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (edgeDraft) {
+      updateEdgeDraftFromPointer(event);
       return;
     }
 
@@ -5251,6 +5283,10 @@ export function App() {
 
   function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
     if (edgeDraft) {
+      if (edgeDraft.pointerId !== event.pointerId) {
+        return;
+      }
+
       finishEdgeDraftOnBlank(event);
       return;
     }
@@ -5280,6 +5316,38 @@ export function App() {
     };
   }, [dragState]);
 
+  useEffect(() => {
+    if (!edgeDraft) {
+      return;
+    }
+
+    const handleWindowPointerMove = (event: globalThis.PointerEvent) => {
+      updateEdgeDraftFromPointer({
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    };
+
+    const handleWindowPointerEnd = (event: globalThis.PointerEvent) => {
+      if (edgeDraft.pointerId !== event.pointerId) {
+        return;
+      }
+
+      setEdgeDraft(null);
+    };
+
+    window.addEventListener('pointermove', handleWindowPointerMove);
+    window.addEventListener('pointerup', handleWindowPointerEnd);
+    window.addEventListener('pointercancel', handleWindowPointerEnd);
+
+    return () => {
+      window.removeEventListener('pointermove', handleWindowPointerMove);
+      window.removeEventListener('pointerup', handleWindowPointerEnd);
+      window.removeEventListener('pointercancel', handleWindowPointerEnd);
+    };
+  }, [edgeDraft]);
+
   function startEdgeDraft(event: PointerEvent<HTMLButtonElement>, node: CanvasNodeView) {
     if (!activeCanvas) {
       return;
@@ -5290,6 +5358,7 @@ export function App() {
     }
 
     event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
     const from = getNodeOutputPoint(node);
 
     setAddMenu(null);
@@ -5297,6 +5366,7 @@ export function App() {
     clearDragPreview();
     selectSingleNode(node.id, { preserveInspector: true });
     setEdgeDraft({
+      pointerId: event.pointerId,
       fromNodeId: node.id,
       from,
       to: from,
@@ -6386,7 +6456,8 @@ export function App() {
 
     if (
       node.kind === 'video' &&
-      (getVideoModelFormat(node) === 'seedance' || isSeedanceSoraVideoModel(node.modelId))
+      (getVideoModelFormat(node) === 'seedance' ||
+        isSoraCompatibleVideoFormat(getVideoModelFormat(node)))
     ) {
       const prepared = await prepareSeedanceCanvasForSubmission(activeCanvas, node);
 
@@ -8329,7 +8400,7 @@ export function App() {
                           const nodeForFormat = {
                             ...selectedNode,
                             videoModelFormat: nextFormat,
-                            modelId: nextFormat === 'seedance-sora' ? 'seedance-sora' : selectedNode.modelId,
+                            modelId: isSoraCompatibleVideoFormat(nextFormat) ? nextFormat : selectedNode.modelId,
                           };
                           const nextProviders = findProvidersForNode(nodeForFormat);
                           const nextProvider = nextProviders.find(
@@ -8338,9 +8409,11 @@ export function App() {
                           const nextModel = nextProvider
                             ? findProviderModelsForNodeWithProvider(nodeForFormat, nextProvider)[0]
                             : undefined;
+                          const nextProviderModelId =
+                            isSoraCompatibleVideoFormat(nextFormat) ? undefined : nextModel?.providerModelId;
                           const nextCanonicalModel =
-                            nextFormat === 'seedance-sora'
-                              ? 'seedance-sora'
+                            isSoraCompatibleVideoFormat(nextFormat)
+                              ? nextFormat
                               : nextModel && isSeedanceVideoModel(nextModel.canonicalModelId)
                                 ? nextModel.canonicalModelId
                                 : 'seedance2.0';
@@ -8349,7 +8422,7 @@ export function App() {
                             ...current,
                             videoModelFormat: nextFormat,
                             providerId: nextProvider?.id,
-                            providerModelId: nextModel?.providerModelId,
+                            providerModelId: nextProviderModelId,
                             modelId: nextCanonicalModel,
                             videoResolution: nextCapabilities.supportedResolutions.includes(
                               current.videoResolution ?? '720p',
@@ -8564,15 +8637,24 @@ export function App() {
                         const nextModel = nextProvider
                           ? findProviderModelsForNodeWithProvider(selectedNode, nextProvider)[0]
                           : undefined;
+                        const nextProviderModelId =
+                          selectedNode.kind === 'video' &&
+                          isSoraCompatibleVideoFormat(getVideoModelFormat(selectedNode))
+                            ? undefined
+                            : nextProviderId
+                              ? nextModel?.providerModelId
+                              : undefined;
 
                         updateNode(selectedNode.id, (current) => ({
                           ...current,
                           providerId: nextProviderId,
-                          providerModelId: nextProviderId ? nextModel?.providerModelId : undefined,
+                          providerModelId: nextProviderModelId,
                           modelId:
                             selectedNode.kind === 'chat' && nextModel
                               ? nextModel.providerModelId
-                              : selectedNode.kind === 'video' && nextModel
+                              : selectedNode.kind === 'video' &&
+                                  !isSoraCompatibleVideoFormat(getVideoModelFormat(selectedNode)) &&
+                                  nextModel
                                 ? nextModel.canonicalModelId
                               : current.modelId,
                         }));
@@ -8606,7 +8688,9 @@ export function App() {
                           modelId:
                             selectedNode.kind === 'chat' && nextProviderModelId
                               ? nextProviderModelId
-                              : selectedNode.kind === 'video' && nextModel
+                              : selectedNode.kind === 'video' &&
+                                  !isSoraCompatibleVideoFormat(getVideoModelFormat(selectedNode)) &&
+                                  nextModel
                                 ? nextModel.canonicalModelId
                                 : current.modelId,
                         }));

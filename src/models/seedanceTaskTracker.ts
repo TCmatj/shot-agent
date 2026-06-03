@@ -22,7 +22,7 @@ export function createSeedanceTaskTracker(input: {
     const task = await input.getTask(options.taskId);
     options.onUpdate(task);
 
-    if (task.status === 'succeeded') {
+    if (task.status === 'succeeded' || task.status === 'completed') {
       options.onFinished(task);
       return;
     }

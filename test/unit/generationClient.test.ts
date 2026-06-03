@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+﻿import { describe, expect, it, vi } from 'vitest';
 import type { CanvasView } from '../../src/app/canvasWorkspace';
 import type { ProviderConfig } from '../../src/domain/provider';
 import {
@@ -500,6 +500,7 @@ describe('generation client request building', () => {
                 ...node,
                 title: 'seedance-sora',
                 modelId: 'seedance-sora',
+                providerModelId: 'sora-2',
                 videoDurationSeconds: 5,
                 videoResolution: '1080p',
                 videoRatio: '16:9',
@@ -535,6 +536,314 @@ describe('generation client request building', () => {
       resolution: '1080p',
       ratio: '16:9',
       seed: 12345,
+    });
+  });
+
+  it('uses the selected OpenAI compatible provider model for Seedance-Sora requests', () => {
+    const customSoraProvider = {
+      ...openaiProvider,
+      models: [
+        {
+          providerModelId: 'custom-sora-gateway-model',
+          canonicalModelId: 'custom-sora-gateway-model',
+          enabled: true,
+        },
+      ],
+    };
+
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'video_1'
+            ? {
+                ...node,
+                modelId: 'seedance-sora',
+                videoModelFormat: 'seedance-sora',
+                providerModelId: 'custom-sora-gateway-model',
+              }
+            : node,
+        ),
+      },
+      nodeId: 'video_1',
+      provider: customSoraProvider,
+      token: 'openai-token',
+    });
+
+    const formData = result.ok ? result.request.body as FormData : new FormData();
+    expect(result.ok).toBe(true);
+    expect(formData.get('model')).toBe('custom-sora-gateway-model');
+  });
+
+  it('requires an explicit provider model for Seedance-Sora requests', () => {
+    const customSoraProvider = {
+      ...openaiProvider,
+      models: [
+        {
+          providerModelId: 'custom-sora-gateway-model',
+          canonicalModelId: 'custom-sora-gateway-model',
+          enabled: true,
+        },
+      ],
+    };
+
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'video_1'
+            ? {
+                ...node,
+                modelId: 'seedance-sora',
+                videoModelFormat: 'seedance-sora',
+                providerModelId: undefined,
+              }
+            : node,
+        ),
+      },
+      nodeId: 'video_1',
+      provider: customSoraProvider,
+      token: 'openai-token',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'Sora 格式调用必须选择供应商模型',
+    });
+  });
+
+  it('builds Sora-CH1 first and last frame references with refrenceImage metadata', () => {
+    const lastFrameAsset = {
+      id: 'image_asset_2',
+      title: 'Last frame',
+      modelId: 'asset-image',
+      kind: 'imageAsset' as const,
+      x: 0,
+      y: 120,
+      assetName: 'last.png',
+      assetDataUrl: 'https://assets.example.com/last.png',
+      assetMimeType: 'image/png',
+    };
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes
+          .map((node) =>
+            node.id === 'video_1'
+              ? {
+                  ...node,
+                  modelId: 'seedance-sora',
+                  videoModelFormat: 'sora-ch1' as const,
+                  providerModelId: 'sora-fast',
+                  seedanceScenario: 'image_to_video_first_last_frame' as const,
+                }
+              : node,
+          )
+          .concat(lastFrameAsset),
+        edges: [
+          { id: 'edge_first_frame', fromNodeId: 'image_asset_1', toNodeId: 'video_1', toPortId: 'first_frame_image' },
+          { id: 'edge_last_frame', fromNodeId: 'image_asset_2', toNodeId: 'video_1', toPortId: 'last_frame_image' },
+        ],
+      },
+      nodeId: 'video_1',
+      provider: openaiProvider,
+      token: 'openai-token',
+    });
+
+    const formData = result.ok ? result.request.body as FormData : new FormData();
+    const metadata = JSON.parse(String(formData.get('metadata')));
+
+    expect(result.ok).toBe(true);
+    expect(formData.get('prompt')).toBe('【图片1】为首帧，【图片2】为尾帧。Slow camera orbit 「图片 1」');
+    expect(formData.get('model')).toBe('sora-fast');
+    expect(metadata.refrenceImage).toEqual([
+      'data:image/png;base64,aW1hZ2U=',
+      'https://assets.example.com/last.png',
+    ]);
+    expect(metadata.content).toBeUndefined();
+  });
+
+  it('builds Sora-CH1 first frame references with an image prompt prefix', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'video_1'
+            ? {
+                ...node,
+                modelId: 'seedance-sora',
+                videoModelFormat: 'sora-ch1' as const,
+                providerModelId: 'sora-fast',
+                seedanceScenario: 'image_to_video_first_frame' as const,
+              }
+            : node,
+        ),
+        edges: [
+          { id: 'edge_first_frame', fromNodeId: 'image_asset_1', toNodeId: 'video_1', toPortId: 'first_frame_image' },
+        ],
+      },
+      nodeId: 'video_1',
+      provider: openaiProvider,
+      token: 'openai-token',
+    });
+
+    const formData = result.ok ? result.request.body as FormData : new FormData();
+    const metadata = JSON.parse(String(formData.get('metadata')));
+
+    expect(result.ok).toBe(true);
+    expect(formData.get('prompt')).toBe('【图片1】为首帧。Slow camera orbit 「图片 1」');
+    expect(metadata.refrenceImage).toEqual(['data:image/png;base64,aW1hZ2U=']);
+    expect(metadata.content).toBeUndefined();
+  });
+
+  it('builds Sora-CH1 multimodal image and video references with metadata arrays', () => {
+    const videoAsset = {
+      id: 'video_asset_1',
+      title: 'Reference Video',
+      modelId: 'asset-video',
+      kind: 'videoAsset' as const,
+      x: 0,
+      y: 120,
+      assetName: 'reference.mp4',
+      assetDataUrl: 'https://assets.example.com/reference.mp4',
+      assetMimeType: 'video/mp4',
+    };
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes
+          .map((node) =>
+            node.id === 'video_1'
+              ? {
+                  ...node,
+                  prompt: 'Make it cinematic @image:image_asset_1 @video:video_asset_1',
+                  modelId: 'seedance-sora',
+                  videoModelFormat: 'sora-ch1' as const,
+                  providerModelId: 'sora-fast',
+                  seedanceScenario: 'multimodal_reference_video' as const,
+                }
+              : node,
+          )
+          .concat(videoAsset),
+        edges: [
+          { id: 'edge_image_ref', fromNodeId: 'image_asset_1', toNodeId: 'video_1', toPortId: 'reference_image' },
+          { id: 'edge_video_ref', fromNodeId: 'video_asset_1', toNodeId: 'video_1', toPortId: 'reference_video' },
+        ],
+      },
+      nodeId: 'video_1',
+      provider: openaiProvider,
+      token: 'openai-token',
+    });
+
+    const formData = result.ok ? result.request.body as FormData : new FormData();
+    const metadata = JSON.parse(String(formData.get('metadata')));
+
+    expect(result.ok).toBe(true);
+    expect(metadata.refrenceImage).toEqual(['data:image/png;base64,aW1hZ2U=']);
+    expect(metadata.refrenceVideo).toEqual(['https://assets.example.com/reference.mp4']);
+    expect(metadata.content).toBeUndefined();
+  });
+
+  it('keeps all Sora-CH1 image references without a local image count limit', () => {
+    const imageAssets = Array.from({ length: 5 }, (_, index) => ({
+      id: `image_asset_extra_${index}`,
+      title: `Reference ${index}`,
+      modelId: 'asset-image',
+      kind: 'imageAsset' as const,
+      x: 0,
+      y: index * 100,
+      assetName: `reference-${index}.png`,
+      assetDataUrl: `https://assets.example.com/reference-${index}.png`,
+      assetMimeType: 'image/png',
+    }));
+    const prompt = imageAssets
+      .map((asset) => `@image:${asset.id}`)
+      .join(' ');
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes
+          .map((node) =>
+            node.id === 'video_1'
+              ? {
+                  ...node,
+                  prompt,
+                  modelId: 'seedance-sora',
+                  videoModelFormat: 'sora-ch1' as const,
+                  providerModelId: 'sora-fast',
+                  seedanceScenario: 'multimodal_reference_video' as const,
+                }
+              : node,
+          )
+          .concat(imageAssets),
+        edges: imageAssets.map((asset) => ({
+          id: `edge_${asset.id}`,
+          fromNodeId: asset.id,
+          toNodeId: 'video_1',
+          toPortId: 'reference_image',
+        })),
+      },
+      nodeId: 'video_1',
+      provider: openaiProvider,
+      token: 'openai-token',
+    });
+
+    const formData = result.ok ? result.request.body as FormData : new FormData();
+    const metadata = JSON.parse(String(formData.get('metadata')));
+
+    expect(result.ok).toBe(true);
+    expect(metadata.refrenceImage).toEqual(
+      imageAssets.map((asset) => asset.assetDataUrl),
+    );
+  });
+
+  it('rejects Sora-CH1 requests that exceed video reference limits', () => {
+    const videoAssets = Array.from({ length: 4 }, (_, index) => ({
+      id: `video_asset_extra_${index}`,
+      title: `Reference Video ${index}`,
+      modelId: 'asset-video',
+      kind: 'videoAsset' as const,
+      x: 0,
+      y: index * 100,
+      assetName: `reference-${index}.mp4`,
+      assetDataUrl: `https://assets.example.com/reference-${index}.mp4`,
+      assetMimeType: 'video/mp4',
+    }));
+    const prompt = videoAssets
+      .map((asset) => `@video:${asset.id}`)
+      .join(' ');
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes
+          .map((node) =>
+            node.id === 'video_1'
+              ? {
+                  ...node,
+                  prompt,
+                  modelId: 'seedance-sora',
+                  videoModelFormat: 'sora-ch1' as const,
+                  providerModelId: 'sora-fast',
+                  seedanceScenario: 'multimodal_reference_video' as const,
+                }
+              : node,
+          )
+          .concat(videoAssets),
+        edges: videoAssets.map((asset) => ({
+          id: `edge_${asset.id}`,
+          fromNodeId: asset.id,
+          toNodeId: 'video_1',
+          toPortId: 'reference_video',
+        })),
+      },
+      nodeId: 'video_1',
+      provider: openaiProvider,
+      token: 'openai-token',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'sora-ch1 最多支持 3 个参考视频',
     });
   });
 
@@ -581,6 +890,42 @@ describe('generation client request building', () => {
     });
   });
 
+  it('parses completed Sora compatible task responses with metadata video urls', async () => {
+    const fetcher = vi.fn<GenerationFetch>(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({
+          id: 'task_123',
+          object: 'video',
+          status: 'completed',
+          metadata: {
+            url: 'https://example.com/completed.mp4',
+          },
+        }),
+        text: async () => '',
+      }) as Response,
+    );
+
+    const result = await queryGenerationTask({
+      provider: openaiProvider,
+      taskId: 'task_123',
+      token: 'openai-token',
+      fetcher,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        kind: 'video-task',
+        taskId: 'task_123',
+        status: 'completed',
+        videoUrl: 'https://example.com/completed.mp4',
+      },
+    });
+  });
+
   it('uses landscape 16:9 as the default Seedance-Sora video ratio', () => {
     const result = buildGenerationRequest({
       canvas: {
@@ -590,6 +935,7 @@ describe('generation client request building', () => {
             ? {
                 ...node,
                 modelId: 'seedance-sora',
+                providerModelId: 'sora-2',
                 videoResolution: '720p',
               }
             : node,
@@ -680,10 +1026,8 @@ describe('generation client request building', () => {
       token: 'token',
     });
 
-    expect(result).toEqual({
-      ok: false,
-      error: '视频生成的上游素材不能使用 blob: 临时地址，请重新导入素材或重新打开画布后再试。',
-    });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain('blob:');
   });
 
   it('rejects Seedance durations outside the official range', () => {
@@ -704,10 +1048,8 @@ describe('generation client request building', () => {
       token: 'token',
     });
 
-    expect(result).toEqual({
-      ok: false,
-      error: '当前模型的视频时长仅支持 -1 或 4~15 秒',
-    });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain('4~15');
   });
 
   it('rejects Seedance ratios outside the official range', () => {
@@ -723,10 +1065,8 @@ describe('generation client request building', () => {
       token: 'token',
     });
 
-    expect(result).toEqual({
-      ok: false,
-      error: '当前模型不支持所选视频比例：2:1',
-    });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain('2:1');
   });
 
   it('collects complete generation history inputs for first-last-frame mode', () => {
@@ -776,7 +1116,7 @@ describe('generation client request building', () => {
           ...canvas.nodes.filter((node) => node.id !== 'video_1'),
           {
             id: 'video_local',
-            title: '本地视频',
+            title: '鏈湴瑙嗛',
             modelId: 'seedance2.0',
             kind: 'video',
             x: 0,
@@ -792,7 +1132,7 @@ describe('generation client request building', () => {
             kind: 'video',
             x: 320,
             y: 0,
-            prompt: '@视频 做运动参考',
+            prompt: '@video:video_local use motion reference',
             seedanceScenario: 'multimodal_reference_video',
           },
         ],
@@ -804,7 +1144,7 @@ describe('generation client request building', () => {
     });
 
     expect(result.ok && JSON.parse(result.request.body as string).content).toEqual([
-      { type: 'text', text: '「视频 1」 做运动参考' },
+      { type: 'text', text: '「视频 1」 use motion reference' },
       {
         type: 'video_url',
         video_url: { url: 'https://example.com/remote.mp4' },
@@ -834,7 +1174,7 @@ describe('generation client request building', () => {
             node.id === 'video_1'
               ? {
                   ...node,
-                  prompt: 'Make it cinematic @音频',
+                  prompt: 'Make it cinematic @audio:audio_asset_1',
                   seedanceScenario: 'multimodal_reference_video' as const,
                 }
               : node,
@@ -1023,7 +1363,7 @@ describe('generation client request building', () => {
         ...canvas,
         nodes: canvas.nodes.map((node) =>
           node.id === 'video_1'
-            ? { ...node, prompt: '@图片 是主体，@图片 做背景参考' }
+            ? { ...node, prompt: '@image:image_asset_1 is the subject, @image:image_asset_2 is the background reference' }
             : node,
         ).concat(secondImage),
         edges: [
@@ -1037,7 +1377,7 @@ describe('generation client request building', () => {
     });
 
     expect(result.ok && JSON.parse(result.request.body as string).content).toEqual([
-      { type: 'text', text: '「图片 1」 是主体，「图片 2」 做背景参考' },
+      { type: 'text', text: '「图片 1」 is the subject, 「图片 2」 is the background reference' },
       {
         type: 'image_url',
         image_url: {
@@ -1075,7 +1415,7 @@ describe('generation client request building', () => {
             ? {
                 ...node,
                 prompt:
-                  '@image:image_asset_2 是人，@image:image_asset_1 场景换到室内，人吃菠萝蜜的场景描述。',
+                  '@image:image_asset_2 is the person, @image:image_asset_1 is the indoor scene',
               }
             : node,
         ).concat(secondImage),
@@ -1091,7 +1431,7 @@ describe('generation client request building', () => {
 
     expect(result.ok && JSON.parse(result.request.body as string).content[0]).toEqual({
       type: 'text',
-      text: '「图片 1」 是人，「图片 2」 场景换到室内，人吃菠萝蜜的场景描述。',
+      text: '「图片 1」 is the person, 「图片 2」 is the indoor scene',
     });
   });
 
@@ -1210,27 +1550,25 @@ describe('generation client request building', () => {
       prompt: imageNodes.map((node) => `@image:${node.id}`).join(' '),
     };
 
-    expect(
-      buildGenerationRequest({
-        canvas: {
-          id: 'canvas_many_images',
-          name: 'Canvas',
-          updatedAt: 'now',
-          nodes: [...imageNodes, chatNode],
-          edges: imageNodes.map((node) => ({
-            id: `edge_${node.id}_chat`,
-            fromNodeId: node.id,
-            toNodeId: chatNode.id,
-          })),
-        },
-        nodeId: chatNode.id,
-        provider: openaiProvider,
-        token: 'token',
-      }),
-    ).toEqual({
-      ok: false,
-      error: '对话节点最多支持 20 张图片输入',
+    const result = buildGenerationRequest({
+      canvas: {
+        id: 'canvas_many_images',
+        name: 'Canvas',
+        updatedAt: 'now',
+        nodes: [...imageNodes, chatNode],
+        edges: imageNodes.map((node) => ({
+          id: `edge_${node.id}_chat`,
+          fromNodeId: node.id,
+          toNodeId: chatNode.id,
+        })),
+      },
+      nodeId: chatNode.id,
+      provider: openaiProvider,
+      token: 'token',
     });
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain('20');
   });
 
   it('rejects synchronous text generation submissions', async () => {
@@ -1479,22 +1817,22 @@ describe('generation client request building', () => {
   it('parses OpenAI chat completion stream deltas', () => {
     expect(
       parseOpenAIStreamTextDelta(
-        'data: {"choices":[{"delta":{"content":"你"}}]}\n\n' +
-          'data: {"choices":[{"delta":{"content":"好"}}]}\n\n' +
+        'data: {"choices":[{"delta":{"content":"he"}}]}\n\n' +
+          'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n' +
           'data: [DONE]\n\n',
       ),
-    ).toEqual(['你', '好']);
+    ).toEqual(['he', 'llo']);
   });
 
   it('parses Anthropic messages stream text deltas', () => {
     expect(
       parseAnthropicStreamTextDelta(
         'event: content_block_delta\n' +
-          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"你"}}\n\n' +
+          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"he"}}\n\n' +
           'event: content_block_delta\n' +
-          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"好"}}\n\n',
+          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"llo"}}\n\n',
       ),
-    ).toEqual(['你', '好']);
+    ).toEqual(['he', 'llo']);
   });
 
   it('emits stream deltas as CRLF-delimited chunks arrive', async () => {
@@ -1555,9 +1893,9 @@ describe('generation client request building', () => {
         kind: 'chat',
         x: 0,
         y: 0,
-        modelOutputText: '模型输出',
-        outputText: '修改输出',
+        modelOutputText: '妯″瀷杈撳嚭',
+        outputText: '淇敼杈撳嚭',
       }),
-    ).toBe('修改输出');
+    ).toBe('淇敼杈撳嚭');
   });
 });

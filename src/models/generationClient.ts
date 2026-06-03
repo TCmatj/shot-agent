@@ -11,6 +11,7 @@ import {
 } from '../domain/promptReferences';
 import {
   type VideoModelFormat,
+  isSoraCompatibleVideoFormat,
   mapCanonicalModelToProviderModel,
   type ProviderConfig,
 } from '../domain/provider';
@@ -44,6 +45,10 @@ const chatImageInputLimit = 20;
 function getNodeVideoModelFormat(node: CanvasNodeView): VideoModelFormat {
   if (node.videoModelFormat) {
     return node.videoModelFormat;
+  }
+
+  if (node.modelId === 'sora-ch1') {
+    return 'sora-ch1';
   }
 
   return node.modelId === 'seedance-sora' || node.modelId === 'sora-2'
@@ -276,15 +281,22 @@ export function buildGenerationRequest(
     return { ok: false, error: `缺少供应商密钥：${input.provider.apiTokenRef}` };
   }
 
+  const videoModelFormat = node.kind === 'video' ? getNodeVideoModelFormat(node) : null;
   const providerModelId =
     node.providerModelId ??
-    mapCanonicalModelToProviderModel(
-      input.provider,
-      node.modelId,
-      getNodeChatFormat(node),
-      node.kind === 'chat' ? 'chat' : undefined,
-    );
+    (videoModelFormat && isSoraCompatibleVideoFormat(videoModelFormat)
+      ? undefined
+      : mapCanonicalModelToProviderModel(
+          input.provider,
+          node.modelId,
+          getNodeChatFormat(node),
+          node.kind === 'chat' ? 'chat' : undefined,
+        ));
   if (!providerModelId) {
+    if (videoModelFormat && isSoraCompatibleVideoFormat(videoModelFormat)) {
+      return { ok: false, error: 'Sora 格式调用必须选择供应商模型' };
+    }
+
     return { ok: false, error: `供应商未配置模型映射：${node.modelId}` };
   }
 
@@ -293,10 +305,15 @@ export function buildGenerationRequest(
     return { ok: false, error: '提交前必须填写提示词' };
   }
 
-  const videoModelFormat = node.kind === 'video' ? getNodeVideoModelFormat(node) : null;
-
   if (node.kind === 'video' && videoModelFormat === 'seedance') {
     const validationError = validateSeedanceVideoNode(node, input.canvas);
+    if (validationError) {
+      return { ok: false, error: validationError };
+    }
+  }
+
+  if (node.kind === 'video' && videoModelFormat === 'sora-ch1') {
+    const validationError = validateSoraCh1VideoNode(node, input.canvas);
     if (validationError) {
       return { ok: false, error: validationError };
     }
@@ -370,13 +387,21 @@ export function buildGenerationRequest(
   }
 
   if (node.kind === 'video') {
-    if (videoModelFormat !== 'seedance-sora') {
+    if (!videoModelFormat || !isSoraCompatibleVideoFormat(videoModelFormat)) {
       return { ok: false, error: '当前供应商仅支持 sora 调用格式。' };
     }
 
     return {
       ok: true,
-      request: buildOpenAIVideoTaskRequest(input.provider, input.token, providerModelId, prompt, node, input.canvas),
+      request: buildOpenAIVideoTaskRequest(
+        input.provider,
+        input.token,
+        providerModelId,
+        prompt,
+        node,
+        input.canvas,
+        videoModelFormat,
+      ),
     };
   }
 
@@ -813,11 +838,13 @@ function buildOpenAIVideoTaskRequest(
   prompt: string,
   node: CanvasNodeView,
   canvas: CanvasView,
+  videoModelFormat: VideoModelFormat,
 ): GenerationRequest {
   const body = new FormData();
-  const metadata = buildOpenAIVideoMetadata(model, prompt, node, canvas);
+  const requestPrompt = buildOpenAIVideoPrompt(prompt, node, canvas, videoModelFormat);
+  const metadata = buildOpenAIVideoMetadata(model, prompt, node, canvas, videoModelFormat);
 
-  body.set('prompt', prompt);
+  body.set('prompt', requestPrompt);
   body.set('model', model);
   body.set('seconds', String(getOpenAIVideoSeconds(node)));
 
@@ -836,11 +863,49 @@ function buildOpenAIVideoTaskRequest(
   };
 }
 
+function buildOpenAIVideoPrompt(
+  prompt: string,
+  node: CanvasNodeView,
+  canvas: CanvasView,
+  videoModelFormat: VideoModelFormat,
+): string {
+  if (videoModelFormat !== 'sora-ch1') {
+    return prompt;
+  }
+
+  const scenario = node.seedanceScenario ?? 'text_to_video';
+  if (scenario !== 'image_to_video_first_frame' && scenario !== 'image_to_video_first_last_frame') {
+    return prompt;
+  }
+
+  const seedanceBody = buildSeedanceRequestBody({
+    providerModelId: node.providerModelId ?? node.modelId,
+    prompt,
+    node,
+    canvas,
+    scenario,
+  });
+  const content = Array.isArray(seedanceBody.content) ? seedanceBody.content : [];
+  const references = collectSoraCh1References(content);
+
+  if (references.refrenceImage.length === 0) {
+    return prompt;
+  }
+
+  const prefix =
+    scenario === 'image_to_video_first_last_frame' && references.refrenceImage.length > 1
+      ? '【图片1】为首帧，【图片2】为尾帧。'
+      : '【图片1】为首帧。';
+
+  return `${prefix}${prompt}`;
+}
+
 function buildOpenAIVideoMetadata(
   model: string,
   prompt: string,
   node: CanvasNodeView,
   canvas: CanvasView,
+  videoModelFormat: VideoModelFormat,
 ): Record<string, unknown> {
   const scenario = node.seedanceScenario ?? 'text_to_video';
   const seedanceBody = buildSeedanceRequestBody({
@@ -866,12 +931,89 @@ function buildOpenAIVideoMetadata(
       })
     : [];
 
+  if (videoModelFormat === 'sora-ch1') {
+    const ch1References = collectSoraCh1References(referencedContent);
+
+    return {
+      ...rest,
+      ...(ch1References.refrenceImage.length > 0
+        ? { refrenceImage: ch1References.refrenceImage }
+        : {}),
+      ...(ch1References.refrenceVideo.length > 0
+        ? { refrenceVideo: ch1References.refrenceVideo }
+        : {}),
+      ...(ch1References.content.length > 0 ? { content: ch1References.content } : {}),
+    };
+  }
+
   return referencedContent.length > 0
     ? {
         ...rest,
         content: referencedContent,
       }
     : rest;
+}
+
+function validateSoraCh1VideoNode(node: CanvasNodeView, canvas: CanvasView): string | null {
+  const prompt = buildPrompt(node, canvas);
+  const scenario = node.seedanceScenario ?? 'text_to_video';
+  const seedanceBody = buildSeedanceRequestBody({
+    providerModelId: node.providerModelId ?? node.modelId,
+    prompt,
+    node,
+    canvas,
+    scenario,
+  });
+  const content = Array.isArray(seedanceBody.content) ? seedanceBody.content : [];
+  const references = collectSoraCh1References(content);
+
+  if (references.refrenceVideo.length > 3) {
+    return 'sora-ch1 最多支持 3 个参考视频';
+  }
+
+  return null;
+}
+
+function collectSoraCh1References(content: unknown[]): {
+  refrenceImage: string[];
+  refrenceVideo: string[];
+  content: unknown[];
+} {
+  const refrenceImage: string[] = [];
+  const refrenceVideo: string[] = [];
+  const remainingContent: unknown[] = [];
+
+  content.forEach((item) => {
+    if (!item || typeof item !== 'object') {
+      return;
+    }
+
+    const record = item as {
+      type?: unknown;
+      image_url?: { url?: unknown };
+      video_url?: { url?: unknown };
+    };
+
+    if (record.type === 'image_url' && typeof record.image_url?.url === 'string') {
+      refrenceImage.push(record.image_url.url);
+      return;
+    }
+
+    if (record.type === 'video_url' && typeof record.video_url?.url === 'string') {
+      refrenceVideo.push(record.video_url.url);
+      return;
+    }
+
+    if (record.type !== 'text') {
+      remainingContent.push(item);
+    }
+  });
+
+  return {
+    refrenceImage,
+    refrenceVideo,
+    content: remainingContent,
+  };
 }
 
 function getOpenAIVideoSeconds(node: CanvasNodeView): number {
@@ -1711,10 +1853,11 @@ function videoTask(rawResponse: unknown): {
 
   const data = isRecord(rawResponse.data) ? rawResponse.data : rawResponse;
   const content = isRecord(data.content) ? data.content : undefined;
+  const metadata = isRecord(data.metadata) ? data.metadata : undefined;
   const usage = isRecord(data.usage) ? data.usage : undefined;
   const videoUrl = content
     ? stringField(content, ['video_url', 'url'])
-    : stringField(data, ['video_url', 'url']);
+    : stringField(data, ['video_url', 'url']) ?? (metadata ? stringField(metadata, ['video_url', 'url']) : undefined);
   const status = stringField(data, ['status']) ?? (videoUrl ? 'succeeded' : undefined);
   const error = taskError(data);
 

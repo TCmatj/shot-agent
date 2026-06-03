@@ -23,4 +23,25 @@ describe('seedance task tracker', () => {
     tracker.stop();
     vi.useRealTimers();
   });
+
+  it('stops on completed for Sora compatible task responses', async () => {
+    vi.useFakeTimers();
+    const getTask = vi.fn().mockResolvedValueOnce({
+      status: 'completed',
+      videoUrl: 'https://example.com/video.mp4',
+    });
+    const onFinished = vi.fn();
+
+    const tracker = createSeedanceTaskTracker({ getTask });
+    tracker.start({ taskId: 'task_1', onUpdate: vi.fn(), onFinished, onFailed: vi.fn() });
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(onFinished).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'completed' }),
+    );
+    tracker.stop();
+    vi.useRealTimers();
+  });
 });

@@ -3,6 +3,7 @@ import {
   createProviderDraft,
   findChatProviders,
   findProviderModelsForNodeModel,
+  findProvidersForVideoFormat,
   findProvidersForCanonicalModel,
   mapCanonicalModelToProviderModel,
   mergeProviderDefaults,
@@ -51,6 +52,59 @@ describe('provider model mapping', () => {
 
   it('maps canonical model id to provider model id', () => {
     expect(mapCanonicalModelToProviderModel(providers[1], 'gpt-image-2')).toBe('image-2');
+  });
+
+  it('selects Sora format providers and models by OpenAI compatible protocol', () => {
+    const soraProvider = {
+      id: 'provider_sora',
+      name: 'Sora gateway',
+      protocol: 'openai-compatible' as const,
+      baseURL: 'https://example.test/v1',
+      apiTokenRef: 'secret_sora',
+      enabled: true,
+      models: [
+        {
+          providerModelId: 'custom-video-model',
+          canonicalModelId: 'custom-video-model',
+          enabled: true,
+        },
+        {
+          providerModelId: 'disabled-model',
+          canonicalModelId: 'disabled-model',
+          enabled: false,
+        },
+      ],
+    };
+    const seedanceProvider = {
+      ...soraProvider,
+      id: 'provider_seedance',
+      protocol: 'volcengine' as const,
+    };
+
+    expect(findProvidersForVideoFormat([soraProvider, seedanceProvider], 'seedance-sora')).toEqual([
+      soraProvider,
+    ]);
+    expect(findProvidersForVideoFormat([soraProvider, seedanceProvider], 'sora-ch1')).toEqual([
+      soraProvider,
+    ]);
+    expect(
+      findProviderModelsForNodeModel(
+        soraProvider,
+        'seedance-sora',
+        'openai',
+        undefined,
+        'seedance-sora',
+      ),
+    ).toEqual([soraProvider.models[0]]);
+    expect(
+      findProviderModelsForNodeModel(
+        soraProvider,
+        'seedance-sora',
+        'openai',
+        undefined,
+        'sora-ch1',
+      ),
+    ).toEqual([soraProvider.models[0]]);
   });
 
   it('lists selectable provider models for image and chat nodes', () => {

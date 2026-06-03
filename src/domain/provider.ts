@@ -7,7 +7,7 @@ export type ProviderProtocol =
   | 'custom';
 
 export type ChatFormat = 'openai' | 'anthropic';
-export type VideoModelFormat = 'seedance' | 'seedance-sora';
+export type VideoModelFormat = 'seedance' | 'seedance-sora' | 'sora-ch1';
 
 export type BillingConfig =
   | {
@@ -148,7 +148,7 @@ export function findProvidersForCanonicalModel(
 }
 
 function getCanonicalModelIdsForVideoFormat(format: VideoModelFormat): string[] {
-  if (format === 'seedance-sora') {
+  if (isSoraCompatibleVideoFormat(format)) {
     return ['seedance-sora'];
   }
 
@@ -159,14 +159,16 @@ export function findProvidersForVideoFormat(
   providers: ProviderConfig[],
   format: VideoModelFormat,
 ): ProviderConfig[] {
-  const canonicalModelIds = getCanonicalModelIdsForVideoFormat(format);
+  if (isSoraCompatibleVideoFormat(format)) {
+    return providers.filter((provider) => provider.enabled && provider.protocol === 'openai-compatible');
+  }
 
   return providers.filter(
     (provider) =>
       provider.enabled &&
       provider.models.some(
         (model) =>
-          model.enabled && canonicalModelIds.includes(model.canonicalModelId),
+          model.enabled && getCanonicalModelIdsForVideoFormat(format).includes(model.canonicalModelId),
       ),
   );
 }
@@ -206,10 +208,15 @@ export function findProviderModelsForNodeModel(
   }
 
   if (videoFormat) {
-    const canonicalModelIds = getCanonicalModelIdsForVideoFormat(videoFormat);
+    if (isSoraCompatibleVideoFormat(videoFormat)) {
+      return provider.protocol === 'openai-compatible'
+        ? provider.models.filter((model) => model.enabled)
+        : [];
+    }
+
     return provider.models.filter(
       (model) =>
-        model.enabled && canonicalModelIds.includes(model.canonicalModelId),
+        model.enabled && getCanonicalModelIdsForVideoFormat(videoFormat).includes(model.canonicalModelId),
     );
   }
 
@@ -259,6 +266,10 @@ function getChatCanonicalModelId(format: ChatFormat): string {
 
 function getChatProviderProtocol(format: ChatFormat): ProviderProtocol {
   return format === 'anthropic' ? 'anthropic-compatible' : 'openai-compatible';
+}
+
+export function isSoraCompatibleVideoFormat(format: VideoModelFormat): boolean {
+  return format === 'seedance-sora' || format === 'sora-ch1';
 }
 
 function isLegacyChatNodeModelId(modelId: string): boolean {
