@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { exists, mkdir, readFile, readTextFile, remove, rename, writeFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readDir, readFile, readTextFile, remove, rename, writeFile } from '@tauri-apps/plugin-fs';
 import { createWorkspaceState } from '../../src/app/canvasWorkspace';
 
 const openMock = vi.fn();
@@ -21,6 +21,7 @@ vi.mock('@tauri-apps/api/path', () => ({
 vi.mock('@tauri-apps/plugin-fs', () => ({
   exists: vi.fn(),
   mkdir: vi.fn(),
+  readDir: vi.fn(),
   readFile: vi.fn(),
   readTextFile: vi.fn(),
   remove: vi.fn(),
@@ -35,6 +36,8 @@ describe('desktop workspace store permissions', () => {
     invokeMock.mockReset();
     vi.mocked(exists).mockReset();
     vi.mocked(mkdir).mockReset();
+    vi.mocked(readDir).mockReset();
+    vi.mocked(readDir).mockResolvedValue([]);
     vi.mocked(readFile).mockReset();
     vi.mocked(readTextFile).mockReset();
     vi.mocked(remove).mockReset();
@@ -182,6 +185,40 @@ describe('desktop workspace store permissions', () => {
     });
     expect(result.assetDataUrl).toMatch(/^data:image\/png;base64,/);
     expect(result.assetDataUrl).not.toContain('blob:');
+  });
+
+  it('reuses the existing desktop image asset when the same image is imported again in the same canvas', async () => {
+    const { desktopWorkspaceStore } = await import('../../src/storage/desktopWorkspaceStore');
+    const canvas = createWorkspaceState([
+      { id: 'canvas_1', name: 'Canvas', updatedAt: 'now', nodes: [], edges: [] },
+    ]).canvases[0];
+    const sameBytes = new TextEncoder().encode('same-image');
+
+    vi.mocked(readDir).mockResolvedValue([
+      {
+        name: 'input.png',
+        isFile: true,
+        isDirectory: false,
+        isSymlink: false,
+      },
+    ] as Awaited<ReturnType<typeof readDir>>);
+    vi.mocked(readFile).mockResolvedValue(sameBytes);
+    vi.mocked(exists).mockResolvedValue(false);
+    vi.mocked(writeFile).mockResolvedValue(undefined);
+
+    const result = await desktopWorkspaceStore.saveAssetFileToCanvasFolder(
+      {
+        kind: 'desktop-directory',
+        name: 'Workspace',
+        path: 'D:\\Workspace',
+      },
+      canvas,
+      new File([sameBytes], 'another-name.png', { type: 'image/png' }),
+    );
+
+    expect(result.assetPath).toBe('assets/images/input.png');
+    expect(result.assetName).toBe('input.png');
+    expect(writeFile).not.toHaveBeenCalled();
   });
 
   it('downloads generated video urls through the desktop backend into canvas assets', async () => {

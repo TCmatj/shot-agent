@@ -7,6 +7,7 @@ import {
   type CanvasView,
   type CanvasWorkspaceState,
 } from '../app/canvasWorkspace';
+import { createAssetContentHash } from './objectStorage';
 import type { ReadWorkspaceOptions } from './workspaceStore';
 
 type FileSystemPermissionMode = 'read' | 'readwrite';
@@ -271,6 +272,18 @@ export async function saveAssetFileToCanvasFolder(
       ? 'audios'
       : 'images';
   const mediaDir = await assetsDir.getDirectoryHandle(mediaDirName, { create: true });
+  const incomingDataUrl = await fileToDataUrl(file);
+  const existingAsset = await findMatchingAssetInBrowserDirectory(mediaDir, mediaDirName, file);
+
+  if (existingAsset) {
+    return {
+      assetName: existingAsset.assetName,
+      assetPath: existingAsset.assetPath,
+      assetDataUrl: incomingDataUrl,
+      assetMimeType: file.type,
+    };
+  }
+
   const assetName = await makeUniqueFileName(mediaDir, file.name);
   const fileHandle = await mediaDir.getFileHandle(assetName, { create: true });
   const writable = await fileHandle.createWritable();
@@ -281,7 +294,7 @@ export async function saveAssetFileToCanvasFolder(
   return {
     assetName,
     assetPath: `assets/${mediaDirName}/${assetName}`,
-    assetDataUrl: await fileToDataUrl(file),
+    assetDataUrl: incomingDataUrl,
     assetMimeType: file.type,
   };
 }
@@ -894,6 +907,37 @@ async function fileExists(directory: FileSystemDirectoryHandle, fileName: string
   } catch {
     return false;
   }
+}
+
+async function findMatchingAssetInBrowserDirectory(
+  directory: FileSystemDirectoryHandle,
+  mediaDirName: 'images' | 'videos' | 'audios',
+  incomingFile: File,
+): Promise<{ assetName: string; assetPath: string } | null> {
+  const incomingHash = await createAssetContentHash(incomingFile);
+
+  for await (const entry of iterateDirectoryEntries(directory)) {
+    if (entry.kind !== 'file') {
+      continue;
+    }
+
+    const existingFile = await entry.getFile();
+    const existingMimeType = existingFile.type || getMimeTypeFromPath(entry.name);
+
+    if (existingMimeType !== incomingFile.type || existingFile.size !== incomingFile.size) {
+      continue;
+    }
+
+    const existingHash = await createAssetContentHash(existingFile);
+    if (existingHash === incomingHash) {
+      return {
+        assetName: entry.name,
+        assetPath: `assets/${mediaDirName}/${entry.name}`,
+      };
+    }
+  }
+
+  return null;
 }
 
 async function readBlobAsText(blob: Blob): Promise<string> {

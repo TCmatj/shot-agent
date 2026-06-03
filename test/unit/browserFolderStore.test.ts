@@ -218,6 +218,33 @@ describe('browser folder store', () => {
     expect(canvasDir?.directories.get('assets')?.directories.get('audios')?.files.has('voice.mp3')).toBe(true);
   });
 
+  it('reuses the existing image asset when the same image is imported again in the same canvas', async () => {
+    const root = new MemoryDirectoryHandle('Shot Agent');
+    const canvas = createWorkspaceState([
+      { id: 'canvas_1', name: 'Canvas', updatedAt: 'now', nodes: [], edges: [] },
+    ]).canvases[0];
+    const duplicateImage = new File(['same-image'], 'input.png', { type: 'image/png' });
+
+    const first = await saveAssetFileToCanvasFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      canvas,
+      duplicateImage,
+    );
+    const second = await saveAssetFileToCanvasFolder(
+      root as unknown as FileSystemDirectoryHandle,
+      canvas,
+      new File(['same-image'], 'another-name.png', { type: 'image/png' }),
+    );
+
+    expect(first.assetPath).toBe('assets/images/input.png');
+    expect(second.assetPath).toBe(first.assetPath);
+    expect(second.assetName).toBe(first.assetName);
+
+    const canvasDir = root.directories.get('Canvas__canvas_1');
+    const imageDir = canvasDir?.directories.get('assets')?.directories.get('images');
+    expect([...imageDir?.files.keys() ?? []]).toEqual(['input.png']);
+  });
+
   it('renames the canvas folder when the canvas name changes', async () => {
     const root = new MemoryDirectoryHandle('Shot Agent');
     const initialState = createWorkspaceState([

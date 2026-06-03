@@ -1,5 +1,8 @@
 ﻿import {
+  memo,
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -9,6 +12,7 @@
   type PointerEvent,
   type WheelEvent,
 } from 'react';
+import type { ClipboardEvent as ReactClipboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import AlibabaCloudIcon from '@lobehub/icons/es/AlibabaCloud/components/Mono';
@@ -29,6 +33,7 @@ import {
   BoxSelect,
   Check,
   ChevronDown,
+  Copy,
   FilePlus2,
   FileText,
   FolderPlus,
@@ -330,6 +335,43 @@ type InlineSelectOption = {
   label: string;
 };
 
+type OutputSelectionToolbarState = {
+  text: string;
+  top: number;
+  left: number;
+  copied: boolean;
+};
+
+const OutputPreviewContent = memo(function OutputPreviewContent({
+  html,
+  previewRef,
+  onWheel,
+  onPointerDown,
+  onPointerUp,
+  onKeyUp,
+}: {
+  html: string;
+  previewRef: React.RefObject<HTMLDivElement | null>;
+  onWheel: (event: WheelEvent<HTMLDivElement>) => void;
+  onPointerDown: () => void;
+  onPointerUp: (event: PointerEvent<HTMLDivElement>) => void;
+  onKeyUp: () => void;
+}) {
+  return (
+    <div
+      ref={previewRef}
+      className="output-modal-preview"
+      onWheel={onWheel}
+      onPointerDown={onPointerDown}
+      onPointerUp={onPointerUp}
+      onKeyUp={onKeyUp}
+      dangerouslySetInnerHTML={{
+        __html: html,
+      }}
+    />
+  );
+});
+
 function InlineOptionSelect({
   value,
   options,
@@ -388,6 +430,18 @@ function InlineOptionSelect({
         isOpen ? 'is-open' : ''
       }`}
       onPointerDown={(event) => event.stopPropagation()}
+      onBlur={(event) => {
+        if (!isOpen) {
+          return;
+        }
+
+        const nextFocused = event.relatedTarget;
+        if (nextFocused instanceof Node && rootRef.current?.contains(nextFocused)) {
+          return;
+        }
+
+        setOpenMenuKey(null);
+      }}
     >
       <button
         type="button"
@@ -958,6 +1012,35 @@ function serializePromptEditor(root: HTMLElement): string {
   });
 
   return value;
+}
+
+function isTextEditingTarget(target: EventTarget | null): target is HTMLElement {
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  );
+}
+
+function insertPlainTextIntoContentEditable(root: HTMLElement, text: string) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    root.append(document.createTextNode(text));
+    return serializePromptEditor(root).length;
+  }
+
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
+
+  const textNode = document.createTextNode(text);
+  range.insertNode(textNode);
+  range.setStart(textNode, text.length);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  return getPromptEditorCaretOffset(root);
 }
 
 function createPromptReferenceTokenElement(
@@ -1571,6 +1654,23 @@ function PromptTextarea({
     handleEditorInput(event.currentTarget);
   }
 
+  function handleEditorPaste(event: ReactClipboardEvent<HTMLDivElement>) {
+    const plainText = event.clipboardData.getData('text/plain');
+    const hasFiles = event.clipboardData.files.length > 0;
+    const hasHtml = event.clipboardData.types.includes('text/html');
+
+    if (!plainText && !hasFiles && !hasHtml) {
+      return;
+    }
+
+    event.preventDefault();
+    const nextCaret = insertPlainTextIntoContentEditable(event.currentTarget, plainText);
+    handleEditorInput(event.currentTarget);
+    window.requestAnimationFrame(() => {
+      setPromptEditorCaretOffset(event.currentTarget, nextCaret);
+    });
+  }
+
   function handleEditorKeyUp(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.nativeEvent.isComposing || isComposingRef.current) {
       return;
@@ -1627,6 +1727,7 @@ function PromptTextarea({
         onKeyDown={handleEditorKeyDown}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
+        onPaste={handleEditorPaste}
         onInput={(event) => handleEditorInput(event.currentTarget)}
       />
       {visibleSuggestions.length > 0 ? (
@@ -2959,6 +3060,12 @@ export function App() {
   const [draftOutputText, setDraftOutputText] = useState('');
   const [outputEditorMode, setOutputEditorMode] = useState<'preview' | 'edit'>('preview');
   const [outputModalPosition, setOutputModalPosition] = useState({ x: 0, y: 0 });
+  const [outputSelectionToolbar, setOutputSelectionToolbar] =
+    useState<OutputSelectionToolbarState | null>(null);
+  const outputPreviewRef = useRef<HTMLDivElement | null>(null);
+  const outputSelectionToolbarPointerDownRef = useRef(false);
+  const outputSelectionRangesRef = useRef<Range[]>([]);
+  const outputSelectionSyncingRef = useRef(false);
 
   function setWorkspaceState(
     action:
@@ -3127,6 +3234,87 @@ export function App() {
     () => (activeCanvas ? { ...activeCanvas, nodes: renderedCanvasNodes } : null),
     [activeCanvas, renderedCanvasNodes],
   );
+
+  useEffect(() => {
+    if (!editingOutputNodeId || outputEditorMode !== 'preview') {
+      setOutputSelectionToolbar(null);
+      outputSelectionRangesRef.current = [];
+      return;
+    }
+
+    function handleSelectionChange() {
+      if (outputSelectionToolbarPointerDownRef.current || outputSelectionSyncingRef.current) {
+        return;
+      }
+
+      const preview = outputPreviewRef.current;
+      const selection = window.getSelection();
+
+      if (!preview || !selection || selection.rangeCount === 0 || selection.isCollapsed) {
+        setOutputSelectionToolbar(null);
+        outputSelectionRangesRef.current = [];
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      const commonAncestor =
+        range.commonAncestorContainer instanceof Element
+          ? range.commonAncestorContainer
+          : range.commonAncestorContainer.parentElement;
+
+      if (!commonAncestor || !preview.contains(commonAncestor)) {
+        setOutputSelectionToolbar(null);
+        outputSelectionRangesRef.current = [];
+      }
+    }
+
+    function handleWindowResize() {
+      setOutputSelectionToolbar(null);
+    }
+
+    document.addEventListener('selectionchange', handleSelectionChange);
+    window.addEventListener('resize', handleWindowResize);
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange);
+      window.removeEventListener('resize', handleWindowResize);
+    };
+  }, [editingOutputNodeId, outputEditorMode]);
+
+  useLayoutEffect(() => {
+    if (!editingOutputNodeId || outputEditorMode !== 'preview' || !outputSelectionToolbar) {
+      return;
+    }
+
+    const selection = window.getSelection();
+    const preview = outputPreviewRef.current;
+    const preservedRanges = outputSelectionRangesRef.current;
+
+    if (!selection || !preview || preservedRanges.length === 0) {
+      outputSelectionSyncingRef.current = false;
+      return;
+    }
+
+    const allRangesInsidePreview = preservedRanges.every((range) => {
+      const commonAncestor =
+        range.commonAncestorContainer instanceof Element
+          ? range.commonAncestorContainer
+          : range.commonAncestorContainer.parentElement;
+
+      return commonAncestor ? preview.contains(commonAncestor) : false;
+    });
+
+    if (!allRangesInsidePreview) {
+      outputSelectionSyncingRef.current = false;
+      return;
+    }
+
+    selection.removeAllRanges();
+    preservedRanges.forEach((range) => selection.addRange(range.cloneRange()));
+    window.requestAnimationFrame(() => {
+      outputSelectionSyncingRef.current = false;
+    });
+  }, [editingOutputNodeId, outputEditorMode, outputSelectionToolbar]);
+
   const selectedNode =
     activeCanvas?.nodes.find((node) => node.id === selectedNodeId) ?? null;
   const inspectedNode =
@@ -3785,6 +3973,10 @@ export function App() {
 
   useEffect(() => {
     function handlePaste(event: ClipboardEvent) {
+      if (isTextEditingTarget(event.target)) {
+        return;
+      }
+
       const file = Array.from(event.clipboardData?.files ?? []).find((item) =>
         item.type.startsWith('image/'),
       );
@@ -3856,11 +4048,7 @@ export function App() {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       const target = event.target;
-      const isEditingText =
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement ||
-        (target instanceof HTMLElement && target.isContentEditable);
+      const isEditingText = isTextEditingTarget(target);
       const key = event.key.toLowerCase();
       const isUndo = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'z';
       const isRedo =
@@ -3879,6 +4067,10 @@ export function App() {
       }
 
       if (isUndo || isRedo) {
+        if (isEditingText) {
+          return;
+        }
+
         if ((isUndo && !canUndoWorkspace) || (isRedo && !canRedoWorkspace)) {
           return;
         }
@@ -5625,7 +5817,7 @@ export function App() {
     );
   }
 
-  function handleModalScrollableWheel(event: WheelEvent<HTMLElement>) {
+  const handleModalScrollableWheel = useCallback((event: WheelEvent<HTMLElement>) => {
     if (event.metaKey || event.ctrlKey) {
       return;
     }
@@ -5635,7 +5827,7 @@ export function App() {
 
     event.currentTarget.scrollTop += event.deltaY;
     event.currentTarget.scrollLeft += event.deltaX;
-  }
+  }, []);
 
   function zoomBy(factor: number) {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -6031,6 +6223,7 @@ export function App() {
     setOutputVersionPage(1);
     setOutputEditorMode('preview');
     setOutputModalPosition({ x: 0, y: 0 });
+    setOutputSelectionToolbar(null);
     setDraftOutputText(latestVersion?.content ?? getEffectiveNodeOutputText(node) ?? '');
   }
 
@@ -6050,6 +6243,7 @@ export function App() {
     setSelectedOutputVersionId(latestVersion?.id ?? null);
     setOutputVersionPage(1);
     setOutputEditorMode('preview');
+    setOutputSelectionToolbar(null);
   }
 
   function closeOutputEditor() {
@@ -6057,6 +6251,7 @@ export function App() {
     setSelectedOutputVersionId(null);
     setDraftOutputText('');
     setOutputEditorMode('preview');
+    setOutputSelectionToolbar(null);
     setModalDragState(null);
   }
 
@@ -6070,6 +6265,7 @@ export function App() {
     setSelectedOutputVersionId(version.id);
     setDraftOutputText(version.content);
     setOutputEditorMode('preview');
+    setOutputSelectionToolbar(null);
   }
 
   function deleteSelectedOutputVersion() {
@@ -6102,7 +6298,140 @@ export function App() {
     setDraftOutputText(latestVersion.content);
     setOutputVersionPage(1);
     setOutputEditorMode('preview');
+    setOutputSelectionToolbar(null);
   }
+
+  function updateOutputSelectionToolbar(
+    anchor?: {
+      clientX: number;
+      clientY: number;
+    },
+  ) {
+    const preview = outputPreviewRef.current;
+    const selection = window.getSelection();
+
+    if (
+      !preview ||
+      !selection ||
+      selection.rangeCount === 0 ||
+      selection.isCollapsed ||
+      !selection.toString().trim()
+    ) {
+      setOutputSelectionToolbar(null);
+      outputSelectionRangesRef.current = [];
+      return;
+    }
+
+    outputSelectionSyncingRef.current = true;
+    outputSelectionRangesRef.current = Array.from(
+      { length: selection.rangeCount },
+      (_, index) => selection.getRangeAt(index).cloneRange(),
+    );
+
+    const range = selection.getRangeAt(0);
+    const commonAncestor =
+      range.commonAncestorContainer instanceof Element
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement;
+
+    if (!commonAncestor || !preview.contains(commonAncestor)) {
+      outputSelectionSyncingRef.current = false;
+      setOutputSelectionToolbar(null);
+      outputSelectionRangesRef.current = [];
+      return;
+    }
+
+    const previewRect = preview.getBoundingClientRect();
+    const toolbarWidth = 96;
+    const selectionRect =
+      typeof range.getBoundingClientRect === 'function'
+        ? range.getBoundingClientRect()
+        : null;
+    const preferredLeft = anchor
+      ? anchor.clientX - previewRect.left - toolbarWidth / 2
+      : (selectionRect?.left ?? previewRect.left) -
+          previewRect.left +
+          (selectionRect?.width ?? 0) / 2 -
+          toolbarWidth / 2;
+    const preferredTop = anchor
+      ? anchor.clientY - previewRect.top - 44
+      : (selectionRect?.top ?? previewRect.top + 44) - previewRect.top - 44;
+
+    setOutputSelectionToolbar({
+      text: selection.toString(),
+      left: Math.max(10, Math.min(previewRect.width - toolbarWidth - 10, preferredLeft)),
+      top: Math.max(10, preferredTop),
+      copied: false,
+    });
+  }
+
+  async function copySelectedOutputText() {
+    const text = outputSelectionToolbar?.text?.trim();
+    if (!text) {
+      outputSelectionToolbarPointerDownRef.current = false;
+      return;
+    }
+
+    const selection = window.getSelection();
+    const preservedRanges =
+      selection && selection.rangeCount > 0
+        ? Array.from({ length: selection.rangeCount }, (_, index) =>
+            selection.getRangeAt(index).cloneRange(),
+          )
+        : [];
+    outputSelectionRangesRef.current = preservedRanges.map((range) => range.cloneRange());
+
+    try {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', 'true');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.append(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+
+        if (selection) {
+          selection.removeAllRanges();
+          preservedRanges.forEach((range) => selection.addRange(range));
+        }
+      }
+
+      setOutputSelectionToolbar((current) =>
+        current
+          ? {
+              ...current,
+              copied: true,
+            }
+          : current,
+      );
+    } finally {
+      outputSelectionToolbarPointerDownRef.current = false;
+    }
+  }
+
+  const handleOutputPreviewPointerDown = useCallback(() => {
+    setOutputSelectionToolbar(null);
+  }, []);
+
+  const handleOutputPreviewPointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    window.requestAnimationFrame(() => {
+      updateOutputSelectionToolbar({
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    });
+  }, []);
+
+  const handleOutputPreviewKeyUp = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      updateOutputSelectionToolbar();
+    });
+  }, []);
 
   function startOutputModalDrag(event: PointerEvent<HTMLElement>) {
     if (event.button !== 0) {
@@ -8894,15 +9223,49 @@ export function App() {
                       </button>
                     </div>
                     {outputEditorMode === 'preview' ? (
-                      <div
-                        className="output-modal-preview"
-                        onWheel={handleModalScrollableWheel}
-                        dangerouslySetInnerHTML={{
-                          __html: renderMarkdownToHtml(draftOutputText),
-                        }}
-                      />
+                      <div className="output-modal-preview-shell">
+                        <OutputPreviewContent
+                          html={renderMarkdownToHtml(draftOutputText)}
+                          previewRef={outputPreviewRef}
+                          onWheel={handleModalScrollableWheel}
+                          onPointerDown={handleOutputPreviewPointerDown}
+                          onPointerUp={handleOutputPreviewPointerUp}
+                          onKeyUp={handleOutputPreviewKeyUp}
+                        />
+                        {outputSelectionToolbar ? (
+                          <button
+                            type="button"
+                            className={`output-selection-copy-button ${
+                              outputSelectionToolbar.copied ? 'is-copied' : ''
+                            }`}
+                            style={{
+                              left: outputSelectionToolbar.left,
+                              top: outputSelectionToolbar.top,
+                            }}
+                            onPointerDown={(event) => {
+                              outputSelectionToolbarPointerDownRef.current = true;
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            onClick={() => void copySelectedOutputText()}
+                          >
+                            {outputSelectionToolbar.copied ? (
+                              <>
+                                <Check size={14} />
+                                已复制
+                              </>
+                            ) : (
+                              <>
+                                <Copy size={14} />
+                                复制
+                              </>
+                            )}
+                          </button>
+                        ) : null}
+                      </div>
                     ) : (
                       <textarea
+                        className="output-modal-textarea"
                         value={draftOutputText}
                         onWheel={handleModalScrollableWheel}
                         onChange={(event) => setDraftOutputText(event.target.value)}

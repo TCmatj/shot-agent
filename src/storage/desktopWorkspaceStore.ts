@@ -11,6 +11,7 @@ import {
   type CanvasView,
   type CanvasWorkspaceState,
 } from '../app/canvasWorkspace';
+import { createAssetContentHash } from './objectStorage';
 import type { WorkspaceStore } from './workspaceStore';
 
 const rootDirectoryStorageKey = 'shot-agent:desktop-root-directory-path';
@@ -215,16 +216,27 @@ export const desktopWorkspaceStore: WorkspaceStore = {
         : 'images';
     const mediaDir = await join(assetsDir, mediaDirName);
     await mkdir(mediaDir, { recursive: true });
+    const bytes = await blobToBytes(file);
+    const incomingDataUrl = bytesToDataUrl(bytes, file.type);
+    const existingAsset = await findMatchingAssetInDesktopDirectory(mediaDir, mediaDirName, file, bytes);
+
+    if (existingAsset) {
+      return {
+        assetName: existingAsset.assetName,
+        assetPath: existingAsset.assetPath,
+        assetDataUrl: incomingDataUrl,
+        assetMimeType: file.type,
+      };
+    }
+
     const assetName = await makeUniqueFileName(mediaDir, file.name);
     const assetPath = await join(mediaDir, assetName);
-
-    const bytes = await blobToBytes(file);
     await writeFile(assetPath, bytes);
 
     return {
       assetName,
       assetPath: `assets/${mediaDirName}/${assetName}`,
-      assetDataUrl: bytesToDataUrl(bytes, file.type),
+      assetDataUrl: incomingDataUrl,
       assetMimeType: file.type,
     };
   },
@@ -734,6 +746,48 @@ async function makeUniqueFileName(directory: string, fileName: string): Promise<
   }
 
   return candidate;
+}
+
+async function findMatchingAssetInDesktopDirectory(
+  directory: string,
+  mediaDirName: 'images' | 'videos' | 'audios',
+  incomingFile: File,
+  incomingBytes: Uint8Array,
+): Promise<{ assetName: string; assetPath: string } | null> {
+  const incomingHash = await createAssetContentHash(
+    new Blob([toArrayBuffer(incomingBytes)], { type: incomingFile.type }),
+  );
+  const entries = await readDir(directory);
+
+  for (const entry of entries) {
+    if (!entry.isFile) {
+      continue;
+    }
+
+    const existingAssetPath = await join(directory, entry.name);
+    const existingBytes = await readFile(existingAssetPath);
+    const existingMimeType = getMimeTypeFromPath(entry.name);
+
+    if (existingMimeType !== incomingFile.type || existingBytes.byteLength !== incomingBytes.byteLength) {
+      continue;
+    }
+
+    const existingHash = await createAssetContentHash(
+      new Blob([toArrayBuffer(existingBytes)], { type: existingMimeType }),
+    );
+    if (existingHash === incomingHash) {
+      return {
+        assetName: entry.name,
+        assetPath: `assets/${mediaDirName}/${entry.name}`,
+      };
+    }
+  }
+
+  return null;
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 async function getPathLabel(path: string): Promise<string> {

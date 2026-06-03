@@ -60,6 +60,18 @@ async function chooseInlineOption(ariaLabel: string, optionLabel: string) {
   await userEvent.click(screen.getByRole('option', { name: optionLabel }));
 }
 
+async function openOutputEditorByTitle(title: string) {
+  const headings = await screen.findAllByRole('heading', { name: title });
+  const canvasHeading = headings.find((heading) => heading.closest('article'));
+
+  expect(canvasHeading).toBeTruthy();
+
+  const nodeCard = canvasHeading!.closest('article');
+  expect(nodeCard).toBeTruthy();
+
+  await userEvent.click(within(nodeCard!).getByRole('button', { name: '查看 / 编辑完整输出' }));
+}
+
 function setPromptEditorValue(editor: HTMLDivElement, value: string) {
   editor.focus();
   editor.textContent = value;
@@ -116,6 +128,12 @@ describe('App image preview', () => {
         unobserve() {}
       },
     );
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    });
   });
 
   it('keeps asset panel wheel events scrollable inside the canvas', async () => {
@@ -555,6 +573,37 @@ describe('App diamond mask node', () => {
     expect(document.querySelector('.canvas-message')?.textContent).toBe(
       '请先选择画布存储文件夹，再导入或选择遮罩图片。',
     );
+  });
+
+  it('uses 1px as the default line width for a new diamond mask node', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_mask_default',
+          name: '遮罩画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'node_mask_default',
+              title: '菱形遮罩',
+              modelId: 'diamond-mask',
+              kind: 'diamondMask',
+              x: 0,
+              y: 0,
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    const nodeCard = (await screen.findAllByRole('heading', { name: '菱形遮罩' }))[0].closest('article');
+    expect(nodeCard).toBeTruthy();
+    expect(within(nodeCard!).getByText('1px')).toBeTruthy();
   });
 });
 
@@ -1196,6 +1245,173 @@ describe('App video node inspector', () => {
     expect(document.querySelector('.prompt-reference-menu')).toBeNull();
     expect(editor!.querySelector('.prompt-reference-token')).toBeTruthy();
   });
+
+  it('keeps native undo and redo shortcuts inside the prompt editor', async () => {
+    render(<App />);
+    await openNodeInspectorByTitle('视频生成');
+
+    const editor = document.querySelector(
+      '.node-inspector .prompt-reference-editor',
+    ) as HTMLDivElement | null;
+    expect(editor).toBeTruthy();
+
+    editor!.focus();
+
+    const undoEvent = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'z',
+      metaKey: true,
+    });
+    editor!.dispatchEvent(undoEvent);
+    expect(undoEvent.defaultPrevented).toBe(false);
+
+    const redoEvent = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'z',
+      metaKey: true,
+      shiftKey: true,
+    });
+    editor!.dispatchEvent(redoEvent);
+    expect(redoEvent.defaultPrevented).toBe(false);
+  });
+
+  it('pastes plain text into the prompt editor without carrying html markup', async () => {
+    render(<App />);
+    await openNodeInspectorByTitle('视频生成');
+
+    const editor = document.querySelector(
+      '.node-inspector .prompt-reference-editor',
+    ) as HTMLDivElement | null;
+    expect(editor).toBeTruthy();
+
+    editor!.focus();
+    fireEvent.paste(editor!, {
+      clipboardData: {
+        files: [],
+        getData: (type: string) =>
+          type === 'text/plain' ? '纯文本内容' : type === 'text/html' ? '<b>富文本内容</b>' : '',
+        types: ['text/plain', 'text/html'],
+      },
+    });
+
+    expect(editor!.textContent).toContain('纯文本内容');
+    expect(editor!.querySelector('b')).toBeNull();
+  });
+
+  it('does not create image nodes when pasting files inside the prompt editor', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_prompt_paste',
+          name: '提示词粘贴',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'chat_1',
+              title: '提示词整理',
+              modelId: 'gpt-5.4-mini',
+              kind: 'chat',
+              x: 320,
+              y: 80,
+              prompt: '',
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+    await openNodeInspectorByTitle('提示词整理');
+
+    const editor = document.querySelector(
+      '.node-inspector .prompt-reference-editor',
+    ) as HTMLDivElement | null;
+    expect(editor).toBeTruthy();
+
+    const file = new File(['image'], 'clipboard.png', { type: 'image/png' });
+    fireEvent.paste(editor!, {
+      clipboardData: {
+        files: [file],
+        getData: () => '',
+        types: ['Files'],
+      },
+    });
+
+    expect(screen.queryByAltText('clipboard.png')).toBeNull();
+    expect(screen.queryAllByRole('img', { name: /clipboard\.png/i })).toHaveLength(0);
+  });
+
+  it('closes inline dropdown menus after focus leaves the select', async () => {
+    render(<App />);
+    await openNodeInspectorByTitle('视频生成');
+
+    await userEvent.click(screen.getByRole('button', { name: '类型' }));
+    expect(screen.getByRole('listbox', { name: '类型' })).toBeTruthy();
+
+    const trigger = screen.getByRole('button', { name: '类型' });
+    const generateButton = screen.getByRole('button', { name: '生成' });
+    fireEvent.blur(trigger, { relatedTarget: generateButton });
+
+    expect(screen.queryByRole('listbox', { name: '类型' })).toBeNull();
+  });
+
+  it('shows a copy button near selected preview text in the output modal', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_output_modal',
+          name: '输出画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'chat_output_1',
+              title: '对话输出',
+              modelId: 'gpt-5.4-mini',
+              kind: 'chat',
+              x: 320,
+              y: 120,
+              modelOutputText:
+                '第一段内容用于预览展示，并且会保留一小段正文用于测试选区行为。\n\n'
+                + '第二段内容更长一些，用来触发完整输出查看按钮并测试选区复制。'.repeat(24),
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+    await openOutputEditorByTitle('对话输出');
+
+    const preview = document.querySelector('.output-modal-preview') as HTMLDivElement | null;
+    expect(preview).toBeTruthy();
+
+    const firstParagraph = preview!.querySelector('p');
+    expect(firstParagraph?.firstChild).toBeTruthy();
+
+    const range = document.createRange();
+    range.setStart(firstParagraph!.firstChild!, 0);
+    range.setEnd(firstParagraph!.firstChild!, 6);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent(document, new Event('selectionchange'));
+    fireEvent.pointerUp(preview!, {
+      clientX: 180,
+      clientY: 120,
+    });
+
+    const copyButton = await screen.findByRole('button', { name: '复制' });
+    expect(copyButton).toBeTruthy();
+  });
+
 });
 
 describe('App canvas dragging', () => {
