@@ -1,7 +1,8 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../../src/app/App';
+import * as generationClient from '../../src/models/generationClient';
 import {
   createCanvasEdge,
   createWorkspaceState,
@@ -55,8 +56,12 @@ async function openNodeInspectorByTitle(title: string) {
   return nodeCard!;
 }
 
-async function chooseInlineOption(ariaLabel: string, optionLabel: string) {
-  await userEvent.click(screen.getByRole('button', { name: ariaLabel }));
+async function chooseInlineOption(
+  ariaLabel: string,
+  optionLabel: string,
+  scope: Pick<typeof screen, 'getByRole'> = screen,
+) {
+  await userEvent.click(scope.getByRole('button', { name: ariaLabel }));
   await userEvent.click(screen.getByRole('option', { name: optionLabel }));
 }
 
@@ -1103,6 +1108,943 @@ describe('App video node inspector', () => {
     expect(screen.queryByText('预计消耗：0 tokens（本地预估）')).toBeNull();
     expect(screen.queryByText('调用格式')).toBeNull();
     expect(screen.getByText(/当前节点会按 sora 调用格式提交/)).toBeTruthy();
+  });
+
+  it('creates a story node from the add menu and shows story-specific prompt guidance', async () => {
+    render(<App />);
+
+    await userEvent.click(screen.getAllByRole('button', { name: '新建画布' })[0]);
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }));
+    await userEvent.click(await screen.findByRole('button', { name: '故事拆解节点' }));
+
+    expect(screen.getByRole('heading', { name: '故事拆解' })).toBeTruthy();
+    const storyHeadings = screen.getAllByRole('heading', { name: '故事拆解' });
+    const storyNodeCard = storyHeadings.find((heading) => heading.closest('article'))?.closest('article');
+    expect(storyNodeCard).toBeTruthy();
+    const storyNodeCardQueries = within(storyNodeCard!);
+
+    await openNodeInspectorByTitle('故事拆解');
+
+    const promptEditor = screen.getByLabelText('提示词');
+    expect(promptEditor.getAttribute('data-placeholder')).toContain(
+      '支持 @文本 / @图片 引用已连线的上游资产',
+    );
+    expect(screen.getByRole('button', { name: '调用格式' })).toBeTruthy();
+    expect(storyNodeCardQueries.getByRole('button', { name: '执行方式' }).textContent).toContain('仅拆解');
+    expect(screen.getByRole('button', { name: '展开级别' }).textContent).toContain('展开全部节点');
+    expect(screen.getByLabelText('结构化摘要')).toBeTruthy();
+    expect(screen.getByLabelText('原始结构化结果')).toBeTruthy();
+  });
+
+  it('expands structured story output into downstream nodes after generation', async () => {
+    const storyOutput = JSON.stringify({
+      version: 1,
+      storySummary: '一个无厘头但可拍摄的短故事',
+      styleNotes: ['黑色幽默', '商业广告质感'],
+      globalAssets: {
+        scenePrompts: [
+          {
+            id: 'scene_1',
+            title: '商场中庭',
+            prompt: '现代商场中庭，玻璃穹顶，自然光混合广告灯箱光，黑色幽默广告片质感。',
+          },
+        ],
+        characterSheetPrompts: [
+          {
+            id: 'character_1',
+            title: '主角角色板',
+            prompt: '25岁男性，夸张惊讶表情，四视图角色板，服装细节完整。',
+          },
+        ],
+        propSheetPrompts: [
+          {
+            id: 'prop_1',
+            title: '菠萝蜜果茶',
+            prompt: '白底产品图，多角度展示透明杯、标签与果肉细节。',
+          },
+        ],
+      },
+      narrativeSegments: [
+        {
+          id: 'segment_1',
+          title: '第一段',
+          durationSeconds: 6,
+          openingTransition: {
+            type: 'hard_cut',
+            description: '从上一个段落直接切入主角特写',
+            durationSeconds: 0.2,
+          },
+          prompt:
+            '第一人称短片，主角在商场中庭举起一杯夸张巨大的菠萝蜜果茶，镜头快速推进，强调荒诞喜剧与高级商业广告质感。',
+          atmosphere: '夸张、明亮、节奏快速',
+          bgm: '轻快电子加打击乐',
+          shots: [
+            {
+              id: 'shot_1',
+              title: '举杯开场',
+              durationSeconds: 2.4,
+              characters: ['主角'],
+              cameraMotion: '快速推进',
+              action: '主角把果茶举到镜头前',
+              dialogue: '今天就喝这个。',
+              dialoguePacing: '短促有力',
+              atmosphere: '兴奋',
+              bgm: '鼓点起',
+              transitionToNext: {
+                type: 'camera_follow',
+                description: '镜头跟随杯子下移到桌面',
+                durationSeconds: 0.3,
+              },
+            },
+          ],
+          firstFramePrompt: {
+            id: 'first_1',
+            title: '首帧',
+            prompt: '主角手举果茶，商场中庭背景，广告摄影质感，高清首帧。',
+          },
+          lastFramePrompt: {
+            id: 'last_1',
+            title: '尾帧',
+            prompt: '果茶停留在画面中央，标签清晰，尾帧定格。',
+          },
+          motionSketchPrompt: {
+            id: 'motion_1',
+            title: '运镜草图',
+            prompt: '简笔画分镜，标明推进和跟随路径。',
+          },
+          continuityNotes: ['保持主角服装一致', '杯子标签始终朝向镜头'],
+        },
+      ],
+    });
+
+    vi.spyOn(generationClient, 'streamChatGenerationNode').mockImplementation(async (input) => {
+      input.onDelta(storyOutput, storyOutput);
+      return {
+        ok: true,
+        output: {
+          kind: 'text',
+          text: storyOutput,
+          rawResponse: {},
+        },
+      };
+    });
+
+    window.localStorage.setItem(
+      providerStorageKey,
+      JSON.stringify([
+        {
+          id: 'provider_openai_story',
+          name: 'OpenAI',
+          protocol: 'openai-compatible',
+          baseURL: 'https://api.openai.com/v1',
+          apiTokenRef: 'sk-test-story',
+          enabled: true,
+          models: [
+            {
+              providerModelId: 'gpt-5.4-mini',
+              canonicalModelId: 'gpt-5.4-mini',
+              enabled: true,
+            },
+          ],
+        },
+      ]),
+    );
+
+    render(<App />);
+
+    await userEvent.click(screen.getAllByRole('button', { name: '新建画布' })[0]);
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }));
+    await userEvent.click(await screen.findByRole('button', { name: '故事拆解节点' }));
+    await openNodeInspectorByTitle('故事拆解');
+    const storyHeadings = screen.getAllByRole('heading', { name: '故事拆解' });
+    const storyNodeCard = storyHeadings.find((heading) => heading.closest('article'))?.closest('article');
+    expect(storyNodeCard).toBeTruthy();
+    const storyNodeCardQueries = within(storyNodeCard!);
+
+    await chooseInlineOption('执行方式', '拆解并铺节点', storyNodeCardQueries);
+    await chooseInlineOption('展开级别', '展开全部节点', screen);
+
+    const promptEditor = screen.getByLabelText('节点提示词') as HTMLDivElement;
+    setPromptEditorValue(promptEditor, '生成一个无厘头的故事，之后进行拆解。');
+    await userEvent.click(within(storyNodeCard!).getByRole('button', { name: '生成' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: '场景图' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '角色板' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '物品图' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第一段 首帧' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第一段 尾帧' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第一段 运镜合集' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第一段 视频' })).toBeTruthy();
+    });
+
+    expect(screen.getByText('已从故事节点生成 7 个下游节点。')).toBeTruthy();
+  });
+
+  it('shows a structured story summary panel in the inspector', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_story_summary',
+          name: '故事画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'story_summary_node',
+              title: '故事拆解',
+              modelId: 'gpt-5.4-mini',
+              kind: 'story',
+              x: 0,
+              y: 0,
+              storyStructuredOutput: {
+                version: 1,
+                storySummary: '荒诞商场果茶广告故事',
+                styleNotes: ['广告质感', '轻喜剧'],
+                globalAssets: {
+                  scenePrompts: [{ id: 'scene_1', title: '商场中庭', prompt: '商场中庭提示词' }],
+                  characterSheetPrompts: [{ id: 'character_1', title: '主角角色板', prompt: '角色板提示词' }],
+                  propSheetPrompts: [{ id: 'prop_1', title: '果茶道具', prompt: '道具提示词' }],
+                },
+                narrativeSegments: [
+                  {
+                    id: 'segment_1',
+                    title: '第一段',
+                    durationSeconds: 6,
+                    openingTransition: {
+                      type: 'hard_cut',
+                      description: '直接切入',
+                      durationSeconds: 0.2,
+                    },
+                    prompt: '第一段视频提示词',
+                    shots: [
+                      {
+                        id: 'shot_1',
+                        title: '镜头一',
+                        durationSeconds: 2.4,
+                        characters: ['主角'],
+                        cameraMotion: '推进',
+                        action: '举杯',
+                      },
+                    ],
+                    firstFramePrompt: { id: 'first_1', title: '首帧', prompt: '首帧提示词' },
+                    lastFramePrompt: { id: 'last_1', title: '尾帧', prompt: '尾帧提示词' },
+                    motionSketchPrompt: { id: 'motion_1', title: '运镜合集', prompt: '运镜提示词' },
+                    continuityNotes: ['保持服装一致'],
+                  },
+                ],
+              },
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    await openNodeInspectorByTitle('故事拆解');
+
+    expect(screen.getByText('结构概览')).toBeTruthy();
+    expect(screen.getByText('全局资产')).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy();
+    expect(screen.getByText('叙事段落')).toBeTruthy();
+    expect(screen.getAllByText('1').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('预计总时长')).toBeTruthy();
+    expect(screen.getAllByText('6 秒').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('第一段')).toBeTruthy();
+    expect(screen.getByText('1 个分镜')).toBeTruthy();
+    expect(screen.getByText('广告质感')).toBeTruthy();
+  });
+
+  it('auto-runs generated image nodes when story execution mode is fully automatic', async () => {
+    const storyOutput = JSON.stringify({
+      version: 1,
+      storySummary: '全自动故事',
+      globalAssets: {
+        scenePrompts: [{ id: 'scene_1', title: '场景图', prompt: '场景图提示词' }],
+        characterSheetPrompts: [{ id: 'character_1', title: '角色板', prompt: '角色板提示词' }],
+        propSheetPrompts: [{ id: 'prop_1', title: '物品图', prompt: '物品图提示词' }],
+      },
+      narrativeSegments: [],
+    });
+
+    vi.spyOn(generationClient, 'streamChatGenerationNode').mockImplementation(async (input) => {
+      input.onDelta(storyOutput, storyOutput);
+      return {
+        ok: true,
+        output: {
+          kind: 'text',
+          text: storyOutput,
+          rawResponse: {},
+        },
+      };
+    });
+
+    const submitSpy = vi
+      .spyOn(generationClient, 'submitGenerationNode')
+      .mockResolvedValue({
+        ok: true,
+        output: {
+          kind: 'image',
+          dataUrl: 'data:image/png;base64,aW1hZ2U=',
+          rawResponse: {},
+        },
+      });
+
+    window.localStorage.setItem(
+      providerStorageKey,
+      JSON.stringify([
+        {
+          id: 'provider_story_auto',
+          name: 'OpenAI',
+          protocol: 'openai-compatible',
+          baseURL: 'https://api.openai.com/v1',
+          apiTokenRef: 'sk-test-story',
+          enabled: true,
+          models: [
+            {
+              providerModelId: 'gpt-5.4-mini',
+              canonicalModelId: 'gpt-5.4-mini',
+              enabled: true,
+            },
+            {
+              providerModelId: 'gpt-image-2',
+              canonicalModelId: 'gpt-image-2',
+              enabled: true,
+            },
+          ],
+        },
+      ]),
+    );
+
+    render(<App />);
+
+    await userEvent.click(screen.getAllByRole('button', { name: '新建画布' })[0]);
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }));
+    await userEvent.click(await screen.findByRole('button', { name: '故事拆解节点' }));
+    await openNodeInspectorByTitle('故事拆解');
+    const storyHeadings = screen.getAllByRole('heading', { name: '故事拆解' });
+    const storyNodeCard = storyHeadings.find((heading) => heading.closest('article'))?.closest('article');
+    expect(storyNodeCard).toBeTruthy();
+    const storyNodeCardQueries = within(storyNodeCard!);
+
+    await chooseInlineOption('执行方式', '拆解并全自动执行', storyNodeCardQueries);
+    await chooseInlineOption('展开级别', '结构 + 全局资产', screen);
+
+    const promptEditor = screen.getByLabelText('节点提示词') as HTMLDivElement;
+    setPromptEditorValue(promptEditor, '生成一个无厘头的故事，之后进行拆解。');
+    await userEvent.click(within(storyNodeCard!).getByRole('button', { name: '生成' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('已从故事节点生成 3 个下游节点。')).toBeTruthy();
+      expect(submitSpy).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  it('rebuilds downstream nodes from the current structured json without re-running the model', async () => {
+    const streamSpy = vi.spyOn(generationClient, 'streamChatGenerationNode');
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_story_regenerate',
+          name: '故事画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'story_regenerate_node',
+              title: '故事拆解',
+              modelId: 'gpt-5.4-mini',
+              kind: 'story',
+              x: 0,
+              y: 0,
+              storyExecutionMode: 'structure_only',
+              storyExpansionMode: 'full',
+              storyStructuredOutput: {
+                version: 1,
+                storySummary: '重新铺节点测试',
+                globalAssets: {
+                  scenePrompts: [{ id: 'scene_1', title: '场景图', prompt: '场景提示词' }],
+                  characterSheetPrompts: [],
+                  propSheetPrompts: [],
+                },
+                narrativeSegments: [
+                  {
+                    id: 'segment_1',
+                    title: '第一段',
+                    durationSeconds: 5,
+                    openingTransition: {
+                      type: 'hard_cut',
+                      description: '直接切入',
+                      durationSeconds: 0.2,
+                    },
+                    prompt: '第一段视频提示词',
+                    shots: [
+                      {
+                        id: 'shot_1',
+                        title: '镜头一',
+                        durationSeconds: 2,
+                        characters: ['主角'],
+                        cameraMotion: '推进',
+                        action: '举杯',
+                      },
+                    ],
+                    firstFramePrompt: { id: 'first_1', title: '首帧', prompt: '首帧提示词' },
+                    lastFramePrompt: { id: 'last_1', title: '尾帧', prompt: '尾帧提示词' },
+                    motionSketchPrompt: { id: 'motion_1', title: '运镜合集', prompt: '运镜提示词' },
+                    continuityNotes: [],
+                  },
+                ],
+              },
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    await openNodeInspectorByTitle('故事拆解');
+    await userEvent.click(screen.getByRole('button', { name: '从当前 JSON 重新生成节点' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: '场景图' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第一段 首帧' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第一段 视频' })).toBeTruthy();
+    });
+
+    expect(streamSpy).not.toHaveBeenCalled();
+    expect(screen.getByText('已从故事节点生成 5 个下游节点。')).toBeTruthy();
+  });
+
+  it('shows inline story rebuild controls on the node card and defaults rebuild type to full', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_story_inline_rebuild',
+          name: '故事画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'story_inline_rebuild_node',
+              title: '故事拆解',
+              modelId: 'gpt-5.4-mini',
+              kind: 'story',
+              x: 0,
+              y: 0,
+              storyExecutionMode: 'structure_only',
+              storyExpansionMode: 'full',
+              storyStructuredOutput: {
+                version: 1,
+                storySummary: '节点外重建测试',
+                globalAssets: {
+                  scenePrompts: [{ id: 'scene_1', title: '场景图', prompt: '场景提示词' }],
+                  characterSheetPrompts: [],
+                  propSheetPrompts: [],
+                },
+                narrativeSegments: [],
+              },
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    const storyHeadings = await screen.findAllByRole('heading', { name: '故事拆解' });
+    const storyNodeCard = storyHeadings.find((heading) => heading.closest('article'))?.closest('article');
+    expect(storyNodeCard).toBeTruthy();
+
+    expect(within(storyNodeCard!).getByRole('button', { name: '重建类型' }).textContent).toContain(
+      '展开全部节点',
+    );
+    expect(within(storyNodeCard!).getByRole('button', { name: '重建输出' })).toBeTruthy();
+  });
+
+  it('shows story execution and provider selects on the node card outside the inspector', async () => {
+    window.localStorage.setItem(
+      providerStorageKey,
+      JSON.stringify([
+        {
+          id: 'provider_story_openai_a',
+          name: 'OpenAI A',
+          protocol: 'openai-compatible',
+          baseURL: 'https://api.openai.com/v1',
+          apiTokenRef: 'sk-test-a',
+          enabled: true,
+          models: [
+            {
+              providerModelId: 'gpt-5.4-mini',
+              canonicalModelId: 'gpt-5.4-mini',
+              enabled: true,
+            },
+          ],
+        },
+      ]),
+    );
+
+    render(<App />);
+
+    await userEvent.click(screen.getAllByRole('button', { name: '新建画布' })[0]);
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }));
+    await userEvent.click(await screen.findByRole('button', { name: '故事拆解节点' }));
+
+    const storyHeadings = await screen.findAllByRole('heading', { name: '故事拆解' });
+    const storyNodeCard = storyHeadings.find((heading) => heading.closest('article'))?.closest('article');
+    expect(storyNodeCard).toBeTruthy();
+
+    expect(within(storyNodeCard!).getByRole('button', { name: '执行方式' })).toBeTruthy();
+    expect(within(storyNodeCard!).getByRole('button', { name: '供应商' })).toBeTruthy();
+    expect(within(storyNodeCard!).getByRole('button', { name: '供应商模型' })).toBeTruthy();
+  });
+
+  it('updates story provider and provider model from the node card controls', async () => {
+    window.localStorage.setItem(
+      providerStorageKey,
+      JSON.stringify([
+        {
+          id: 'provider_story_openai_a',
+          name: 'OpenAI A',
+          protocol: 'openai-compatible',
+          baseURL: 'https://api.openai.com/v1',
+          apiTokenRef: 'sk-test-a',
+          enabled: true,
+          models: [
+            {
+              providerModelId: 'gpt-5.4-mini',
+              canonicalModelId: 'gpt-5.4-mini',
+              enabled: true,
+            },
+          ],
+        },
+        {
+          id: 'provider_story_openai_b',
+          name: 'OpenAI B',
+          protocol: 'openai-compatible',
+          baseURL: 'https://api.openai.com/v1',
+          apiTokenRef: 'sk-test-b',
+          enabled: true,
+          models: [
+            {
+              providerModelId: 'gpt-4.1-mini',
+              canonicalModelId: 'gpt-4.1-mini',
+              enabled: true,
+            },
+          ],
+        },
+      ]),
+    );
+
+    render(<App />);
+
+    await userEvent.click(screen.getAllByRole('button', { name: '新建画布' })[0]);
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }));
+    await userEvent.click(await screen.findByRole('button', { name: '故事拆解节点' }));
+
+    const storyHeadings = await screen.findAllByRole('heading', { name: '故事拆解' });
+    const storyNodeCard = storyHeadings.find((heading) => heading.closest('article'))?.closest('article');
+    expect(storyNodeCard).toBeTruthy();
+
+    await userEvent.click(within(storyNodeCard!).getByRole('button', { name: '供应商' }));
+    await userEvent.click(screen.getByRole('option', { name: 'OpenAI B' }));
+
+    expect(within(storyNodeCard!).getByRole('button', { name: '供应商' }).textContent).toContain('OpenAI B');
+    expect(within(storyNodeCard!).getByRole('button', { name: '供应商模型' }).textContent).toContain('gpt-4.1-mini');
+  });
+
+  it('rebuilds story nodes directly from the node card inline action', async () => {
+    const streamSpy = vi.spyOn(generationClient, 'streamChatGenerationNode');
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_story_inline_rebuild_action',
+          name: '故事画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'story_inline_rebuild_action_node',
+              title: '故事拆解',
+              modelId: 'gpt-5.4-mini',
+              kind: 'story',
+              x: 0,
+              y: 0,
+              storyExecutionMode: 'structure_only',
+              storyExpansionMode: 'full',
+              storyStructuredOutput: {
+                version: 1,
+                storySummary: '节点外重建动作测试',
+                globalAssets: {
+                  scenePrompts: [{ id: 'scene_1', title: '场景图', prompt: '场景提示词' }],
+                  characterSheetPrompts: [],
+                  propSheetPrompts: [],
+                },
+                narrativeSegments: [
+                  {
+                    id: 'segment_1',
+                    title: '第一段',
+                    durationSeconds: 5,
+                    openingTransition: {
+                      type: 'hard_cut',
+                      description: '直接切入',
+                      durationSeconds: 0.2,
+                    },
+                    prompt: '第一段视频提示词',
+                    shots: [
+                      {
+                        id: 'shot_1',
+                        title: '镜头一',
+                        durationSeconds: 2,
+                        characters: ['主角'],
+                        cameraMotion: '推进',
+                        action: '举杯',
+                      },
+                    ],
+                    firstFramePrompt: { id: 'first_1', title: '首帧', prompt: '首帧提示词' },
+                    lastFramePrompt: { id: 'last_1', title: '尾帧', prompt: '尾帧提示词' },
+                    motionSketchPrompt: { id: 'motion_1', title: '运镜合集', prompt: '运镜提示词' },
+                    continuityNotes: [],
+                  },
+                ],
+              },
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    const storyHeadings = await screen.findAllByRole('heading', { name: '故事拆解' });
+    const storyNodeCard = storyHeadings.find((heading) => heading.closest('article'))?.closest('article');
+    expect(storyNodeCard).toBeTruthy();
+
+    await userEvent.click(within(storyNodeCard!).getByRole('button', { name: '重建输出' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: '场景图' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第一段 首帧' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第一段 视频' })).toBeTruthy();
+    });
+
+    expect(streamSpy).not.toHaveBeenCalled();
+    expect(screen.getByText('已从故事节点生成 5 个下游节点。')).toBeTruthy();
+  });
+
+  it('removes all downstream nodes before rebuilding story nodes', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_story_regenerate_cleanup',
+          name: '故事画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'story_cleanup_node',
+              title: '故事拆解',
+              modelId: 'gpt-5.4-mini',
+              kind: 'story',
+              x: 0,
+              y: 0,
+              storyExecutionMode: 'structure_only',
+              storyExpansionMode: 'full',
+              storyStructuredOutput: {
+                version: 1,
+                storySummary: '重建前清理测试',
+                globalAssets: {
+                  scenePrompts: [{ id: 'scene_1', title: '场景图', prompt: '新场景提示词' }],
+                  characterSheetPrompts: [],
+                  propSheetPrompts: [],
+                },
+                narrativeSegments: [
+                  {
+                    id: 'segment_1',
+                    title: '第一段',
+                    durationSeconds: 5,
+                    openingTransition: {
+                      type: 'hard_cut',
+                      description: '直接切入',
+                      durationSeconds: 0.2,
+                    },
+                    prompt: '新第一段视频提示词',
+                    shots: [
+                      {
+                        id: 'shot_1',
+                        title: '镜头一',
+                        durationSeconds: 2,
+                        characters: ['主角'],
+                        cameraMotion: '推进',
+                        action: '举杯',
+                      },
+                    ],
+                    firstFramePrompt: { id: 'first_1', title: '首帧', prompt: '新首帧提示词' },
+                    lastFramePrompt: { id: 'last_1', title: '尾帧', prompt: '新尾帧提示词' },
+                    motionSketchPrompt: { id: 'motion_1', title: '运镜合集', prompt: '新运镜提示词' },
+                    continuityNotes: [],
+                  },
+                ],
+              },
+            },
+            {
+              id: 'story_old_scene_node',
+              title: '旧场景图',
+              modelId: 'gpt-image-2',
+              kind: 'image',
+              x: 480,
+              y: 0,
+              prompt: '旧场景提示词',
+              storySourceNodeId: 'story_cleanup_node',
+              storyGenerationBatchId: 'story_batch_old',
+              storyAssetRole: 'scene',
+            },
+            {
+              id: 'story_old_video_node',
+              title: '旧第一段视频',
+              modelId: 'seedance2.0',
+              kind: 'video',
+              x: 840,
+              y: 0,
+              prompt: '旧视频提示词',
+              storySourceNodeId: 'story_cleanup_node',
+              storyGenerationBatchId: 'story_batch_old',
+              storySegmentId: 'segment_old',
+              storyAssetRole: 'segment_video',
+            },
+            {
+              id: 'story_old_video_asset',
+              title: '旧输出视频',
+              modelId: 'asset-video',
+              kind: 'videoAsset',
+              x: 1200,
+              y: 0,
+              assetName: 'old-video.mp4',
+              assetDataUrl: 'data:video/mp4;base64,b2xk',
+            },
+          ],
+          edges: [
+            createCanvasEdge('story_cleanup_node', 'story_old_scene_node'),
+            createCanvasEdge('story_cleanup_node', 'story_old_video_node'),
+            createCanvasEdge('story_old_video_node', 'story_old_video_asset'),
+          ],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    const storyHeadings = await screen.findAllByRole('heading', { name: '故事拆解' });
+    const storyNodeCard = storyHeadings.find((heading) => heading.closest('article'))?.closest('article');
+    expect(storyNodeCard).toBeTruthy();
+
+    await userEvent.click(within(storyNodeCard!).getByRole('button', { name: '重建输出' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: '旧场景图' })).toBeNull();
+      expect(screen.queryByRole('heading', { name: '旧第一段视频' })).toBeNull();
+      expect(screen.queryByRole('heading', { name: '旧输出视频' })).toBeNull();
+      expect(screen.getByRole('heading', { name: '场景图' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第一段 视频' })).toBeTruthy();
+    });
+
+    expect(screen.getByText('已从故事节点生成 5 个下游节点。')).toBeTruthy();
+  });
+
+  it('creates only the selected narrative segment nodes from structured output', async () => {
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_story_segment_regenerate',
+          name: '故事画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'story_segment_regenerate_node',
+              title: '故事拆解',
+              modelId: 'gpt-5.4-mini',
+              kind: 'story',
+              x: 0,
+              y: 0,
+              storyExecutionMode: 'structure_and_nodes',
+              storyExpansionMode: 'full',
+              storyStructuredOutput: {
+                version: 1,
+                storySummary: '分段生成测试',
+                globalAssets: {
+                  scenePrompts: [{ id: 'scene_1', title: '场景图', prompt: '场景提示词' }],
+                  characterSheetPrompts: [],
+                  propSheetPrompts: [],
+                },
+                narrativeSegments: [
+                  {
+                    id: 'segment_1',
+                    title: '第一段',
+                    durationSeconds: 5,
+                    openingTransition: {
+                      type: 'hard_cut',
+                      description: '直接切入',
+                      durationSeconds: 0.2,
+                    },
+                    prompt: '第一段视频提示词',
+                    shots: [
+                      {
+                        id: 'shot_1',
+                        title: '镜头一',
+                        durationSeconds: 2,
+                        characters: ['主角'],
+                        cameraMotion: '推进',
+                        action: '举杯',
+                      },
+                    ],
+                    firstFramePrompt: { id: 'first_1', title: '首帧', prompt: '第一段首帧提示词' },
+                    lastFramePrompt: { id: 'last_1', title: '尾帧', prompt: '第一段尾帧提示词' },
+                    motionSketchPrompt: { id: 'motion_1', title: '运镜合集', prompt: '第一段运镜提示词' },
+                    continuityNotes: [],
+                  },
+                  {
+                    id: 'segment_2',
+                    title: '第二段',
+                    durationSeconds: 6,
+                    openingTransition: {
+                      type: 'fade',
+                      description: '淡入',
+                      durationSeconds: 0.4,
+                    },
+                    prompt: '第二段视频提示词',
+                    shots: [
+                      {
+                        id: 'shot_2',
+                        title: '镜头二',
+                        durationSeconds: 2,
+                        characters: ['主角'],
+                        cameraMotion: '横摇',
+                        action: '转身',
+                      },
+                    ],
+                    firstFramePrompt: { id: 'first_2', title: '首帧', prompt: '第二段首帧提示词' },
+                    lastFramePrompt: { id: 'last_2', title: '尾帧', prompt: '第二段尾帧提示词' },
+                    motionSketchPrompt: { id: 'motion_2', title: '运镜合集', prompt: '第二段运镜提示词' },
+                    continuityNotes: [],
+                  },
+                ],
+              },
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+
+    await openNodeInspectorByTitle('故事拆解');
+    await userEvent.click(screen.getByRole('button', { name: '生成“第二段”节点' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: '第二段 首帧' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第二段 尾帧' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第二段 运镜合集' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第二段 视频' })).toBeTruthy();
+    });
+
+    expect(screen.queryByRole('heading', { name: '第一段 首帧' })).toBeNull();
+    expect(screen.getByText('已从故事节点生成 4 个下游节点。')).toBeTruthy();
+  });
+
+  it('shows story node rebuild actions inside the output modal and rebuilds from there', async () => {
+    const streamSpy = vi.spyOn(generationClient, 'streamChatGenerationNode');
+    const state: CanvasWorkspaceState = {
+      ...createWorkspaceState([
+        {
+          id: 'canvas_story_output_modal',
+          name: '故事画布',
+          updatedAt: '刚刚',
+          nodes: [
+            {
+              id: 'story_output_modal_node',
+              title: '故事拆解',
+              modelId: 'gpt-5.4-mini',
+              kind: 'story',
+              x: 0,
+              y: 0,
+              storyExecutionMode: 'structure_only',
+              storyExpansionMode: 'full',
+              storyStructuredOutput: {
+                version: 1,
+                storySummary: '弹窗重建测试',
+                globalAssets: {
+                  scenePrompts: [{ id: 'scene_1', title: '场景图', prompt: '场景提示词' }],
+                  characterSheetPrompts: [],
+                  propSheetPrompts: [],
+                },
+                narrativeSegments: [
+                  {
+                    id: 'segment_1',
+                    title: '第一段',
+                    durationSeconds: 5,
+                    openingTransition: {
+                      type: 'hard_cut',
+                      description: '直接切入',
+                      durationSeconds: 0.2,
+                    },
+                    prompt: '第一段视频提示词',
+                    shots: [
+                      {
+                        id: 'shot_1',
+                        title: '镜头一',
+                        durationSeconds: 2,
+                        characters: ['主角'],
+                        cameraMotion: '推进',
+                        action: '举杯',
+                      },
+                    ],
+                    firstFramePrompt: { id: 'first_1', title: '首帧', prompt: '首帧提示词' },
+                    lastFramePrompt: { id: 'last_1', title: '尾帧', prompt: '尾帧提示词' },
+                    motionSketchPrompt: { id: 'motion_1', title: '运镜合集', prompt: '运镜提示词' },
+                    continuityNotes: [],
+                  },
+                ],
+              },
+              modelOutputText:
+                (
+                  '{"version":1,"storySummary":"弹窗重建测试","globalAssets":{"scenePrompts":[{"id":"scene_1","title":"场景图","prompt":"场景提示词"}],"characterSheetPrompts":[],"propSheetPrompts":[]},"narrativeSegments":[{"id":"segment_1","title":"第一段","durationSeconds":5,"openingTransition":{"type":"hard_cut","description":"直接切入","durationSeconds":0.2},"prompt":"第一段视频提示词","shots":[{"id":"shot_1","title":"镜头一","durationSeconds":2,"characters":["主角"],"cameraMotion":"推进","action":"举杯"}],"firstFramePrompt":{"id":"first_1","title":"首帧","prompt":"首帧提示词"},"lastFramePrompt":{"id":"last_1","title":"尾帧","prompt":"尾帧提示词"},"motionSketchPrompt":{"id":"motion_1","title":"运镜合集","prompt":"运镜提示词"},"continuityNotes":[]}]}' 
+                ).repeat(12),
+            },
+          ],
+          edges: [],
+        },
+      ]),
+    };
+
+    window.localStorage.setItem(workspaceStorageKey, serializeWorkspaceState(state));
+
+    render(<App />);
+    await openOutputEditorByTitle('故事拆解');
+
+    expect(screen.getByRole('button', { name: '从当前 JSON 重新生成节点' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '生成“第一段”节点' })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: '生成“第一段”节点' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: '第一段 首帧' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: '第一段 视频' })).toBeTruthy();
+    });
+
+    expect(streamSpy).not.toHaveBeenCalled();
   });
 
   it('grows model node width with prompt length and caps it at three times the base width', () => {

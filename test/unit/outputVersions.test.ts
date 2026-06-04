@@ -4,6 +4,7 @@ import {
   getEffectiveOutputText,
   getLatestOutputVersion,
   getOutputVersionsForDisplay,
+  getStoredOutputVersions,
   paginateOutputVersions,
 } from '../../src/domain/outputVersions';
 
@@ -56,25 +57,14 @@ describe('output versions', () => {
     });
   });
 
-  it('keeps legacy output as version 1 when appending a new output', () => {
-    const displayVersions = getOutputVersionsForDisplay({
+  it('does not reuse display-only legacy output when appending a fresh model result', () => {
+    const storedVersions = getStoredOutputVersions({
       modelOutputText: '旧模型输出',
     });
-    const nextVersions = appendOutputVersion(
-      displayVersions,
-      '新模型输出',
-      'model',
-      '2026-05-21T00:00:00.000Z',
-    );
+    const nextVersions = appendOutputVersion(storedVersions, '新模型输出', 'model', '2026-05-21T00:00:00.000Z');
 
-    expect(nextVersions.map((version) => version.content)).toEqual([
-      '旧模型输出',
-      '新模型输出',
-    ]);
-    expect(paginateOutputVersions(nextVersions, 1, 10).items.map((item) => item.label)).toEqual([
-      '2',
-      '1',
-    ]);
+    expect(storedVersions).toEqual([]);
+    expect(nextVersions.map((version) => version.content)).toEqual(['新模型输出']);
   });
 
   it('uses streaming model output while generation is running', () => {

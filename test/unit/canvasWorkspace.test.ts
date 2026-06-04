@@ -209,6 +209,47 @@ describe('canvas workspace persistence', () => {
     );
   });
 
+  it('preserves story node structured output fields during workspace persistence', () => {
+    const state = createWorkspaceState([
+      {
+        id: 'canvas_story',
+        name: '故事画布',
+        updatedAt: '刚刚',
+        nodes: [
+          {
+            id: 'node_story_1',
+            title: '故事拆解',
+            modelId: 'gpt-5.4-mini',
+            kind: 'story',
+            x: 120,
+            y: 80,
+            prompt: '请拆解这个故事',
+            storyExecutionMode: 'structure_only',
+            storyExpansionMode: 'structure_only',
+            storyRawOutput: '{"storySummary":"一个人走进雨夜街头"}',
+            storyStructuredOutput: {
+              version: 1,
+              storySummary: '一个人走进雨夜街头',
+              styleNotes: ['电影感', '潮湿夜景'],
+              globalAssets: {
+                scenePrompts: [],
+                characterSheetPrompts: [],
+                propSheetPrompts: [],
+              },
+              narrativeSegments: [],
+              rawModelOutput: '{"storySummary":"一个人走进雨夜街头"}',
+            },
+          },
+        ],
+        edges: [],
+      },
+    ]);
+
+    expect(parseWorkspaceState(serializeWorkspaceState(state), createWorkspaceState(canvases))).toEqual(
+      state,
+    );
+  });
+
   it('updates custom canvas storage folder and trims empty values', () => {
     const state = createWorkspaceState(canvases);
 
@@ -236,6 +277,59 @@ describe('canvas workspace persistence', () => {
     const state = createWorkspaceState(canvases);
 
     expect(renameCanvas(state, 'canvas_first', '第二画布')).toEqual(state);
+  });
+
+  it('allows story nodes to receive text and image inputs but rejects video and audio inputs', () => {
+    const storyNode: CanvasView['nodes'][number] = {
+      id: 'node_story_1',
+      title: '故事拆解',
+      modelId: 'gpt-5.4-mini',
+      kind: 'story',
+      x: 240,
+      y: 120,
+    };
+    const textNode: CanvasView['nodes'][number] = {
+      id: 'node_text_1',
+      title: '文本',
+      modelId: 'asset-text',
+      kind: 'textAsset',
+      x: 0,
+      y: 0,
+      textContent: '故事正文',
+    };
+    const imageNode: CanvasView['nodes'][number] = {
+      id: 'node_image_1',
+      title: '图片',
+      modelId: 'asset-image',
+      kind: 'imageAsset',
+      x: 0,
+      y: 120,
+      assetDataUrl: 'data:image/png;base64,aW1hZw==',
+    };
+    const videoNode: CanvasView['nodes'][number] = {
+      id: 'node_video_1',
+      title: '视频',
+      modelId: 'asset-video',
+      kind: 'videoAsset',
+      x: 0,
+      y: 240,
+      assetDataUrl: 'data:video/mp4;base64,dmlkZW8=',
+    };
+    const audioNode: CanvasView['nodes'][number] = {
+      id: 'node_audio_1',
+      title: '音频',
+      modelId: 'asset-audio',
+      kind: 'audioAsset',
+      x: 0,
+      y: 360,
+      assetDataUrl: 'data:audio/mp3;base64,YXVkaW8=',
+    };
+
+    expect(canNodeReceiveInput(storyNode)).toBe(true);
+    expect(canConnectCanvasNodes(textNode, storyNode)).toBe(true);
+    expect(canConnectCanvasNodes(imageNode, storyNode)).toBe(true);
+    expect(canConnectCanvasNodes(videoNode, storyNode)).toBe(false);
+    expect(canConnectCanvasNodes(audioNode, storyNode)).toBe(false);
   });
 
   it('returns the next available canvas name for auto-created canvases', () => {

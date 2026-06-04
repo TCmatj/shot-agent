@@ -136,12 +136,23 @@ const canvas: CanvasView = {
       y: 0,
       prompt: 'Rewrite this prompt @text:text_1 @image:image_asset_1',
     },
+    {
+      id: 'story_1',
+      title: 'Story',
+      modelId: 'gpt-5.4-mini',
+      kind: 'story',
+      x: 0,
+      y: 0,
+      prompt: '拆解这个故事 @text:text_1 @image:image_asset_1',
+    },
   ],
   edges: [
     { id: 'edge_text_image', fromNodeId: 'text_1', toNodeId: 'image_1' },
     { id: 'edge_image_video', fromNodeId: 'image_asset_1', toNodeId: 'video_1' },
     { id: 'edge_text_chat', fromNodeId: 'text_1', toNodeId: 'chat_1' },
     { id: 'edge_image_chat', fromNodeId: 'image_asset_1', toNodeId: 'chat_1' },
+    { id: 'edge_text_story', fromNodeId: 'text_1', toNodeId: 'story_1' },
+    { id: 'edge_image_story', fromNodeId: 'image_asset_1', toNodeId: 'story_1' },
   ],
 };
 
@@ -1527,6 +1538,108 @@ describe('generation client request building', () => {
       ],
       stream: true,
     });
+  });
+
+  it('builds text generation requests for story nodes with image and text context', () => {
+    const result = buildGenerationRequest({
+      canvas,
+      nodeId: 'story_1',
+      provider: openaiProvider,
+      token: 'token',
+      stream: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      request: {
+        url: 'https://api.openai.com/v1/chat/completions',
+        responseKind: 'text',
+      },
+    });
+    expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
+      model: 'gpt-5.4-mini',
+      messages: [
+        {
+          role: 'system',
+          content: expect.stringContaining('影视故事拆解节点'),
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: '拆解这个故事 use a clean studio background 图片一',
+            },
+            {
+              type: 'image_url',
+              image_url: { url: 'data:image/png;base64,aW1hZ2U=' },
+            },
+          ],
+        },
+      ],
+      stream: true,
+    });
+    const body = result.ok ? JSON.parse(result.request.body as string) : null;
+    expect(body?.messages?.[0]?.content).toContain('场景图片提示词');
+    expect(body?.messages?.[0]?.content).toContain('关键人物多角度角色板图片提示词');
+    expect(body?.messages?.[0]?.content).toContain('关键物品多角度白底图提示词');
+    expect(body?.messages?.[0]?.content).toContain('首帧');
+    expect(body?.messages?.[0]?.content).toContain('尾帧');
+    expect(body?.messages?.[0]?.content).toContain('叙事段落提示词');
+    expect(body?.messages?.[0]?.content).toContain('运镜简笔画');
+  });
+
+  it('builds Anthropic story requests with structured story system instructions', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'story_1'
+            ? { ...node, chatFormat: 'anthropic', modelId: 'claude-sonnet-4-5' }
+            : node,
+        ),
+      },
+      nodeId: 'story_1',
+      provider: anthropicProvider,
+      token: 'anthropic-token',
+      stream: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      request: {
+        url: 'https://api.anthropic.com/v1/messages',
+        responseKind: 'text',
+      },
+    });
+    expect(result.ok && JSON.parse(result.request.body as string)).toMatchObject({
+      model: 'claude-sonnet-4-5',
+      system: expect.stringContaining('严格 JSON'),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: '拆解这个故事 use a clean studio background 图片一',
+            },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'aW1hZ2U=',
+              },
+            },
+          ],
+        },
+      ],
+      stream: true,
+    });
+    const body = result.ok ? JSON.parse(result.request.body as string) : null;
+    expect(body?.system).toContain('每个段落时间长度为 4-15 秒');
+    expect(body?.system).toContain('分镜包含时长、角色、运镜、必要的对话、对话节奏、气氛、BGM');
+    expect(body?.system).toContain('每个叙事段落一个运镜合集');
   });
 
   it('rejects chat requests with more than 20 image inputs', () => {

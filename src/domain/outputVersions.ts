@@ -68,6 +68,10 @@ export function getOutputVersionsForDisplay(node: OutputVersionLikeNode): Output
     : [];
 }
 
+export function getStoredOutputVersions(node: OutputVersionLikeNode): OutputVersion[] {
+  return node.outputVersions ?? [];
+}
+
 export function paginateOutputVersions(
   versions: OutputVersion[] | undefined,
   page: number,

@@ -2,7 +2,7 @@ export type ID = string;
 export type ISODateString = string;
 
 export type AssetKind = 'image' | 'video' | 'audio' | 'file' | 'text';
-export type CanvasNodeKind = 'image' | 'video' | 'chat' | 'asset';
+export type CanvasNodeKind = 'image' | 'video' | 'chat' | 'story' | 'asset';
 export type GenerationStatus =
   | 'idle'
   | 'queued'

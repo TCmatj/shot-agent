@@ -23,7 +23,7 @@ import {
   type SeedanceScenario,
 } from '../domain/seedance';
 
-type ModelNodeKind = 'image' | 'video' | 'chat';
+type ModelNodeKind = 'image' | 'video' | 'chat' | 'story';
 
 type InputAsset = {
   node: CanvasNodeView;
@@ -290,7 +290,7 @@ export function buildGenerationRequest(
           input.provider,
           node.modelId,
           getNodeChatFormat(node),
-          node.kind === 'chat' ? 'chat' : undefined,
+          (node.kind === 'chat' || node.kind === 'story') ? 'chat' : undefined,
         ));
   if (!providerModelId) {
     if (videoModelFormat && isSoraCompatibleVideoFormat(videoModelFormat)) {
@@ -338,14 +338,14 @@ export function buildGenerationRequest(
     return { ok: false, error: '当前视频节点调用格式与所选供应商不匹配。' };
   }
 
-  if (node.kind === 'chat') {
+  if (node.kind === 'chat' || node.kind === 'story') {
     const chatImageInputs = collectInputAssets(node, input.canvas).filter(
       (asset) => asset.role === 'reference_image',
     );
     if (chatImageInputs.length > chatImageInputLimit) {
       return {
         ok: false,
-        error: `对话节点最多支持 ${chatImageInputLimit} 张图片输入`,
+        error: `${node.kind === 'story' ? '故事节点' : '对话节点'}最多支持 ${chatImageInputLimit} 张图片输入`,
       };
     }
 
@@ -811,8 +811,18 @@ function buildOpenAIChatRequest(
             type: 'image_url',
             image_url: { url: asset.content },
           })),
-        ]
+      ]
       : prompt;
+  const messages: Array<Record<string, unknown>> = [];
+
+  if (node.kind === 'story') {
+    messages.push({
+      role: 'system',
+      content: buildStorySystemInstruction(),
+    });
+  }
+
+  messages.push({ role: 'user', content });
 
   return {
     url: `${normalizeBaseURL(provider.baseURL)}/chat/completions`,
@@ -823,7 +833,7 @@ function buildOpenAIChatRequest(
     },
     body: JSON.stringify({
       model,
-      messages: [{ role: 'user', content }],
+      messages,
       ...(stream ? { stream: true } : {}),
     }),
     responseKind: 'text',
@@ -1046,6 +1056,7 @@ function buildAnthropicMessagesRequest(
       return source ? [{ type: 'image', source }] : [];
     }),
   ];
+  const system = node.kind === 'story' ? buildStorySystemInstruction() : undefined;
 
   return {
     url: `${normalizeBaseURL(provider.baseURL)}/messages`,
@@ -1058,12 +1069,38 @@ function buildAnthropicMessagesRequest(
     body: JSON.stringify({
       model,
       max_tokens: 4096,
+      ...(system ? { system } : {}),
       messages: [{ role: 'user', content }],
       ...(stream ? { stream: true } : {}),
     }),
     responseKind: 'text',
     streamProtocol: 'anthropic',
   };
+}
+
+function buildStorySystemInstruction(): string {
+  return [
+    '你是一个影视故事拆解节点，不是普通聊天助手。',
+    '如果用户只给了一个创意、一句话或一个主题，你要先补全成一个完整、可拍摄、具有明确视觉与叙事节奏的无厘头故事，再继续拆解。',
+    '输出目标不是闲聊，而是为后续图片生成节点和视频生成节点直接提供可用提示词。',
+    '所有提示词都要尽量细致详细，优先给出具体主体、场景、时间、天气、光线、镜头语言、动作、情绪、材质、服装、构图、景别、色彩、气氛、声音与节奏信息，避免空泛描述。',
+    '只输出严格 JSON，不要输出任何额外解释、标题、前后缀、Markdown 说明文字。',
+    'JSON 顶层必须包含：version、storySummary、styleNotes、globalAssets、narrativeSegments。',
+    'globalAssets 必须包含 scenePrompts、characterSheetPrompts、propSheetPrompts，并且这些字段里的内容本质上都是高质量提示词。',
+    'scenePrompts 对应场景图片提示词，要写清楚空间环境、时代、时间、天气、灯光、色彩、陈设、机位感、氛围与关键视觉元素。',
+    'characterSheetPrompts 对应关键人物多角度角色板图片提示词，要写清楚人物年龄感、外貌、发型、服装、材质、配色、表情气质、标志性动作与多视角要求。',
+    'propSheetPrompts 对应关键物品多角度白底图提示词，要写清楚物品材质、结构、颜色、磨损状态、功能特征，并强调白底、多个角度、清晰展示。',
+    'narrativeSegments 中每个段落都要服务一个视频生成节点，每个段落时间长度为 4-15 秒。',
+    '每个 narrativeSegment 必须包含：id、title、durationSeconds、openingTransition、prompt、shots、firstFramePrompt、lastFramePrompt、motionSketchPrompt、continuityNotes。',
+    'segment.prompt 就是叙事段落提示词，需要自动填充到视频生成节点，必须总结该段全部分镜内容与整体节奏。',
+    'shots 是分镜列表。分镜包含时长、角色、运镜、必要的对话、对话节奏、气氛、BGM等大模型认为精确的描述。',
+    '每个分镜必须尽量精确，至少包含：时长、角色、运镜、动作、必要的对话、对话节奏、气氛、BGM，以及你认为对视频生成有帮助的其他关键信息。',
+    'firstFramePrompt 和 lastFramePrompt 分别对应拆分的每个分镜段落首帧一张、尾帧一张提示词，要写成可直接用于图片生成的高质量提示词。',
+    'motionSketchPrompt 对应每个叙事段落一个运镜合集，内容是该段每个分镜的运镜简笔画提示词；场景和人物可以适当简化，但镜头路径、景别变化、角色相对位置和空间关系必须精准。',
+    'openingTransition 和每个 shot.transitionToNext 都必须包含 type、description、durationSeconds，并明确说明镜头如何衔接。',
+    '段落总时长必须显式考虑开头衔接时长与分镜之间衔接时长，不能忽略衔接耗时。',
+    '输出内容必须优先保证下游可执行性，而不是文学性；提示词宁可具体，不要偷懒概括。',
+  ].join('');
 }
 
 function toAnthropicImageSource(
@@ -2066,7 +2103,7 @@ function uniqueAssetIds(assetIds: string[]): string[] {
 }
 
 function isModelNodeKind(kind: CanvasNodeView['kind']): kind is ModelNodeKind {
-  return kind === 'image' || kind === 'video' || kind === 'chat';
+  return kind === 'image' || kind === 'video' || kind === 'chat' || kind === 'story';
 }
 
 function getNodeChatFormat(node: CanvasNodeView): 'openai' | 'anthropic' {

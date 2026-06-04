@@ -1,6 +1,11 @@
 import type { OutputVersion } from '../domain/outputVersions';
 import type { GenerationRecord } from '../domain/generationHistory';
 import type {
+  StoryNodeExecutionMode,
+  StoryNodeExpansionMode,
+  StoryStructuredOutput,
+} from '../domain/story';
+import type {
   ImageQuality,
   ImageResolutionTier,
 } from '../domain/imageGenerationOptions';
@@ -16,6 +21,7 @@ export type CanvasNodeKind =
   | 'image'
   | 'video'
   | 'chat'
+  | 'story'
   | 'diamondMask'
   | 'textAsset'
   | 'imageAsset'
@@ -27,6 +33,21 @@ export type CanvasNodeView = {
   title: string;
   modelId: string;
   chatFormat?: 'openai' | 'anthropic';
+  storyExecutionMode?: StoryNodeExecutionMode;
+  storyExpansionMode?: StoryNodeExpansionMode;
+  storyStructuredOutput?: StoryStructuredOutput;
+  storyRawOutput?: string;
+  storySourceNodeId?: string;
+  storyGenerationBatchId?: string;
+  storySegmentId?: string;
+  storyAssetRole?:
+    | 'scene'
+    | 'character_sheet'
+    | 'prop_sheet'
+    | 'segment_first_frame'
+    | 'segment_last_frame'
+    | 'segment_motion_sketch'
+    | 'segment_video';
   videoModelFormat?: VideoModelFormat;
   providerId?: string;
   providerModelId?: string;
@@ -127,6 +148,7 @@ export type CanvasWorkspaceState = {
 
 const canvasNodeBaseWidth = 320;
 const canvasNodeMaxWidth = canvasNodeBaseWidth * 3;
+const storyNodeBaseWidth = 400;
 
 const storageVersion = 1;
 const canvasExportVersion = 1;
@@ -161,6 +183,7 @@ function isCanvasNodeKind(kind: unknown): kind is CanvasNodeKind {
     kind === 'image' ||
     kind === 'video' ||
     kind === 'chat' ||
+    kind === 'story' ||
     kind === 'diamondMask' ||
     kind === 'textAsset' ||
     kind === 'imageAsset' ||
@@ -373,6 +396,28 @@ function normalizeNode(node: CanvasNodeView): CanvasNodeView {
 
 function normalizeChatNodeModelId(node: CanvasNodeView): CanvasNodeView {
   if (node.kind !== 'chat') {
+    if (node.kind !== 'story') {
+      return node;
+    }
+  }
+
+  if (node.kind === 'story') {
+    if (node.modelId === 'chat-openai') {
+      return {
+        ...node,
+        modelId: 'gpt-5.4-mini',
+        chatFormat: node.chatFormat ?? 'openai',
+      };
+    }
+
+    if (node.modelId === 'chat-anthropic') {
+      return {
+        ...node,
+        modelId: 'claude-sonnet-4-5',
+        chatFormat: node.chatFormat ?? 'anthropic',
+      };
+    }
+
     return node;
   }
 
@@ -550,6 +595,22 @@ export function getNodeCenter(node: CanvasNodeView): { x: number; y: number } {
 }
 
 export function getCanvasNodeWidth(node: CanvasNodeView): number {
+  if (node.kind === 'story') {
+    const prompt = node.prompt?.trim() ?? '';
+    if (!prompt) {
+      return storyNodeBaseWidth;
+    }
+
+    const lines = prompt.split(/\r?\n/);
+    const longestLineLength = lines.reduce((max, line) => Math.max(max, line.length), 0);
+    const estimatedWidth = Math.max(
+      storyNodeBaseWidth,
+      240 + Math.max(prompt.length * 2.8, longestLineLength * 9.5),
+    );
+
+    return Math.min(canvasNodeMaxWidth, Math.round(estimatedWidth));
+  }
+
   if (
     node.kind === 'textAsset' ||
     node.kind === 'imageAsset' ||
@@ -763,7 +824,12 @@ function rectanglesIntersect(first: CanvasSelectionRect, second: CanvasSelection
 }
 
 export function canNodeReceiveInput(node: CanvasNodeView): boolean {
-  return node.kind === 'image' || node.kind === 'video' || node.kind === 'chat';
+  return (
+    node.kind === 'image' ||
+    node.kind === 'video' ||
+    node.kind === 'chat' ||
+    node.kind === 'story'
+  );
 }
 
 export function canConnectCanvasNodes(fromNode: CanvasNodeView, toNode: CanvasNodeView): boolean {
@@ -777,6 +843,13 @@ export function canConnectCanvasNodes(fromNode: CanvasNodeView, toNode: CanvasNo
 
   if (
     toNode.kind === 'chat' &&
+    (fromNode.kind === 'video' || fromNode.kind === 'videoAsset' || fromNode.kind === 'audioAsset')
+  ) {
+    return false;
+  }
+
+  if (
+    toNode.kind === 'story' &&
     (fromNode.kind === 'video' || fromNode.kind === 'videoAsset' || fromNode.kind === 'audioAsset')
   ) {
     return false;

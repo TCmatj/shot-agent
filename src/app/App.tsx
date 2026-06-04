@@ -90,6 +90,7 @@ import {
   appendOutputVersion,
   getLatestOutputVersion,
   getOutputVersionsForDisplay,
+  getStoredOutputVersions,
   paginateOutputVersions,
 } from '../domain/outputVersions';
 import {
@@ -199,6 +200,13 @@ import {
   serializeStoredCanvasViewports,
   type StoredCanvasViewports,
 } from './canvasViewports';
+import { buildStoryNodeExpansion } from './storyNodeExpansion';
+import {
+  createEmptyStoryStructuredOutput,
+  parseStoryStructuredOutput,
+  type StoryNodeExecutionMode,
+  type StoryNodeExpansionMode,
+} from '../domain/story';
 import {
   getWorkspaceStore,
 } from '../storage';
@@ -600,6 +608,14 @@ const nodeTemplates: NodeTemplate[] = [
     icon: MessageSquare,
   },
   {
+    id: 'story',
+    label: '故事拆解节点',
+    title: '故事拆解',
+    modelId: 'gpt-5.4-mini',
+    kind: 'story',
+    icon: FileText,
+  },
+  {
     id: 'diamond-mask',
     label: '菱形遮罩节点',
     title: '菱形遮罩',
@@ -742,11 +758,69 @@ function getPromptReferenceTokenForSuggestion(suggestion: PromptReferenceSuggest
   return suggestion.token;
 }
 
+function isChatLikeNode(node: CanvasNodeView): boolean {
+  return node.kind === 'chat' || node.kind === 'story';
+}
+
+function getNodePromptPlaceholder(node: CanvasNodeView): string {
+  if (node.kind === 'video') {
+    return getVideoPromptPlaceholder(node.seedanceScenario ?? 'text_to_video');
+  }
+
+  if (node.kind === 'story') {
+    return '输入故事内容，支持 @文本 / @图片 引用已连线的上游资产';
+  }
+
+  return '输入节点提示词，支持 @文本 / @图片 / @视频 引用已连线的上游资产';
+}
+
 function getNodeTextReferencePreview(node: CanvasNodeView): string | undefined {
   const text = node.kind === 'textAsset' ? node.textContent : getEffectiveNodeOutputText(node);
   const compact = text?.replace(/\s+/g, ' ').trim();
 
   return compact ? compact.slice(0, 5) : undefined;
+}
+
+function getStoryGlobalAssetCount(structuredOutput?: CanvasNodeView['storyStructuredOutput']): number {
+  if (!structuredOutput) {
+    return 0;
+  }
+
+  return (
+    structuredOutput.globalAssets.scenePrompts.length +
+    structuredOutput.globalAssets.characterSheetPrompts.length +
+    structuredOutput.globalAssets.propSheetPrompts.length
+  );
+}
+
+function getStoryShotCount(structuredOutput?: CanvasNodeView['storyStructuredOutput']): number {
+  if (!structuredOutput) {
+    return 0;
+  }
+
+  return structuredOutput.narrativeSegments.reduce((total, segment) => total + segment.shots.length, 0);
+}
+
+function getStoryDurationSeconds(structuredOutput?: CanvasNodeView['storyStructuredOutput']): number {
+  if (!structuredOutput) {
+    return 0;
+  }
+
+  return structuredOutput.narrativeSegments.reduce(
+    (total, segment) => total + Math.max(0, segment.durationSeconds),
+    0,
+  );
+}
+
+function hasStoryExpansionContent(structuredOutput?: CanvasNodeView['storyStructuredOutput']): boolean {
+  if (!structuredOutput) {
+    return false;
+  }
+
+  return (
+    getStoryGlobalAssetCount(structuredOutput) > 0 ||
+    structuredOutput.narrativeSegments.length > 0
+  );
 }
 
 function getNodeImageReferenceUrl(node: CanvasNodeView): string | undefined {
@@ -789,6 +863,7 @@ function getPromptReferenceSuggestions(
     return [];
   }
 
+  const currentNode = canvas.nodes.find((node) => node.id === currentNodeId);
   const upstreamNodeIds = new Set(getUpstreamNodeIds(canvas, currentNodeId));
 
   return canvas.nodes.flatMap<PromptReferenceSuggestion>((node) => {
@@ -840,7 +915,11 @@ function getPromptReferenceSuggestions(
       });
     }
 
-    return suggestions;
+    return currentNode?.kind === 'story'
+      ? suggestions.filter(
+          (suggestion) => suggestion.token === '@文本' || suggestion.token === '@图片',
+        )
+      : suggestions;
   });
 }
 
@@ -1475,12 +1554,14 @@ function PromptTextarea({
   canvas,
   node,
   placeholder,
+  ariaLabel = '提示词',
   stopPointerDown,
   onChange,
 }: {
   canvas: CanvasView | null;
   node: CanvasNodeView;
   placeholder: string;
+  ariaLabel?: string;
   stopPointerDown?: boolean;
   onChange(value: string): void;
 }) {
@@ -1718,6 +1799,7 @@ function PromptTextarea({
         contentEditable
         data-placeholder={placeholder}
         role="textbox"
+        aria-label={ariaLabel}
         aria-multiline="true"
         suppressContentEditableWarning
         onPointerDown={stopPointerDown ? (event) => event.stopPropagation() : undefined}
@@ -1948,6 +2030,10 @@ function getNodeIcon(kind: CanvasNodeKind) {
 
   if (kind === 'chat') {
     return MessageSquare;
+  }
+
+  if (kind === 'story') {
+    return FileText;
   }
 
   if (kind === 'textAsset') {
@@ -2983,6 +3069,8 @@ export function App() {
   const [providerVideoHistoryPageSize, setProviderVideoHistoryPageSize] = useState(20);
   const [providerVideoHistoryTotal, setProviderVideoHistoryTotal] = useState(0);
   const providerVideoHistoryRequestIdRef = useRef(0);
+  const pendingStoryAutoRunNodeIdsRef = useRef<string[]>([]);
+  const generatedNodeIdRef = useRef(0);
   const [showProviderManager, setShowProviderManager] = useState(false);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [providerSearchQuery, setProviderSearchQuery] = useState('');
@@ -3602,7 +3690,7 @@ export function App() {
 
   function canNodeConnectToVideoPort(node: CanvasNodeView, portId: SeedanceInputPortId) {
     if (portId === 'text') {
-      return node.kind === 'textAsset' || node.kind === 'chat';
+      return node.kind === 'textAsset' || isChatLikeNode(node);
     }
 
     if (portId === 'first_frame_image' || portId === 'last_frame_image' || portId === 'reference_image') {
@@ -3889,6 +3977,16 @@ export function App() {
     selectedProvider?.id,
     showProviderManager,
   ]);
+
+  useEffect(() => {
+    if (pendingStoryAutoRunNodeIdsRef.current.length === 0) {
+      return;
+    }
+
+    const nodeIds = pendingStoryAutoRunNodeIdsRef.current.slice();
+    pendingStoryAutoRunNodeIdsRef.current = [];
+    void autoRunStoryGeneratedNodes(nodeIds);
+  }, [workspaceState]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -4563,6 +4661,12 @@ export function App() {
             ? getVideoCapabilities(template.modelId).fixedFrameRate
             : undefined,
         seedanceScenario: defaultVideoScenario,
+        storyExecutionMode:
+          template.kind === 'story' ? ('structure_only' as StoryNodeExecutionMode) : undefined,
+        storyExpansionMode:
+          template.kind === 'story' ? ('full' as StoryNodeExpansionMode) : undefined,
+        storyStructuredOutput:
+          template.kind === 'story' ? createEmptyStoryStructuredOutput() : undefined,
         maskLineWidth: template.kind === 'diamondMask' ? 1 : undefined,
         maskGridDensity: template.kind === 'diamondMask' ? 38 : undefined,
         maskColor: template.kind === 'diamondMask' ? 'white' : undefined,
@@ -4905,6 +5009,195 @@ export function App() {
     }));
     void refreshCanvasAssets();
     return true;
+  }
+
+  function findCanvasAndNodeById(nodeId: string): {
+    canvas: CanvasView;
+    node: CanvasNodeView;
+  } | null {
+    for (const canvas of workspaceStateRef.current.canvases) {
+      const node = canvas.nodes.find((candidate) => candidate.id === nodeId);
+      if (node) {
+        return { canvas, node };
+      }
+    }
+
+    return null;
+  }
+
+  async function autoRunStoryGeneratedNodes(nodeIds: string[]) {
+    for (const nodeId of nodeIds) {
+      const target = findCanvasAndNodeById(nodeId);
+      if (!target) {
+        continue;
+      }
+
+      if (target.node.kind !== 'image' && target.node.kind !== 'video') {
+        continue;
+      }
+
+      await submitNodeGeneration(target.node);
+    }
+  }
+
+  function createGeneratedNodeId(prefix: 'node_image_output' | 'node_video_output'): string {
+    generatedNodeIdRef.current += 1;
+    return `${prefix}_${Date.now()}_${generatedNodeIdRef.current}`;
+  }
+
+  function removeDownstreamNodesForStoryNode(sourceNodeId: string) {
+    const targetCanvas = workspaceStateRef.current.canvases.find((canvas) =>
+      canvas.nodes.some((candidate) => candidate.id === sourceNodeId),
+    );
+
+    if (!targetCanvas) {
+      return;
+    }
+
+    const downstreamNodeIds = new Set<string>();
+    const visitQueue = [sourceNodeId];
+
+    while (visitQueue.length > 0) {
+      const currentNodeId = visitQueue.shift();
+      if (!currentNodeId) {
+        continue;
+      }
+
+      targetCanvas.edges.forEach((edge) => {
+        if (edge.fromNodeId !== currentNodeId || downstreamNodeIds.has(edge.toNodeId)) {
+          return;
+        }
+
+        downstreamNodeIds.add(edge.toNodeId);
+        visitQueue.push(edge.toNodeId);
+      });
+    }
+
+    if (downstreamNodeIds.size === 0) {
+      return;
+    }
+
+    markCanvasDirty(targetCanvas.id);
+    setWorkspaceStateWithHistory((current) => ({
+      ...current,
+      canvases: current.canvases.map((canvas) => {
+        if (canvas.id !== targetCanvas.id) {
+          return canvas;
+        }
+
+        return {
+          ...canvas,
+          updatedAt: '刚刚',
+          nodes: canvas.nodes.filter(
+            (node) => node.id === sourceNodeId || !downstreamNodeIds.has(node.id),
+          ),
+          edges: canvas.edges.filter(
+            (edge) =>
+              edge.fromNodeId !== sourceNodeId &&
+              !downstreamNodeIds.has(edge.fromNodeId) &&
+              !downstreamNodeIds.has(edge.toNodeId),
+          ),
+        };
+      }),
+    }));
+  }
+
+  function expandStoryNodeOutputs(
+    sourceNode: CanvasNodeView,
+    structuredOutput: NonNullable<CanvasNodeView['storyStructuredOutput']>,
+    options: {
+      expansionMode?: StoryNodeExpansionMode;
+      executionMode?: StoryNodeExecutionMode;
+      successMessage?: string;
+    } = {},
+  ) {
+    const targetCanvas = workspaceStateRef.current.canvases.find((canvas) =>
+      canvas.nodes.some((candidate) => candidate.id === sourceNode.id),
+    );
+
+    if (!targetCanvas) {
+      return;
+    }
+
+    const expansionMode = options.expansionMode ?? sourceNode.storyExpansionMode ?? 'full';
+    const executionMode = options.executionMode ?? sourceNode.storyExecutionMode ?? 'structure_only';
+    if (expansionMode === 'structure_only' || executionMode === 'structure_only') {
+      return;
+    }
+
+    const batchId = `story_batch_${Date.now()}`;
+    let index = 0;
+    const expansion = buildStoryNodeExpansion({
+      canvas: targetCanvas,
+      storyNode: sourceNode,
+      structuredOutput,
+      expansionMode,
+      generationBatchId: batchId,
+      createNodeId: (role, segmentId) => {
+        index += 1;
+        return `node_story_${role}_${segmentId ?? 'global'}_${Date.now()}_${index}`;
+      },
+    });
+
+    if (expansion.nodes.length === 0) {
+      return;
+    }
+
+    markCanvasDirty(targetCanvas.id);
+    setWorkspaceStateWithHistory((current) => ({
+      ...current,
+      canvases: current.canvases.map((canvas) => {
+        if (canvas.id !== targetCanvas.id) {
+          return canvas;
+        }
+
+        return {
+          ...canvas,
+          updatedAt: '刚刚',
+          nodes: canvas.nodes.map((node) =>
+            node.id === sourceNode.id
+              ? {
+                  ...node,
+                  storyGenerationBatchId: batchId,
+                }
+              : node,
+          ).concat(expansion.nodes),
+          edges: canvas.edges.concat(expansion.edges),
+        };
+      }),
+    }));
+
+    setCanvasMessage(options.successMessage ?? `已从故事节点生成 ${expansion.nodes.length} 个下游节点。`);
+
+    if (executionMode === 'fully_automatic') {
+      pendingStoryAutoRunNodeIdsRef.current = expansion.autoRunNodeIds.slice();
+    }
+  }
+
+  function regenerateStoryNodesFromStructuredOutput(
+    sourceNode: CanvasNodeView,
+    options: {
+      structuredOutput?: NonNullable<CanvasNodeView['storyStructuredOutput']>;
+      expansionMode?: StoryNodeExpansionMode;
+      successMessage?: string;
+    } = {},
+  ) {
+    const structuredOutput =
+      options.structuredOutput ??
+      (hasStoryExpansionContent(sourceNode.storyStructuredOutput)
+        ? sourceNode.storyStructuredOutput
+        : parseStoryStructuredOutput(sourceNode.storyRawOutput ?? sourceNode.modelOutputText ?? ''));
+    if (!structuredOutput) {
+      setCanvasMessage('当前结构化结果无法解析，请先检查 JSON 格式。');
+      return;
+    }
+
+    removeDownstreamNodesForStoryNode(sourceNode.id);
+    expandStoryNodeOutputs(sourceNode, structuredOutput, {
+      expansionMode: options.expansionMode,
+      executionMode: 'structure_and_nodes',
+      successMessage: options.successMessage,
+    });
   }
 
   function getFirstSupportedMediaFile(fileList?: FileList | null): File | null {
@@ -6148,7 +6441,7 @@ export function App() {
   }
 
   function findProvidersForNode(node: CanvasNodeView): ProviderConfig[] {
-    if (node.kind === 'chat' || node.modelId === 'chat') {
+    if (isChatLikeNode(node) || node.modelId === 'chat') {
       return findChatProviders(providers, getChatFormat(node));
     }
 
@@ -6172,10 +6465,10 @@ export function App() {
 
     return provider
         ? findProviderModelsForNodeModel(
-          provider,
-          node.modelId,
-          getChatFormat(node),
-          node.kind === 'chat' ? 'chat' : undefined,
+        provider,
+        node.modelId,
+        getChatFormat(node),
+          isChatLikeNode(node) ? 'chat' : undefined,
           node.kind === 'video' ? getVideoModelFormat(node) : undefined,
         )
       : [];
@@ -6186,7 +6479,7 @@ export function App() {
       provider,
       node.modelId,
       getChatFormat(node),
-      node.kind === 'chat' ? 'chat' : undefined,
+      isChatLikeNode(node) ? 'chat' : undefined,
       node.kind === 'video' ? getVideoModelFormat(node) : undefined,
     );
   }
@@ -6539,7 +6832,7 @@ export function App() {
     }
 
     if (task.videoUrl && (savedVideoPath || localVideoUrl || !rootDirectoryHandle || !folderStorageReady)) {
-      const nextAssetNodeId = `node_video_output_${Date.now()}`;
+      const nextAssetNodeId = createGeneratedNodeId('node_video_output');
       const assetNodeCreated = addGeneratedAssetNode({
         sourceNode: node,
         nodeId: nextAssetNodeId,
@@ -6706,7 +6999,14 @@ export function App() {
       ...createGenerationRecord({
         id: generationRecordId,
         nodeId: node.id,
-        nodeKind: node.kind === 'video' ? 'video' : node.kind === 'image' ? 'image' : 'chat',
+        nodeKind:
+          node.kind === 'video'
+            ? 'video'
+            : node.kind === 'image'
+              ? 'image'
+              : node.kind === 'story'
+                ? 'story'
+                : 'chat',
         canonicalModelId: node.modelId,
         providerId: provider.id,
         providerModelId,
@@ -6727,7 +7027,7 @@ export function App() {
       generationError: undefined,
       estimatedTokenCost:
         node.kind === 'video' ? estimatedVideoTokenCost ?? current.estimatedTokenCost : current.estimatedTokenCost,
-      ...(node.kind === 'chat'
+      ...(isChatLikeNode(node)
         ? {
             modelOutputText: '',
             outputText: undefined,
@@ -6735,7 +7035,7 @@ export function App() {
         : {}),
     }), { history: false });
 
-    if (node.kind === 'chat') {
+    if (isChatLikeNode(node)) {
       const result = await streamChatGenerationNode({
         canvas: activeCanvas,
         nodeId: node.id,
@@ -6761,23 +7061,43 @@ export function App() {
         return;
       }
 
-      updateNode(node.id, (current) => ({
-        ...current,
-        generationStatus: 'succeeded',
-        generationError: undefined,
-        modelOutputText: result.output.kind === 'text' ? result.output.text : current.modelOutputText,
-        outputVersions:
-          result.output.kind === 'text'
-            ? appendOutputVersion(getOutputVersionsForDisplay(current), result.output.text, 'model')
-            : current.outputVersions,
-        outputText: undefined,
-      }), { history: false });
+      const nextStoryStructuredOutput =
+        node.kind === 'story' && result.output.kind === 'text'
+          ? parseStoryStructuredOutput(result.output.text) ?? {
+              ...(node.storyStructuredOutput ?? createEmptyStoryStructuredOutput()),
+              storySummary: result.output.text.slice(0, 240),
+              rawModelOutput: result.output.text,
+            }
+          : node.storyStructuredOutput;
+
+      updateNode(node.id, (current) => {
+        return {
+          ...current,
+          generationStatus: 'succeeded',
+          generationError: undefined,
+          modelOutputText: result.output.kind === 'text' ? result.output.text : current.modelOutputText,
+          storyRawOutput:
+            node.kind === 'story' && result.output.kind === 'text'
+              ? result.output.text
+              : current.storyRawOutput,
+          storyStructuredOutput:
+            node.kind === 'story' ? nextStoryStructuredOutput : current.storyStructuredOutput,
+          outputVersions:
+            result.output.kind === 'text'
+              ? appendOutputVersion(getStoredOutputVersions(current), result.output.text, 'model')
+              : current.outputVersions,
+          outputText: undefined,
+        };
+      }, { history: false });
       updateGenerationHistoryRecord(generationRecordId, (record) => ({
         ...record,
         status: 'succeeded',
         outputAssetIds: [node.id],
         endedAt: new Date().toISOString(),
       }));
+      if (node.kind === 'story' && nextStoryStructuredOutput) {
+        expandStoryNodeOutputs(node, nextStoryStructuredOutput);
+      }
       return;
     }
 
@@ -6913,7 +7233,7 @@ export function App() {
                   assetDataUrl: result.output.dataUrl ?? result.output.url,
                   mimeType: blob.type || 'image/png',
                 };
-          const nextAssetNodeId = `node_image_output_${Date.now()}`;
+          const nextAssetNodeId = createGeneratedNodeId('node_image_output');
           const assetNodeCreated = addGeneratedAssetNode({
             sourceNode: node,
             nodeId: nextAssetNodeId,
@@ -8402,21 +8722,173 @@ export function App() {
                       </>
                     ) : (
                       <>
+                        {node.kind === 'story'
+                          ? (() => {
+                              const storyProviders = findProvidersForNode(node);
+                              const storyProviderModels = findProviderModelsForNode(node);
+                              const resolvedStructuredOutput =
+                                hasStoryExpansionContent(node.storyStructuredOutput)
+                                  ? node.storyStructuredOutput
+                                  : parseStoryStructuredOutput(
+                                      node.storyRawOutput ?? node.modelOutputText ?? '',
+                                    );
+
+                              return (
+                                <div className="node-inline-story-config">
+                                  <div className="node-inline-story-row">
+                                    <label className="node-inline-story-inline-field">
+                                      <span className="node-inline-story-inline-label">供应商</span>
+                                      <InlineOptionSelect
+                                        ariaLabel="供应商"
+                                        value={node.providerId ?? ''}
+                                        menuKey={`node-inline-story-provider:${node.id}`}
+                                        openMenuKey={openInlineSelectKey}
+                                        setOpenMenuKey={setOpenInlineSelectKey}
+                                        variant="compact"
+                                        onChange={(value) => {
+                                          const nextProviderId = value || undefined;
+                                          const nextProvider = nextProviderId
+                                            ? storyProviders.find((provider) => provider.id === nextProviderId)
+                                            : storyProviders[0];
+                                          const nextModel = nextProvider
+                                            ? findProviderModelsForNodeWithProvider(node, nextProvider)[0]
+                                            : undefined;
+
+                                          updateNode(node.id, (current) => ({
+                                            ...current,
+                                            providerId: nextProviderId,
+                                            providerModelId: nextProviderId ? nextModel?.providerModelId : undefined,
+                                            modelId: nextModel?.providerModelId ?? current.modelId,
+                                          }));
+                                        }}
+                                        options={[
+                                          { value: '', label: '自动选择供应商' },
+                                          ...storyProviders.map((provider) => ({
+                                            value: provider.id,
+                                            label: provider.name,
+                                          })),
+                                        ]}
+                                      />
+                                    </label>
+                                    <label className="node-inline-story-inline-field">
+                                      <span className="node-inline-story-inline-label">供应商模型</span>
+                                      <InlineOptionSelect
+                                        ariaLabel="供应商模型"
+                                        value={node.providerModelId ?? ''}
+                                        menuKey={`node-inline-story-provider-model:${node.id}`}
+                                        openMenuKey={openInlineSelectKey}
+                                        setOpenMenuKey={setOpenInlineSelectKey}
+                                        variant="compact"
+                                        onChange={(value) => {
+                                          const nextProviderModelId = value || undefined;
+                                          updateNode(node.id, (current) => ({
+                                            ...current,
+                                            providerModelId: nextProviderModelId,
+                                            modelId: nextProviderModelId ?? current.modelId,
+                                          }));
+                                        }}
+                                        options={[
+                                          { value: '', label: '自动选择模型' },
+                                          ...storyProviderModels.map((model) => ({
+                                            value: model.providerModelId,
+                                            label: model.displayName ?? model.providerModelId,
+                                          })),
+                                        ]}
+                                      />
+                                    </label>
+                                  </div>
+                                  <div className="node-inline-story-row">
+                                    <label className="node-inline-story-inline-field">
+                                      <span className="node-inline-story-inline-label">执行方式</span>
+                                      <InlineOptionSelect
+                                        ariaLabel="执行方式"
+                                        value={node.storyExecutionMode ?? 'structure_only'}
+                                        menuKey={`node-inline-story-execution-mode:${node.id}`}
+                                        openMenuKey={openInlineSelectKey}
+                                        setOpenMenuKey={setOpenInlineSelectKey}
+                                        variant="compact"
+                                        onChange={(value) =>
+                                          updateNode(node.id, (current) => ({
+                                            ...current,
+                                            storyExecutionMode: value as StoryNodeExecutionMode,
+                                          }))
+                                        }
+                                        options={[
+                                          { value: 'structure_only', label: '仅拆解' },
+                                          { value: 'structure_and_nodes', label: '拆解并铺节点' },
+                                          { value: 'fully_automatic', label: '拆解并全自动执行' },
+                                        ]}
+                                      />
+                                    </label>
+                                    <button
+                                      type="button"
+                                      className="node-inline-generate-button node-inline-story-generate-button"
+                                      disabled={isGenerating}
+                                      onPointerDown={(event) => event.stopPropagation()}
+                                      onClick={() => void submitNodeGeneration(node)}
+                                    >
+                                      {isGenerating ? '提交中' : '生成'}
+                                    </button>
+                                  </div>
+                                  {resolvedStructuredOutput ? (
+                                    <div className="node-inline-story-actions">
+                                      <label className="node-inline-story-inline-field">
+                                        <span className="node-inline-story-inline-label">重建类型</span>
+                                        <InlineOptionSelect
+                                          ariaLabel="重建类型"
+                                          value={node.storyExpansionMode ?? 'full'}
+                                          menuKey={`node-inline-story-expansion-mode:${node.id}`}
+                                          openMenuKey={openInlineSelectKey}
+                                          setOpenMenuKey={setOpenInlineSelectKey}
+                                          variant="compact"
+                                          onChange={(value) =>
+                                            updateNode(node.id, (current) => ({
+                                              ...current,
+                                              storyExpansionMode: value as StoryNodeExpansionMode,
+                                            }))
+                                          }
+                                          options={[
+                                            { value: 'structure_only', label: '仅生成结构' },
+                                            { value: 'global_assets', label: '结构 + 全局资产' },
+                                            { value: 'full', label: '展开全部节点' },
+                                          ]}
+                                        />
+                                      </label>
+                                      <button
+                                        type="button"
+                                        className="node-inline-generate-button"
+                                        onPointerDown={(event) => event.stopPropagation()}
+                                        onClick={() =>
+                                          regenerateStoryNodesFromStructuredOutput(node, {
+                                            structuredOutput: resolvedStructuredOutput,
+                                            expansionMode: node.storyExpansionMode ?? 'full',
+                                          })
+                                        }
+                                      >
+                                        重建输出
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              );
+                            })()
+                          : null}
+                        {node.kind !== 'story' ? (
                         <p>
                           {providersForNode.length > 0
                             ? `可用供应商：${providersForNode
                                 .map((provider) => provider.name)
                                 .join('、')}`
-                            : '对话模型供应商待配置'}
+                            : isChatLikeNode(node)
+                              ? '对话模型供应商待配置'
+                              : '模型供应商待配置'}
                         </p>
+                        ) : null}
                         <PromptTextarea
                           canvas={activeCanvas}
                           node={node}
-                          placeholder={
-                            node.kind === 'video'
-                              ? getVideoPromptPlaceholder(node.seedanceScenario ?? 'text_to_video')
-                              : '输入节点提示词，支持 @文本 / @图片 / @视频 引用已连线的上游资产'
-                          }
+                          ariaLabel="节点提示词"
+                          placeholder={getNodePromptPlaceholder(node)}
                           stopPointerDown
                           onChange={(value) =>
                             updateNode(node.id, (current) => ({
@@ -8463,6 +8935,10 @@ export function App() {
                               <p className="node-generation-id">生成ID：{node.generationId}</p>
                             ) : null}
                           </>
+                        ) : node.kind === 'story' ? (
+                          node.generationId ? (
+                            <p className="node-generation-id">生成ID：{node.generationId}</p>
+                          ) : null
                         ) : (
                           <button
                             type="button"
@@ -8660,7 +9136,7 @@ export function App() {
                   onGenerate={() => void generateDiamondMaskAsset(selectedNode)}
                 />
               ) : null}
-              {selectedNode.kind === 'chat' ? (
+              {isChatLikeNode(selectedNode) ? (
                 <label>
                   调用格式
                   <InlineOptionSelect
@@ -8692,6 +9168,178 @@ export function App() {
                     ]}
                   />
                 </label>
+              ) : null}
+              {selectedNode.kind === 'story' ? (
+                <div className="story-generation-settings">
+                  <label>
+                    执行方式
+                    <InlineOptionSelect
+                      ariaLabel="执行方式"
+                      value={selectedNode.storyExecutionMode ?? 'structure_only'}
+                      menuKey={`story-execution-mode:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          storyExecutionMode: value as StoryNodeExecutionMode,
+                        }))
+                      }
+                      options={[
+                        { value: 'structure_only', label: '仅拆解' },
+                        { value: 'structure_and_nodes', label: '拆解并铺节点' },
+                        { value: 'fully_automatic', label: '拆解并全自动执行' },
+                      ]}
+                    />
+                  </label>
+                  <label>
+                    展开级别
+                    <InlineOptionSelect
+                      ariaLabel="展开级别"
+                      value={selectedNode.storyExpansionMode ?? 'full'}
+                      menuKey={`story-expansion-mode:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          storyExpansionMode: value as StoryNodeExpansionMode,
+                        }))
+                      }
+                      options={[
+                        { value: 'structure_only', label: '仅生成结构' },
+                        { value: 'global_assets', label: '结构 + 全局资产' },
+                        { value: 'full', label: '展开全部节点' },
+                      ]}
+                    />
+                  </label>
+                  {selectedNode.storyStructuredOutput &&
+                  (selectedNode.storyStructuredOutput.storySummary.trim() ||
+                    selectedNode.storyStructuredOutput.narrativeSegments.length > 0 ||
+                    getStoryGlobalAssetCount(selectedNode.storyStructuredOutput) > 0) ? (
+                      <section className="story-structured-panel" aria-label="故事结构概览">
+                        <div className="story-structured-panel-header">
+                          <h3>结构概览</h3>
+                          <span>
+                            {selectedNode.storyStructuredOutput.narrativeSegments.length > 0
+                              ? `${selectedNode.storyStructuredOutput.narrativeSegments.length} 段`
+                              : '待补充分段'}
+                          </span>
+                        </div>
+                        <p className="story-structured-summary">
+                          {selectedNode.storyStructuredOutput.storySummary || '当前还没有可用的结构化摘要。'}
+                        </p>
+                        <div className="story-structured-actions">
+                          <button
+                            type="button"
+                            className="story-structured-action-button"
+                            onClick={() => regenerateStoryNodesFromStructuredOutput(selectedNode)}
+                          >
+                            从当前 JSON 重新生成节点
+                          </button>
+                        </div>
+                        <div className="story-structured-stats">
+                          <article className="story-structured-stat">
+                            <span>全局资产</span>
+                            <strong>{getStoryGlobalAssetCount(selectedNode.storyStructuredOutput)}</strong>
+                          </article>
+                          <article className="story-structured-stat">
+                            <span>叙事段落</span>
+                            <strong>{selectedNode.storyStructuredOutput.narrativeSegments.length}</strong>
+                          </article>
+                          <article className="story-structured-stat">
+                            <span>预计总时长</span>
+                            <strong>{getStoryDurationSeconds(selectedNode.storyStructuredOutput)} 秒</strong>
+                          </article>
+                          <article className="story-structured-stat">
+                            <span>分镜数量</span>
+                            <strong>{getStoryShotCount(selectedNode.storyStructuredOutput)}</strong>
+                          </article>
+                        </div>
+                        {selectedNode.storyStructuredOutput.styleNotes?.length ? (
+                          <div className="story-structured-tags" aria-label="风格说明">
+                            {selectedNode.storyStructuredOutput.styleNotes.map((note, index) => (
+                              <span className="story-structured-tag" key={`${note}-${index}`}>
+                                {note}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {selectedNode.storyStructuredOutput.narrativeSegments.length > 0 ? (
+                          <div className="story-segment-list">
+                            {selectedNode.storyStructuredOutput.narrativeSegments.map((segment) => (
+                              <article className="story-segment-card" key={segment.id}>
+                                <div className="story-segment-card-head">
+                                  <strong>{segment.title}</strong>
+                                  <span>{segment.durationSeconds} 秒</span>
+                                </div>
+                                <p>{segment.prompt}</p>
+                                <div className="story-segment-card-meta">
+                                  <span>{segment.shots.length} 个分镜</span>
+                                  <span>{segment.continuityNotes.length} 条连续性要求</span>
+                                </div>
+                                <div className="story-segment-card-actions">
+                                  <button
+                                    type="button"
+                                    className="story-structured-action-button"
+                                    onClick={() =>
+                                      regenerateStoryNodesFromStructuredOutput(selectedNode, {
+                                        structuredOutput: {
+                                          ...selectedNode.storyStructuredOutput!,
+                                          globalAssets: {
+                                            scenePrompts: [],
+                                            characterSheetPrompts: [],
+                                            propSheetPrompts: [],
+                                          },
+                                          narrativeSegments: [segment],
+                                        },
+                                        expansionMode: 'full',
+                                      })
+                                    }
+                                  >
+                                    {`生成“${segment.title}”节点`}
+                                  </button>
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        ) : null}
+                      </section>
+                    ) : null}
+                  <label>
+                    结构化摘要
+                    <input
+                      aria-label="结构化摘要"
+                      value={selectedNode.storyStructuredOutput?.storySummary ?? ''}
+                      onChange={(event) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          storyStructuredOutput: {
+                            ...(current.storyStructuredOutput ?? createEmptyStoryStructuredOutput()),
+                            storySummary: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    原始结构化结果
+                    <textarea
+                      aria-label="原始结构化结果"
+                      value={selectedNode.storyRawOutput ?? ''}
+                      onChange={(event) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          storyRawOutput: event.target.value,
+                          storyStructuredOutput: {
+                            ...(current.storyStructuredOutput ?? createEmptyStoryStructuredOutput()),
+                            rawModelOutput: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
               ) : null}
               {selectedNode.kind === 'video' ? (
                 <div className="video-generation-settings">
@@ -8944,7 +9592,7 @@ export function App() {
                   ) : null}
                 </div>
               ) : null}
-              {selectedNode.kind === 'chat' ||
+              {isChatLikeNode(selectedNode) ||
               selectedNode.kind === 'image' ||
               selectedNode.kind === 'video' ? (
                 <>
@@ -8979,7 +9627,7 @@ export function App() {
                           providerId: nextProviderId,
                           providerModelId: nextProviderModelId,
                           modelId:
-                            selectedNode.kind === 'chat' && nextModel
+                            isChatLikeNode(selectedNode) && nextModel
                               ? nextModel.providerModelId
                               : selectedNode.kind === 'video' &&
                                   !isSoraCompatibleVideoFormat(getVideoModelFormat(selectedNode)) &&
@@ -9015,7 +9663,7 @@ export function App() {
                           ...current,
                           providerModelId: nextProviderModelId,
                           modelId:
-                            selectedNode.kind === 'chat' && nextProviderModelId
+                            isChatLikeNode(selectedNode) && nextProviderModelId
                               ? nextProviderModelId
                               : selectedNode.kind === 'video' &&
                                   !isSoraCompatibleVideoFormat(getVideoModelFormat(selectedNode)) &&
@@ -9111,7 +9759,7 @@ export function App() {
                   </label>
                 </div>
               ) : null}
-              {selectedNode.kind === 'chat' ||
+              {isChatLikeNode(selectedNode) ||
               selectedNode.kind === 'image' ||
               selectedNode.kind === 'video' ? (
                 <label>
@@ -9119,7 +9767,8 @@ export function App() {
                   <PromptTextarea
                     canvas={activeCanvas}
                     node={selectedNode}
-                    placeholder="输入节点提示词，支持 @文本 / @图片 / @视频 引用已连线的上游资产"
+                    ariaLabel="提示词"
+                    placeholder={getNodePromptPlaceholder(selectedNode)}
                     onChange={(value) =>
                       updateNode(selectedNode.id, (current) => ({
                         ...current,
@@ -9222,6 +9871,44 @@ export function App() {
                         删除
                       </button>
                     </div>
+                    {editingOutputNode.kind === 'story' &&
+                    editingOutputNode.storyStructuredOutput &&
+                    (editingOutputNode.storyStructuredOutput.storySummary.trim() ||
+                      editingOutputNode.storyStructuredOutput.narrativeSegments.length > 0 ||
+                      getStoryGlobalAssetCount(editingOutputNode.storyStructuredOutput) > 0) ? (
+                        <div className="output-modal-story-actions">
+                          <button
+                            type="button"
+                            className="story-structured-action-button"
+                            onClick={() => regenerateStoryNodesFromStructuredOutput(editingOutputNode)}
+                          >
+                            从当前 JSON 重新生成节点
+                          </button>
+                          {editingOutputNode.storyStructuredOutput.narrativeSegments.map((segment) => (
+                            <button
+                              key={segment.id}
+                              type="button"
+                              className="story-structured-action-button"
+                              onClick={() =>
+                                regenerateStoryNodesFromStructuredOutput(editingOutputNode, {
+                                  structuredOutput: {
+                                    ...editingOutputNode.storyStructuredOutput!,
+                                    globalAssets: {
+                                      scenePrompts: [],
+                                      characterSheetPrompts: [],
+                                      propSheetPrompts: [],
+                                    },
+                                    narrativeSegments: [segment],
+                                  },
+                                  expansionMode: 'full',
+                                })
+                              }
+                            >
+                              {`生成“${segment.title}”节点`}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
                     {outputEditorMode === 'preview' ? (
                       <div className="output-modal-preview-shell">
                         <OutputPreviewContent
