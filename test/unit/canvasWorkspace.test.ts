@@ -10,6 +10,7 @@ import {
   canNodeReceiveInput,
   deleteCanvas,
   exportCanvas,
+  getCanvasNodeMinimumWidth,
   getUpstreamNodeIds,
   findNodesInSelectionRect,
   getNodeCenter,
@@ -46,6 +47,32 @@ const canvases: CanvasView[] = [
 ];
 
 describe('canvas workspace persistence', () => {
+  it('uses a wider minimum width for image generation nodes', () => {
+    expect(
+      getCanvasNodeMinimumWidth({
+        id: 'node_image',
+        title: '图片生成',
+        modelId: 'gpt-image-2',
+        kind: 'image',
+        x: 0,
+        y: 0,
+      }),
+    ).toBe(440);
+  });
+
+  it('uses a doubled minimum width for video generation nodes', () => {
+    expect(
+      getCanvasNodeMinimumWidth({
+        id: 'node_video',
+        title: '视频生成',
+        modelId: 'seedance2.0',
+        kind: 'video',
+        x: 0,
+        y: 0,
+      }),
+    ).toBe(640);
+  });
+
   it('uses first canvas as default active canvas', () => {
     expect(createWorkspaceState(canvases).activeCanvasId).toBe('canvas_first');
   });
@@ -430,16 +457,16 @@ describe('canvas workspace persistence', () => {
 
   it('returns node center for edge rendering', () => {
     expect(getNodeCenter({ id: 'node_1', title: 'A', modelId: 'a', kind: 'image', x: 40, y: 20 })).toEqual({
-      x: 200,
-      y: 108,
+      x: 260,
+      y: 130,
     });
   });
 
   it('returns node input and output points for edge handles', () => {
     const node = { id: 'node_1', title: 'A', modelId: 'a', kind: 'image' as const, x: 40, y: 20 };
 
-    expect(getNodeInputPoint(node)).toEqual({ x: 40, y: 108 });
-    expect(getNodeOutputPoint(node)).toEqual({ x: 360, y: 108 });
+    expect(getNodeInputPoint(node)).toEqual({ x: 40, y: 130 });
+    expect(getNodeOutputPoint(node)).toEqual({ x: 480, y: 130 });
   });
 
   it('returns separate input points for video role ports', () => {
@@ -467,7 +494,7 @@ describe('canvas workspace persistence', () => {
     const rect = normalizeCanvasSelectionRect({ x: 620, y: 180 }, { x: 100, y: -20 });
 
     expect(rect).toEqual({ x: 100, y: -20, width: 520, height: 200 });
-    expect(findNodesInSelectionRect(nodes, rect, { width: 320, height: 220 })).toEqual([
+    expect(findNodesInSelectionRect(nodes, rect)).toEqual([
       'node_1',
       'node_2',
     ]);

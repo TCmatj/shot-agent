@@ -205,6 +205,23 @@ export function getEffectiveNodeOutputText(node: CanvasNodeView): string | undef
   return getEffectiveOutputText(node);
 }
 
+function getNodePromptTextSource(node: CanvasNodeView): string | undefined {
+  if (node.kind === 'textAsset') {
+    return node.textContent;
+  }
+
+  const outputText = getEffectiveNodeOutputText(node);
+  if (outputText?.trim()) {
+    return outputText;
+  }
+
+  if (node.kind === 'image' && node.prompt?.trim()) {
+    return node.prompt;
+  }
+
+  return undefined;
+}
+
 export function collectGenerationInputAssetIds(input: {
   canvas: CanvasView;
   nodeId: string;
@@ -791,6 +808,10 @@ function buildOpenAIImageRequest(
   };
 }
 
+function getStorySystemInstruction(node: Pick<CanvasNodeView, 'storySystemPrompt'>): string {
+  return node.storySystemPrompt?.trim() || buildStorySystemInstruction();
+}
+
 function buildOpenAIChatRequest(
   provider: ProviderConfig,
   token: string,
@@ -818,7 +839,7 @@ function buildOpenAIChatRequest(
   if (node.kind === 'story') {
     messages.push({
       role: 'system',
-      content: buildStorySystemInstruction(),
+      content: getStorySystemInstruction(node),
     });
   }
 
@@ -1056,7 +1077,7 @@ function buildAnthropicMessagesRequest(
       return source ? [{ type: 'image', source }] : [];
     }),
   ];
-  const system = node.kind === 'story' ? buildStorySystemInstruction() : undefined;
+  const system = node.kind === 'story' ? getStorySystemInstruction(node) : undefined;
 
   return {
     url: `${normalizeBaseURL(provider.baseURL)}/messages`,
@@ -1078,10 +1099,10 @@ function buildAnthropicMessagesRequest(
   };
 }
 
-function buildStorySystemInstruction(): string {
+export function buildStorySystemInstruction(): string {
   return [
     '你是一个影视故事拆解节点，不是普通聊天助手。',
-    '如果用户只给了一个创意、一句话或一个主题，你要先补全成一个完整、可拍摄、具有明确视觉与叙事节奏的无厘头故事，再继续拆解。',
+    '如果用户只给了一个创意、一句话或一个主题，你要先补全成一个完整、可拍摄、具有明确视觉与叙事节奏的故事，再继续拆解。',
     '输出目标不是闲聊，而是为后续图片生成节点和视频生成节点直接提供可用提示词。',
     '所有提示词都要尽量细致详细，优先给出具体主体、场景、时间、天气、光线、镜头语言、动作、情绪、材质、服装、构图、景别、色彩、气氛、声音与节奏信息，避免空泛描述。',
     '只输出严格 JSON，不要输出任何额外解释、标题、前后缀、Markdown 说明文字。',
@@ -1091,6 +1112,7 @@ function buildStorySystemInstruction(): string {
     'characterSheetPrompts 对应关键人物多角度角色板图片提示词，要写清楚人物年龄感、外貌、发型、服装、材质、配色、表情气质、标志性动作与多视角要求。',
     'propSheetPrompts 对应关键物品多角度白底图提示词，要写清楚物品材质、结构、颜色、磨损状态、功能特征，并强调白底、多个角度、清晰展示。',
     'narrativeSegments 中每个段落都要服务一个视频生成节点，每个段落时间长度为 4-15 秒。',
+    '每个叙事段落的 durationSeconds 必须输出为整数秒，不要输出小数。',
     '每个 narrativeSegment 必须包含：id、title、durationSeconds、openingTransition、prompt、shots、firstFramePrompt、lastFramePrompt、motionSketchPrompt、continuityNotes。',
     'segment.prompt 就是叙事段落提示词，需要自动填充到视频生成节点，必须总结该段全部分镜内容与整体节奏。',
     'shots 是分镜列表。分镜包含时长、角色、运镜、必要的对话、对话节奏、气氛、BGM等大模型认为精确的描述。',
@@ -1644,10 +1666,7 @@ function collectPromptReferencedInputs(node: CanvasNodeView, canvas: CanvasView)
     }
 
     if (kind === 'text') {
-      const text =
-        referencedNode.kind === 'textAsset'
-          ? referencedNode.textContent
-          : getEffectiveNodeOutputText(referencedNode);
+      const text = getNodePromptTextSource(referencedNode);
 
       return text ? [{ node: referencedNode, role: 'text', content: text, token: match.token }] : [];
     }
@@ -1728,10 +1747,7 @@ function getPromptReferenceResolution(
 
   return {
     text: upstreamNodes
-      .filter(
-        (current) =>
-          current.kind === 'textAsset' || Boolean(getEffectiveNodeOutputText(current)),
-      )
+      .filter((current) => Boolean(getNodePromptTextSource(current)))
       .map((current) => current.id),
     image: upstreamNodes
       .filter(

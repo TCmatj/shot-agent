@@ -1638,8 +1638,35 @@ describe('generation client request building', () => {
     });
     const body = result.ok ? JSON.parse(result.request.body as string) : null;
     expect(body?.system).toContain('每个段落时间长度为 4-15 秒');
+    expect(body?.system).toContain('完整、可拍摄、具有明确视觉与叙事节奏的故事');
+    expect(body?.system).toContain('每个叙事段落的 durationSeconds 必须输出为整数秒');
     expect(body?.system).toContain('分镜包含时长、角色、运镜、必要的对话、对话节奏、气氛、BGM');
     expect(body?.system).toContain('每个叙事段落一个运镜合集');
+  });
+
+  it('uses the custom story system prompt when the node overrides the built-in instruction', () => {
+    const result = buildGenerationRequest({
+      canvas: {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'story_1'
+            ? {
+                ...node,
+                chatFormat: 'anthropic',
+                modelId: 'claude-sonnet-4-5',
+                storySystemPrompt: '只输出一个极短 JSON，durationSeconds 仍必须为整数。',
+              }
+            : node,
+        ),
+      },
+      nodeId: 'story_1',
+      provider: anthropicProvider,
+      token: 'anthropic-token',
+      stream: true,
+    });
+
+    const body = result.ok ? JSON.parse(result.request.body as string) : null;
+    expect(body?.system).toBe('只输出一个极短 JSON，durationSeconds 仍必须为整数。');
   });
 
   it('rejects chat requests with more than 20 image inputs', () => {

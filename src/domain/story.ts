@@ -1,6 +1,9 @@
+import JSON5 from 'json5';
+
 export type StoryNodeExecutionMode =
   | 'structure_only'
   | 'structure_and_nodes'
+  | 'structure_and_generate_images'
   | 'fully_automatic';
 
 export type StoryNodeExpansionMode = 'structure_only' | 'global_assets' | 'full';
@@ -100,9 +103,9 @@ export function parseStoryStructuredOutput(value: string): StoryStructuredOutput
   }
 
   try {
-    const parsed = JSON.parse(candidate) as Record<string, unknown>;
+    const parsed = parseStoryRecord(candidate);
     const version = normalizeStoryVersion(parsed.version);
-    const storySummary = typeof parsed.storySummary === 'string' ? parsed.storySummary : null;
+    const storySummary = normalizeStorySummary(parsed.storySummary);
     const globalAssets = normalizeStoryGlobalAssets(parsed.globalAssets);
     const narrativeSegments = normalizeStoryNarrativeSegments(parsed.narrativeSegments);
 
@@ -120,6 +123,14 @@ export function parseStoryStructuredOutput(value: string): StoryStructuredOutput
     };
   } catch {
     return null;
+  }
+}
+
+function parseStoryRecord(candidate: string): Record<string, unknown> {
+  try {
+    return JSON.parse(candidate) as Record<string, unknown>;
+  } catch {
+    return JSON5.parse(candidate) as Record<string, unknown>;
   }
 }
 
@@ -143,12 +154,85 @@ function isString(value: unknown): value is string {
   return typeof value === 'string';
 }
 
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function normalizeNumberish(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const matched = value.match(/-?\d+(?:\.\d+)?/);
+  if (!matched) {
+    return null;
+  }
+
+  const parsed = Number(matched[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      const normalized = normalizeOptionalString(item);
+      return normalized ? [normalized] : [];
+    });
+  }
+
+  if (typeof value === 'string') {
+    return value
+      .split(/[、,，/|]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
 function normalizeStoryVersion(value: unknown): 1 | null {
   if (value === 1 || value === '1' || value === '1.0') {
     return 1;
   }
 
   return null;
+}
+
+function normalizeStorySummary(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const parts = Object.entries(record).flatMap(([key, entry]) => {
+    if (typeof entry !== 'string') {
+      return [];
+    }
+
+    const normalizedKey = key.trim();
+    const normalizedValue = entry.trim();
+    if (!normalizedValue) {
+      return [];
+    }
+
+    return normalizedKey ? [`${normalizedKey}：${normalizedValue}`] : [normalizedValue];
+  });
+
+  return parts.length > 0 ? parts.join('\n') : null;
 }
 
 function normalizePromptItem(
@@ -232,21 +316,25 @@ function normalizeTransitionSpec(value: unknown): StoryTransitionSpec | null {
   }
 
   const record = value as Record<string, unknown>;
-  if (
-    typeof record.type !== 'string' ||
-    typeof record.description !== 'string' ||
-    typeof record.durationSeconds !== 'number'
-  ) {
+  const type = normalizeOptionalString(record.type) ?? normalizeOptionalString(record.transitionType);
+  const description =
+    normalizeOptionalString(record.description)
+    ?? normalizeOptionalString(record.summary)
+    ?? normalizeOptionalString(record.prompt);
+  const durationSeconds =
+    normalizeNumberish(record.durationSeconds)
+    ?? normalizeNumberish(record.duration)
+    ?? normalizeNumberish(record.seconds);
+
+  if (!type || !description || durationSeconds === null) {
     return null;
   }
 
   return {
-    type: record.type as StoryTransitionSpec['type'],
-    description: record.description,
-    durationSeconds: record.durationSeconds,
-    continuityFocus: Array.isArray(record.continuityFocus)
-      ? record.continuityFocus.filter(isString)
-      : undefined,
+    type: type as StoryTransitionSpec['type'],
+    description,
+    durationSeconds,
+    continuityFocus: normalizeStringArray(record.continuityFocus),
   };
 }
 
@@ -256,17 +344,27 @@ function normalizeStoryShot(value: unknown, index: number): StoryShot | null {
   }
 
   const record = value as Record<string, unknown>;
-  const durationSeconds = typeof record.durationSeconds === 'number' ? record.durationSeconds : null;
-  const characters = Array.isArray(record.characters) ? record.characters.filter(isString) : [];
+  const durationSeconds =
+    normalizeNumberish(record.durationSeconds)
+    ?? normalizeNumberish(record.duration)
+    ?? normalizeNumberish(record.seconds);
+  const characters = [
+    ...normalizeStringArray(record.characters),
+    ...normalizeStringArray(record.character),
+  ];
   const cameraMotion =
-    typeof record.cameraMotion === 'string'
-      ? record.cameraMotion
-      : typeof record.cameraMovement === 'string'
-        ? record.cameraMovement
-        : null;
-  const action = typeof record.action === 'string' ? record.action : null;
+    normalizeOptionalString(record.cameraMotion)
+    ?? normalizeOptionalString(record.cameraMovement)
+    ?? normalizeOptionalString(record.camera)
+    ?? normalizeOptionalString(record.cameraMove)
+    ?? normalizeOptionalString(record.cameraPath);
+  const action =
+    normalizeOptionalString(record.action)
+    ?? normalizeOptionalString(record.description)
+    ?? normalizeOptionalString(record.visual)
+    ?? normalizeOptionalString(record.prompt);
 
-  if (!durationSeconds || characters.length === 0 || !cameraMotion || !action) {
+  if (durationSeconds === null || !cameraMotion || !action) {
     return null;
   }
 
@@ -280,29 +378,34 @@ function normalizeStoryShot(value: unknown, index: number): StoryShot | null {
         ? record.title.trim()
         : `镜头 ${index + 1}`,
     durationSeconds,
-    characters,
-    props: Array.isArray(record.props) ? record.props.filter(isString) : undefined,
+    characters: characters.length > 0 ? characters : ['未指定'],
+    props: normalizeStringArray(record.props),
     cameraMotion,
-    composition: typeof record.composition === 'string' ? record.composition : undefined,
+    composition:
+      normalizeOptionalString(record.composition)
+      ?? normalizeOptionalString(record.framing)
+      ?? normalizeOptionalString(record.sceneComposition),
     action,
-    dialogue: typeof record.dialogue === 'string' ? record.dialogue : undefined,
-    dialoguePacing: typeof record.dialoguePacing === 'string' ? record.dialoguePacing : undefined,
+    dialogue:
+      normalizeOptionalString(record.dialogue)
+      ?? normalizeOptionalString(record.lines)
+      ?? normalizeOptionalString(record.voiceOver),
+    dialoguePacing:
+      normalizeOptionalString(record.dialoguePacing)
+      ?? normalizeOptionalString(record.dialogueRhythm)
+      ?? normalizeOptionalString(record.pacing),
     atmosphere:
-      typeof record.atmosphere === 'string'
-        ? record.atmosphere
-        : typeof record.mood === 'string'
-          ? record.mood
-          : undefined,
+      normalizeOptionalString(record.atmosphere)
+      ?? normalizeOptionalString(record.mood)
+      ?? normalizeOptionalString(record.tone),
     bgm:
-      typeof record.bgm === 'string'
-        ? record.bgm
-        : typeof record.BGM === 'string'
-          ? record.BGM
-          : undefined,
+      normalizeOptionalString(record.bgm)
+      ?? normalizeOptionalString(record.BGM)
+      ?? normalizeOptionalString(record.backgroundMusic),
     transitionToNext:
-      record.transitionToNext === undefined
+      record.transitionToNext === undefined && record.transition === undefined && record.nextTransition === undefined
         ? undefined
-        : normalizeTransitionSpec(record.transitionToNext) ?? undefined,
+        : normalizeTransitionSpec(record.transitionToNext ?? record.transition ?? record.nextTransition) ?? undefined,
   };
 }
 
@@ -337,26 +440,55 @@ function normalizeStoryNarrativeSegment(value: unknown, index: number): StoryNar
     typeof record.title === 'string' && record.title.trim()
       ? record.title.trim()
       : `段落 ${index + 1}`;
-  const durationSeconds = typeof record.durationSeconds === 'number' ? record.durationSeconds : null;
-  const openingTransition = normalizeTransitionSpec(record.openingTransition);
-  const prompt = typeof record.prompt === 'string' ? record.prompt : null;
-  const shots = Array.isArray(record.shots)
-    ? record.shots.flatMap((shot, shotIndex) => {
+  const durationSeconds =
+    normalizeNumberish(record.durationSeconds)
+    ?? normalizeNumberish(record.duration)
+    ?? normalizeNumberish(record.seconds);
+  const openingTransition =
+    normalizeTransitionSpec(record.openingTransition)
+    ?? normalizeTransitionSpec(record.startTransition)
+    ?? {
+      type: 'custom',
+      description: '直接切入',
+      durationSeconds: 0,
+    };
+  const prompt =
+    normalizeOptionalString(record.prompt)
+    ?? normalizeOptionalString(record.videoPrompt)
+    ?? normalizeOptionalString(record.segmentPrompt)
+    ?? normalizeOptionalString(record.narrativePrompt)
+    ?? normalizeOptionalString(record.description);
+  const shotSource =
+    Array.isArray(record.shots) ? record.shots
+      : Array.isArray(record.storyboards) ? record.storyboards
+        : Array.isArray(record.shotList) ? record.shotList
+          : Array.isArray(record.storyboardShots) ? record.storyboardShots
+            : [];
+  const shots = shotSource.flatMap((shot, shotIndex) => {
         const normalized = normalizeStoryShot(shot, shotIndex);
         return normalized ? [normalized] : [];
-      })
-    : [];
-  const firstFramePrompt = normalizePromptItem(record.firstFramePrompt, '首帧', `${id}_first_frame`);
-  const lastFramePrompt = normalizePromptItem(record.lastFramePrompt, '尾帧', `${id}_last_frame`);
-  const motionSketchPrompt = normalizeMotionSketchPrompt(record.motionSketchPrompt, id);
-  const continuityNotes = Array.isArray(record.continuityNotes)
-    ? record.continuityNotes.filter(isString)
-    : typeof record.continuityNotes === 'string'
-      ? [record.continuityNotes]
-      : [];
+      });
+  const firstFramePrompt = normalizePromptItem(
+    record.firstFramePrompt ?? record.firstFrame ?? record.startFramePrompt,
+    '首帧',
+    `${id}_first_frame`,
+  );
+  const lastFramePrompt = normalizePromptItem(
+    record.lastFramePrompt ?? record.lastFrame ?? record.endFramePrompt,
+    '尾帧',
+    `${id}_last_frame`,
+  );
+  const motionSketchPrompt = normalizeMotionSketchPrompt(
+    record.motionSketchPrompt ?? record.cameraSketchPrompt ?? record.motionPrompt,
+    id,
+  );
+  const continuityNotes = [
+    ...normalizeStringArray(record.continuityNotes),
+    ...normalizeStringArray(record.continuity),
+  ];
 
   if (
-    !durationSeconds ||
+    durationSeconds === null ||
     !openingTransition ||
     !prompt ||
     shots.length === 0 ||

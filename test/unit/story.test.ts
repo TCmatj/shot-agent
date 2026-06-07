@@ -133,4 +133,53 @@ describe('story structured output', () => {
     expect(parsed?.narrativeSegments[0].firstFramePrompt.prompt).toBe('清晨档案室蒸笼冒汽');
     expect(parsed?.narrativeSegments[0].motionSketchPrompt.prompt).toContain('镜头1：固定中远景');
   });
+
+  it('parses json5-like story output with single quotes and object story summary', () => {
+    const parsed = parseStoryStructuredOutput(`
+{
+  version: '1.0',
+  storySummary: {
+    highConcept: '雨夜外卖员把一枚会发光的回形针送进办公室',
+    overallBeat: '荒诞喜剧，节奏快速'
+  },
+  globalAssets: {
+    scenePrompts: [
+      { id: 'scene_1', prompt: '深夜办公室，荧光灯，纸张满桌' }
+    ],
+    characterSheetPrompts: [],
+    propSheetPrompts: []
+  },
+  narrativeSegments: [
+    {
+      id: 'segment_1',
+      title: '第一段',
+      durationSeconds: 6,
+      openingTransition: {
+        type: 'hard_cut',
+        description: '直接切入办公室门口',
+        durationSeconds: 0.2
+      },
+      prompt: '外卖员闯入办公室，回形针发光，引发所有人注视。',
+      shots: [
+        {
+          durationSeconds: 2,
+          characters: ['外卖员'],
+          cameraMovement: '快速推进',
+          action: '推门冲入'
+        }
+      ],
+      firstFramePrompt: '办公室门口，外卖员抬手推门',
+      lastFramePrompt: '发光回形针被举到镜头前',
+      motionSketchPrompt: ['镜头1：门外推进', '镜头2：特写发光回形针'],
+      continuityNotes: '保持回形针发光状态连续'
+    }
+  ]
+}
+    `);
+
+    expect(parsed?.storySummary).toContain('highConcept：雨夜外卖员把一枚会发光的回形针送进办公室');
+    expect(parsed?.storySummary).toContain('overallBeat：荒诞喜剧，节奏快速');
+    expect(parsed?.narrativeSegments[0].firstFramePrompt.prompt).toBe('办公室门口，外卖员抬手推门');
+    expect(parsed?.narrativeSegments[0].motionSketchPrompt.prompt).toContain('镜头1：门外推进');
+  });
 });

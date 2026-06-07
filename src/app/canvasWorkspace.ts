@@ -32,9 +32,16 @@ export type CanvasNodeView = {
   id: string;
   title: string;
   modelId: string;
+  width?: number;
+  height?: number;
+  minWidth?: number;
+  minHeight?: number;
   chatFormat?: 'openai' | 'anthropic';
   storyExecutionMode?: StoryNodeExecutionMode;
   storyExpansionMode?: StoryNodeExpansionMode;
+  storyImageConcurrencyLimit?: number;
+  storyVideoConcurrencyLimit?: number;
+  storySystemPrompt?: string;
   storyStructuredOutput?: StoryStructuredOutput;
   storyRawOutput?: string;
   storySourceNodeId?: string;
@@ -44,6 +51,8 @@ export type CanvasNodeView = {
     | 'scene'
     | 'character_sheet'
     | 'prop_sheet'
+    | 'segment_narrative'
+    | 'segment_shots'
     | 'segment_first_frame'
     | 'segment_last_frame'
     | 'segment_motion_sketch'
@@ -148,7 +157,10 @@ export type CanvasWorkspaceState = {
 
 const canvasNodeBaseWidth = 320;
 const canvasNodeMaxWidth = canvasNodeBaseWidth * 3;
-const storyNodeBaseWidth = 400;
+const storyNodeBaseWidth = 560;
+const canvasNodeBaseHeight = 220;
+const canvasNodeMaxHeight = 1600;
+const canvasNodeResizableMaxWidth = 1800;
 
 const storageVersion = 1;
 const canvasExportVersion = 1;
@@ -590,11 +602,42 @@ function isCanvasNameTaken(
 export function getNodeCenter(node: CanvasNodeView): { x: number; y: number } {
   return {
     x: node.x + getCanvasNodeWidth(node) / 2,
-    y: node.y + 88,
+    y: node.y + getCanvasNodeHeight(node) / 2,
   };
 }
 
 export function getCanvasNodeWidth(node: CanvasNodeView): number {
+  const defaultWidth = getCanvasNodeDefaultWidth(node);
+  const minWidth = resolveCanvasNodeMinimumWidth(node, defaultWidth);
+  const maxWidth = getCanvasNodeMaximumWidth(node);
+
+  if (typeof node.width === 'number' && Number.isFinite(node.width)) {
+    return clampCanvasNodeDimension(node.width, minWidth, maxWidth);
+  }
+
+  return clampCanvasNodeDimension(defaultWidth, minWidth, maxWidth);
+}
+
+export function getCanvasNodeHeight(node: CanvasNodeView): number {
+  const defaultHeight = getCanvasNodeDefaultHeight(node);
+  const minHeight = resolveCanvasNodeMinimumHeight(node, defaultHeight);
+
+  if (typeof node.height === 'number' && Number.isFinite(node.height)) {
+    return clampCanvasNodeDimension(node.height, minHeight, canvasNodeMaxHeight);
+  }
+
+  return clampCanvasNodeDimension(defaultHeight, minHeight, canvasNodeMaxHeight);
+}
+
+export function getCanvasNodeMinimumWidth(node: CanvasNodeView): number {
+  return resolveCanvasNodeMinimumWidth(node, getCanvasNodeDefaultWidth(node));
+}
+
+export function getCanvasNodeMinimumHeight(node: CanvasNodeView): number {
+  return resolveCanvasNodeMinimumHeight(node, getCanvasNodeDefaultHeight(node));
+}
+
+function getCanvasNodeDefaultWidth(node: CanvasNodeView): number {
   if (node.kind === 'story') {
     const prompt = node.prompt?.trim() ?? '';
     if (!prompt) {
@@ -611,13 +654,7 @@ export function getCanvasNodeWidth(node: CanvasNodeView): number {
     return Math.min(canvasNodeMaxWidth, Math.round(estimatedWidth));
   }
 
-  if (
-    node.kind === 'textAsset' ||
-    node.kind === 'imageAsset' ||
-    node.kind === 'videoAsset' ||
-    node.kind === 'audioAsset' ||
-    node.kind === 'diamondMask'
-  ) {
+  if (node.kind === 'textAsset' || node.kind === 'imageAsset' || node.kind === 'videoAsset' || node.kind === 'audioAsset' || node.kind === 'diamondMask') {
     return canvasNodeBaseWidth;
   }
 
@@ -634,6 +671,58 @@ export function getCanvasNodeWidth(node: CanvasNodeView): number {
   );
 
   return Math.min(canvasNodeMaxWidth, Math.round(estimatedWidth));
+}
+
+function getCanvasNodeDefaultHeight(node: CanvasNodeView): number {
+  if (node.kind === 'textAsset') {
+    return 180;
+  }
+
+  return canvasNodeBaseHeight;
+}
+
+function resolveCanvasNodeMinimumWidth(
+  node: CanvasNodeView,
+  fallbackWidth: number,
+): number {
+  const preferredMinimumWidth =
+    node.kind === 'image'
+      ? Math.max(fallbackWidth, 440)
+      : node.kind === 'video'
+        ? Math.max(fallbackWidth, 640)
+        : fallbackWidth;
+  return clampCanvasNodeDimension(
+    node.minWidth,
+    preferredMinimumWidth,
+    getCanvasNodeMaximumWidth(node),
+  );
+}
+
+function resolveCanvasNodeMinimumHeight(
+  node: CanvasNodeView,
+  fallbackHeight: number,
+): number {
+  return clampCanvasNodeDimension(node.minHeight, fallbackHeight, canvasNodeMaxHeight);
+}
+
+function getCanvasNodeMaximumWidth(node: CanvasNodeView): number {
+  if (node.kind === 'story') {
+    return canvasNodeResizableMaxWidth;
+  }
+
+  return canvasNodeResizableMaxWidth;
+}
+
+function clampCanvasNodeDimension(
+  value: number | undefined,
+  min: number,
+  max: number,
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return min;
+  }
+
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
 
 export function getNodeInputPoint(
@@ -654,14 +743,14 @@ export function getNodeInputPoint(
 
   return {
     x: node.x,
-    y: node.y + 88,
+    y: node.y + 110,
   };
 }
 
 export function getNodeOutputPoint(node: CanvasNodeView): { x: number; y: number } {
   return {
     x: node.x + getCanvasNodeWidth(node),
-    y: node.y + 88,
+    y: node.y + 110,
   };
 }
 
@@ -680,15 +769,14 @@ export function normalizeCanvasSelectionRect(
 export function findNodesInSelectionRect(
   nodes: CanvasNodeView[],
   rect: CanvasSelectionRect,
-  nodeSize: { width: number; height: number },
 ): string[] {
   return nodes
     .filter((node) =>
       rectanglesIntersect(rect, {
         x: node.x,
         y: node.y,
-        width: nodeSize.width,
-        height: nodeSize.height,
+        width: getCanvasNodeWidth(node),
+        height: getCanvasNodeHeight(node),
       }),
     )
     .map((node) => node.id);

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   clampScale,
   getCanvasContentBounds,
+  getCanvasViewportBounds,
   getViewportForCanvasCenter,
   moveCanvasNode,
   panViewport,
@@ -52,8 +53,8 @@ describe('canvas viewport', () => {
     expect(
       getCanvasContentBounds(
         [
-          { x: 100, y: 80 },
-          { x: 500, y: 240 },
+          { id: 'node_1', title: 'One', modelId: 'gpt-image-2', kind: 'image', x: 100, y: 80 },
+          { id: 'node_2', title: 'Two', modelId: 'gpt-image-2', kind: 'image', x: 500, y: 240 },
         ],
         { width: 320, height: 220 },
         40,
@@ -73,6 +74,23 @@ describe('canvas viewport', () => {
       x: 100,
       y: 120,
       scale: 1.5,
+    });
+  });
+
+  it('computes visible canvas bounds for the current viewport', () => {
+    expect(
+      getCanvasViewportBounds(
+        { x: 80, y: 72, scale: 2 },
+        { width: 800, height: 600 },
+        120,
+      ),
+    ).toEqual({
+      minX: -160,
+      minY: -156,
+      maxX: 480,
+      maxY: 384,
+      width: 640,
+      height: 540,
     });
   });
 });

@@ -1,3 +1,5 @@
+import { getCanvasNodeHeight, getCanvasNodeWidth, type CanvasNodeView } from './canvasWorkspace';
+
 export type CanvasViewport = {
   x: number;
   y: number;
@@ -71,11 +73,11 @@ export function screenToCanvasPoint(point: Point, viewport: CanvasViewport): Poi
 }
 
 export function getCanvasContentBounds(
-  points: Point[],
+  nodes: CanvasNodeView[],
   nodeSize: Size,
   padding = 80,
 ): Bounds {
-  if (points.length === 0) {
+  if (nodes.length === 0) {
     const width = nodeSize.width + padding * 2;
     const height = nodeSize.height + padding * 2;
 
@@ -89,10 +91,10 @@ export function getCanvasContentBounds(
     };
   }
 
-  const minX = Math.min(...points.map((point) => point.x)) - padding;
-  const minY = Math.min(...points.map((point) => point.y)) - padding;
-  const maxX = Math.max(...points.map((point) => point.x + nodeSize.width)) + padding;
-  const maxY = Math.max(...points.map((point) => point.y + nodeSize.height)) + padding;
+  const minX = Math.min(...nodes.map((node) => node.x)) - padding;
+  const minY = Math.min(...nodes.map((node) => node.y)) - padding;
+  const maxX = Math.max(...nodes.map((node) => node.x + getCanvasNodeWidth(node))) + padding;
+  const maxY = Math.max(...nodes.map((node) => node.y + getCanvasNodeHeight(node))) + padding;
 
   return {
     minX,
@@ -113,5 +115,25 @@ export function getViewportForCanvasCenter(
     x: viewportSize.width / 2 - center.x * scale,
     y: viewportSize.height / 2 - center.y * scale,
     scale: clampScale(scale),
+  };
+}
+
+export function getCanvasViewportBounds(
+  viewport: CanvasViewport,
+  viewportSize: Size,
+  overscan = 0,
+): Bounds {
+  const minX = (-viewport.x) / viewport.scale - overscan;
+  const minY = (-viewport.y) / viewport.scale - overscan;
+  const maxX = (viewportSize.width - viewport.x) / viewport.scale + overscan;
+  const maxY = (viewportSize.height - viewport.y) / viewport.scale + overscan;
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
   };
 }

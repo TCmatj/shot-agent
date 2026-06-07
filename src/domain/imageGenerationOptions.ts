@@ -9,7 +9,7 @@ export type ImageAspectOption = {
 };
 
 export const defaultImageResolutionTier: ImageResolutionTier = '1k';
-export const defaultImageAspectRatio = '1:1';
+export const defaultImageAspectRatio = '16:9';
 export const defaultImageQuality: ImageQuality = 'high';
 
 const imageAspectOptionsByTier: Record<ImageResolutionTier, ImageAspectOption[]> = {

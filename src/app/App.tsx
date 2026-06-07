@@ -113,6 +113,7 @@ import {
   type SeedanceScenario,
 } from '../domain/seedance';
 import {
+  buildStorySystemInstruction,
   collectGenerationInputAssetIds,
   getEffectiveNodeOutputText,
   listVideoGenerationTasks,
@@ -144,6 +145,9 @@ import {
   deleteCanvas,
   exportCanvas,
   findNodesInSelectionRect,
+  getCanvasNodeHeight,
+  getCanvasNodeMinimumHeight,
+  getCanvasNodeMinimumWidth,
   getCanvasNodeWidth,
   getNextAvailableCanvasName,
   getUpstreamNodeIds,
@@ -166,6 +170,7 @@ import {
   type CanvasWorkspaceState,
 } from './canvasWorkspace';
 import {
+  getCanvasViewportBounds,
   getCanvasContentBounds,
   getViewportForCanvasCenter,
   panViewport,
@@ -202,10 +207,17 @@ import {
 } from './canvasViewports';
 import { buildStoryNodeExpansion } from './storyNodeExpansion';
 import {
+  defaultStoryAutoRunConcurrencyLimits,
+  normalizeStoryAutoRunConcurrencyLimit,
+  runStoryAutoRunQueue,
+} from './storyAutoRunQueue';
+import {
   createEmptyStoryStructuredOutput,
   parseStoryStructuredOutput,
   type StoryNodeExecutionMode,
   type StoryNodeExpansionMode,
+  type StoryNarrativeSegment,
+  type StoryShot,
 } from '../domain/story';
 import {
   getWorkspaceStore,
@@ -343,12 +355,115 @@ type InlineSelectOption = {
   label: string;
 };
 
+type InlineOptionSelectProps = {
+  value: string | number;
+  options: InlineSelectOption[];
+  ariaLabel: string;
+  onChange: (value: string) => void;
+  menuKey: string;
+  openMenuKey: string | null;
+  setOpenMenuKey: (value: string | null) => void;
+  variant?: 'default' | 'compact';
+  disabled?: boolean;
+};
+
 type OutputSelectionToolbarState = {
   text: string;
   top: number;
   left: number;
   copied: boolean;
 };
+
+type PromptTextareaProps = {
+  canvas: CanvasView | null;
+  node: CanvasNodeView;
+  placeholder: string;
+  ariaLabel?: string;
+  stopPointerDown?: boolean;
+  onChange(value: string): void;
+};
+
+type CanvasNodeBodyProps = {
+  activeCanvas: CanvasView | null;
+  node: CanvasNodeView;
+  providers: ProviderConfig[];
+  isGenerating: boolean;
+  effectiveOutputText?: string;
+  openInlineSelectKey: string | null;
+  setOpenInlineSelectKey: (value: string | null) => void;
+  rootDirectoryReady: boolean;
+  folderStorageReady: boolean;
+  onOpenImagePreview: (title: string, imageUrl: string) => void;
+  onReplaceDiamondMaskImage: (nodeId: string, file: File) => void;
+  onOpenAssetPicker: (target: AssetPickerTarget) => void;
+  onRequireDiamondMaskStorage: () => void;
+  onUpdateNode: (
+    nodeId: string,
+    updater: (node: CanvasNodeView) => CanvasNodeView,
+  ) => void;
+  onGenerateDiamondMaskAsset: (node: CanvasNodeView) => void;
+  onAddAssetNodeFromFile: (
+    file: File,
+    position: { x: number; y: number },
+  ) => Promise<string | null | undefined>;
+  onRemovePlaceholderNode: (nodeId: string) => void;
+  onHandleVideoScenarioChange: (nodeId: string, nextScenario: SeedanceScenario) => void;
+  onSubmitNodeGeneration: (node: CanvasNodeView) => Promise<void>;
+  onRegenerateStoryNodes: (
+    node: CanvasNodeView,
+    options: {
+      structuredOutput?: ReturnType<typeof parseStoryStructuredOutput>;
+      expansionMode: StoryNodeExpansionMode;
+    },
+  ) => void;
+  onClearStoryOutputs: (nodeId: string) => void;
+  hasStoryDownstreamOutputs: (nodeId: string) => boolean;
+  onOpenOutputEditor: (node: CanvasNodeView) => void;
+};
+
+function getStoryImageConcurrencyLimit(node: CanvasNodeView): number {
+  return normalizeStoryAutoRunConcurrencyLimit(
+    node.storyImageConcurrencyLimit ?? defaultStoryAutoRunConcurrencyLimits.image,
+  );
+}
+
+function getStoryVideoConcurrencyLimit(node: CanvasNodeView): number {
+  return normalizeStoryAutoRunConcurrencyLimit(
+    node.storyVideoConcurrencyLimit ?? defaultStoryAutoRunConcurrencyLimits.video,
+  );
+}
+
+function isNodeInteractionTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return Boolean(
+    target.closest(
+      [
+        'button',
+        'input',
+        'textarea',
+        'select',
+        'a',
+        'label',
+        'video',
+        'audio',
+        'img',
+        '[contenteditable="true"]',
+        '.prompt-reference-field',
+        '.inline-option-select',
+        '.asset-upload',
+        '.diamond-mask-stage',
+        '.node-output-open',
+        '.node-output-markdown',
+        '.node-output-summary',
+        '.node-output-stream-tail',
+        '.node-preview-stage',
+      ].join(', '),
+    ),
+  );
+}
 
 const OutputPreviewContent = memo(function OutputPreviewContent({
   html,
@@ -380,7 +495,7 @@ const OutputPreviewContent = memo(function OutputPreviewContent({
   );
 });
 
-function InlineOptionSelect({
+const InlineOptionSelect = memo(function InlineOptionSelect({
   value,
   options,
   ariaLabel,
@@ -390,17 +505,7 @@ function InlineOptionSelect({
   setOpenMenuKey,
   variant = 'default',
   disabled = false,
-}: {
-  value: string | number;
-  options: InlineSelectOption[];
-  ariaLabel: string;
-  onChange: (value: string) => void;
-  menuKey: string;
-  openMenuKey: string | null;
-  setOpenMenuKey: (value: string | null) => void;
-  variant?: 'default' | 'compact';
-  disabled?: boolean;
-}) {
+}: InlineOptionSelectProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const isOpen = openMenuKey === menuKey;
   const selectedOption =
@@ -438,6 +543,7 @@ function InlineOptionSelect({
         isOpen ? 'is-open' : ''
       }`}
       onPointerDown={(event) => event.stopPropagation()}
+      onWheelCapture={(event) => event.stopPropagation()}
       onBlur={(event) => {
         if (!isOpen) {
           return;
@@ -463,7 +569,12 @@ function InlineOptionSelect({
         <ChevronDown size={14} />
       </button>
       {isOpen ? (
-        <div className="inline-option-menu" role="listbox" aria-label={ariaLabel}>
+        <div
+          className="inline-option-menu"
+          role="listbox"
+          aria-label={ariaLabel}
+          onWheelCapture={(event) => event.stopPropagation()}
+        >
           {options.map((option) => {
             const isActive = option.value === value;
             return (
@@ -486,6 +597,39 @@ function InlineOptionSelect({
         </div>
       ) : null}
     </div>
+  );
+}, areInlineOptionSelectPropsEqual);
+
+function areInlineOptionSelectPropsEqual(
+  previous: Readonly<InlineOptionSelectProps>,
+  next: Readonly<InlineOptionSelectProps>,
+): boolean {
+  return (
+    previous.value === next.value &&
+    previous.ariaLabel === next.ariaLabel &&
+    previous.menuKey === next.menuKey &&
+    previous.openMenuKey === next.openMenuKey &&
+    previous.variant === next.variant &&
+    previous.disabled === next.disabled &&
+    areInlineSelectOptionsEqual(previous.options, next.options)
+  );
+}
+
+function areInlineSelectOptionsEqual(
+  previous: InlineSelectOption[],
+  next: InlineSelectOption[],
+): boolean {
+  if (previous === next) {
+    return true;
+  }
+
+  if (previous.length !== next.length) {
+    return false;
+  }
+
+  return previous.every(
+    (option, index) =>
+      option.value === next[index]?.value && option.label === next[index]?.label,
   );
 }
 
@@ -762,6 +906,116 @@ function isChatLikeNode(node: CanvasNodeView): boolean {
   return node.kind === 'chat' || node.kind === 'story';
 }
 
+function getNodeChatFormat(node: Pick<CanvasNodeView, 'chatFormat'>): ChatFormat {
+  return node.chatFormat ?? 'openai';
+}
+
+function findProvidersForNodeWithProviders(
+  providers: ProviderConfig[],
+  node: CanvasNodeView,
+): ProviderConfig[] {
+  if (isChatLikeNode(node) || node.modelId === 'chat') {
+    return findChatProviders(providers, getNodeChatFormat(node));
+  }
+
+  if (node.kind === 'video') {
+    return findProvidersForVideoFormat(providers, getVideoModelFormat(node));
+  }
+
+  return findProvidersForCanonicalModel(providers, node.modelId);
+}
+
+function findProviderModelsForNodeWithProviders(
+  providers: ProviderConfig[],
+  node: CanvasNodeView,
+) {
+  const availableProviders = findProvidersForNodeWithProviders(providers, node);
+  const provider = node.providerId
+    ? availableProviders.find((current) => current.id === node.providerId)
+    : availableProviders[0];
+
+  return provider
+    ? findProviderModelsForNodeModel(
+        provider,
+        node.modelId,
+        getNodeChatFormat(node),
+        isChatLikeNode(node) ? 'chat' : undefined,
+        node.kind === 'video' ? getVideoModelFormat(node) : undefined,
+      )
+    : [];
+}
+
+function findProviderModelsForNodeWithSpecificProvider(
+  node: CanvasNodeView,
+  provider: ProviderConfig,
+) {
+  return findProviderModelsForNodeModel(
+    provider,
+    node.modelId,
+    getNodeChatFormat(node),
+    isChatLikeNode(node) ? 'chat' : undefined,
+    node.kind === 'video' ? getVideoModelFormat(node) : undefined,
+  );
+}
+
+function resolveNodeProviderSelectionWithProviders(
+  providers: ProviderConfig[],
+  node: CanvasNodeView,
+): {
+  availableProviders: ProviderConfig[];
+  selectedProvider?: ProviderConfig;
+  availableModels: ReturnType<typeof findProviderModelsForNodeWithProviders>;
+  effectiveProviderId: string;
+  effectiveProviderModelId: string;
+} {
+  const availableProviders = findProvidersForNodeWithProviders(providers, node);
+  const selectedProvider = node.providerId
+    ? availableProviders.find((provider) => provider.id === node.providerId) ?? availableProviders[0]
+    : availableProviders[0];
+  const availableModels = selectedProvider
+    ? findProviderModelsForNodeWithSpecificProvider(node, selectedProvider)
+    : [];
+  const effectiveProviderModelId =
+    (node.providerModelId &&
+    availableModels.some((model) => model.providerModelId === node.providerModelId)
+      ? node.providerModelId
+      : availableModels[0]?.providerModelId) ?? '';
+
+  return {
+    availableProviders,
+    selectedProvider,
+    availableModels,
+    effectiveProviderId: selectedProvider?.id ?? '',
+    effectiveProviderModelId,
+  };
+}
+
+function getNextModelIdForNode(
+  node: CanvasNodeView,
+  nextModel?: {
+    canonicalModelId: string;
+    providerModelId: string;
+  },
+): string {
+  if (!nextModel) {
+    return node.modelId;
+  }
+
+  if (isChatLikeNode(node)) {
+    return nextModel.providerModelId;
+  }
+
+  if (
+    node.kind === 'video' &&
+    !isSoraCompatibleVideoFormat(getVideoModelFormat(node)) &&
+    isSeedanceVideoModel(nextModel.canonicalModelId)
+  ) {
+    return nextModel.canonicalModelId;
+  }
+
+  return nextModel.canonicalModelId;
+}
+
 function getNodePromptPlaceholder(node: CanvasNodeView): string {
   if (node.kind === 'video') {
     return getVideoPromptPlaceholder(node.seedanceScenario ?? 'text_to_video');
@@ -775,7 +1029,10 @@ function getNodePromptPlaceholder(node: CanvasNodeView): string {
 }
 
 function getNodeTextReferencePreview(node: CanvasNodeView): string | undefined {
-  const text = node.kind === 'textAsset' ? node.textContent : getEffectiveNodeOutputText(node);
+  const text =
+    node.kind === 'textAsset'
+      ? node.textContent
+      : getEffectiveNodeOutputText(node) ?? (node.kind === 'image' ? node.prompt : undefined);
   const compact = text?.replace(/\s+/g, ' ').trim();
 
   return compact ? compact.slice(0, 5) : undefined;
@@ -821,6 +1078,93 @@ function hasStoryExpansionContent(structuredOutput?: CanvasNodeView['storyStruct
     getStoryGlobalAssetCount(structuredOutput) > 0 ||
     structuredOutput.narrativeSegments.length > 0
   );
+}
+
+function getStoryStructuredOutputCompletenessScore(
+  structuredOutput?: CanvasNodeView['storyStructuredOutput'],
+): number {
+  if (!structuredOutput) {
+    return -1;
+  }
+
+  return (
+    structuredOutput.narrativeSegments.length * 1000 +
+    getStoryShotCount(structuredOutput) * 100 +
+    getStoryGlobalAssetCount(structuredOutput) * 10 +
+    (structuredOutput.storySummary.trim() ? 1 : 0)
+  );
+}
+
+function resolveBestStoryStructuredOutput(
+  structuredOutput: CanvasNodeView['storyStructuredOutput'],
+  rawOutput?: string,
+): CanvasNodeView['storyStructuredOutput'] {
+  const parsedFromRaw = rawOutput ? parseStoryStructuredOutput(rawOutput) ?? undefined : undefined;
+
+  if (!structuredOutput) {
+    return parsedFromRaw;
+  }
+
+  if (!parsedFromRaw) {
+    return structuredOutput;
+  }
+
+  return getStoryStructuredOutputCompletenessScore(parsedFromRaw)
+    >= getStoryStructuredOutputCompletenessScore(structuredOutput)
+    ? parsedFromRaw
+    : structuredOutput;
+}
+
+function formatStoryPromptPreview(prompt: string): string {
+  const normalized = prompt.replace(/\s+/g, ' ').trim();
+  return normalized;
+}
+
+function formatStoryShotMeta(shot: StoryShot): string[] {
+  const lines = [
+    `${shot.durationSeconds} 秒`,
+    shot.characters.length > 0 ? `角色：${shot.characters.join('、')}` : '角色：未指定',
+    `运镜：${shot.cameraMotion}`,
+  ];
+
+  if (shot.composition?.trim()) {
+    lines.push(`构图：${shot.composition.trim()}`);
+  }
+
+  lines.push(`动作：${shot.action}`);
+
+  if (shot.dialogue?.trim()) {
+    lines.push(`对白：${shot.dialogue.trim()}`);
+  }
+
+  if (shot.dialoguePacing?.trim()) {
+    lines.push(`对白节奏：${shot.dialoguePacing.trim()}`);
+  }
+
+  if (shot.atmosphere?.trim()) {
+    lines.push(`气氛：${shot.atmosphere.trim()}`);
+  }
+
+  if (shot.bgm?.trim()) {
+    lines.push(`BGM：${shot.bgm.trim()}`);
+  }
+
+  if (shot.transitionToNext) {
+    lines.push(
+      `转场：${shot.transitionToNext.description}（${shot.transitionToNext.type}，${shot.transitionToNext.durationSeconds} 秒）`,
+    );
+  }
+
+  return lines;
+}
+
+function getStorySegmentAssetSummary(segment: StoryNarrativeSegment): Array<{ label: string; prompt: string }> {
+  return [
+    { label: '叙事段落提示词', prompt: segment.prompt },
+    { label: '首帧图', prompt: segment.firstFramePrompt.prompt },
+    { label: '尾帧图', prompt: segment.lastFramePrompt.prompt },
+    { label: '运镜简笔画', prompt: segment.motionSketchPrompt.prompt },
+  ];
 }
 
 function getNodeImageReferenceUrl(node: CanvasNodeView): string | undefined {
@@ -1550,21 +1894,14 @@ function setPromptEditorCaretOffset(root: HTMLElement, nextOffset: number) {
   selection.addRange(range);
 }
 
-function PromptTextarea({
+const PromptTextarea = memo(function PromptTextarea({
   canvas,
   node,
   placeholder,
   ariaLabel = '提示词',
   stopPointerDown,
   onChange,
-}: {
-  canvas: CanvasView | null;
-  node: CanvasNodeView;
-  placeholder: string;
-  ariaLabel?: string;
-  stopPointerDown?: boolean;
-  onChange(value: string): void;
-}) {
+}: PromptTextareaProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const isComposingRef = useRef(false);
@@ -1801,6 +2138,7 @@ function PromptTextarea({
         role="textbox"
         aria-label={ariaLabel}
         aria-multiline="true"
+        style={{ cursor: 'text' }}
         suppressContentEditableWarning
         onPointerDown={stopPointerDown ? (event) => event.stopPropagation() : undefined}
         onBlur={() => window.setTimeout(() => setTrigger(null), 120)}
@@ -1870,6 +2208,857 @@ function PromptTextarea({
       ) : null}
       <ImagePreviewModal preview={previewImage} onClose={() => setPreviewImage(null)} />
     </div>
+  );
+}, arePromptTextareaPropsEqual);
+
+function arePromptTextareaPropsEqual(
+  previous: Readonly<PromptTextareaProps>,
+  next: Readonly<PromptTextareaProps>,
+): boolean {
+  return (
+    previous.canvas === next.canvas &&
+    previous.node === next.node &&
+    previous.placeholder === next.placeholder &&
+    previous.ariaLabel === next.ariaLabel &&
+    previous.stopPointerDown === next.stopPointerDown
+  );
+}
+
+const CanvasNodeBody = memo(function CanvasNodeBody({
+  activeCanvas,
+  node,
+  providers,
+  isGenerating,
+  effectiveOutputText,
+  openInlineSelectKey,
+  setOpenInlineSelectKey,
+  rootDirectoryReady,
+  folderStorageReady,
+  onOpenImagePreview,
+  onReplaceDiamondMaskImage,
+  onOpenAssetPicker,
+  onRequireDiamondMaskStorage,
+  onUpdateNode,
+  onGenerateDiamondMaskAsset,
+  onAddAssetNodeFromFile,
+  onRemovePlaceholderNode,
+  onHandleVideoScenarioChange,
+  onSubmitNodeGeneration,
+  onRegenerateStoryNodes,
+  onClearStoryOutputs,
+  hasStoryDownstreamOutputs,
+  onOpenOutputEditor,
+}: CanvasNodeBodyProps) {
+  const providersForNode = useMemo(
+    () => findProvidersForNodeWithProviders(providers, node),
+    [node, providers],
+  );
+  const providerSelection = useMemo(
+    () => resolveNodeProviderSelectionWithProviders(providers, node),
+    [node, providers],
+  );
+  const isLongOutput =
+    effectiveOutputText !== undefined && shouldCollapseMarkdown(effectiveOutputText);
+  const videoOutputStorageStatus =
+    node.kind === 'video' ? getVideoOutputStorageStatus(node) : null;
+  const nodeSettingSummary = getNodeSettingSummaryText(node);
+  const nodeSoraFormatAvailable = findProvidersForVideoFormat(providers, 'seedance-sora').length > 0;
+
+  return (
+    <div
+      className={`node-body node-body-${node.kind}`}
+      onDoubleClick={(event) => {
+        if (!(event.target instanceof HTMLImageElement)) {
+          return;
+        }
+
+        if (!event.target.classList.contains('asset-preview')) {
+          return;
+        }
+
+        const imageUrl =
+          node.kind === 'imageAsset'
+            ? node.assetDataUrl
+            : node.kind === 'image'
+              ? node.outputDataUrl ?? node.outputUrl
+              : undefined;
+
+        if (!imageUrl) {
+          return;
+        }
+
+        event.stopPropagation();
+        onOpenImagePreview(node.title, imageUrl);
+      }}
+    >
+      {node.kind === 'diamondMask' ? (
+        <DiamondMaskNodeBody
+          node={node}
+          canChooseSource={Boolean(rootDirectoryReady && folderStorageReady)}
+          onReplaceImage={(file) => onReplaceDiamondMaskImage(node.id, file)}
+          onSelectAsset={() =>
+            onOpenAssetPicker({
+              nodeId: node.id,
+              kind: 'image',
+              purpose: 'diamondMask',
+            })
+          }
+          onRequireStorage={onRequireDiamondMaskStorage}
+          onUpdateNode={(updater) => onUpdateNode(node.id, updater)}
+          onGenerate={() => onGenerateDiamondMaskAsset(node)}
+        />
+      ) : node.kind === 'textAsset' ? (
+        <textarea
+          className="text-asset-textarea"
+          value={node.textContent ?? ''}
+          placeholder="输入文本"
+          style={{
+            cursor: 'text',
+            minHeight: `${Math.max(88, getCanvasNodeHeight(node) - 108)}px`,
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onWheelCapture={(event) => event.stopPropagation()}
+          onWheel={(event) => event.stopPropagation()}
+          onChange={(event) =>
+            onUpdateNode(node.id, (current) => ({
+              ...current,
+              textContent: event.target.value,
+            }))
+          }
+        />
+      ) : node.kind === 'imageAsset' ? (
+        <>
+          <div className="node-preview-stage">
+            {node.assetDataUrl ? (
+              <img className="asset-preview" src={node.assetDataUrl} alt={node.assetName ?? '图片'} />
+            ) : (
+              <div className="node-preview-empty">暂无图片</div>
+            )}
+          </div>
+          <div className="node-asset-actions">
+            <label className="asset-upload">
+              导入图片
+              <input
+                type="file"
+                accept="image/*"
+                onPointerDown={(event) => event.stopPropagation()}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void onAddAssetNodeFromFile(file, { x: node.x, y: node.y }).then((nodeId) => {
+                      if (nodeId) {
+                        onRemovePlaceholderNode(node.id);
+                      }
+                    });
+                  }
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              className="asset-upload asset-select-button"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() =>
+                onOpenAssetPicker({
+                  nodeId: node.id,
+                  kind: 'image',
+                  purpose: 'assetNode',
+                })
+              }
+            >
+              选择资产
+            </button>
+          </div>
+        </>
+      ) : node.kind === 'videoAsset' ? (
+        <>
+          <div className="node-preview-stage">
+            {node.assetDataUrl ? (
+              <video className="asset-preview" src={node.assetDataUrl} controls />
+            ) : (
+              <div className="node-preview-empty">暂无视频</div>
+            )}
+          </div>
+          <div className="node-asset-actions">
+            <label className="asset-upload">
+              导入视频
+              <input
+                type="file"
+                accept="video/*"
+                onPointerDown={(event) => event.stopPropagation()}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void onAddAssetNodeFromFile(file, { x: node.x, y: node.y }).then((nodeId) => {
+                      if (nodeId) {
+                        onRemovePlaceholderNode(node.id);
+                      }
+                    });
+                  }
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              className="asset-upload asset-select-button"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() =>
+                onOpenAssetPicker({
+                  nodeId: node.id,
+                  kind: 'video',
+                  purpose: 'assetNode',
+                })
+              }
+            >
+              选择资产
+            </button>
+          </div>
+        </>
+      ) : node.kind === 'audioAsset' ? (
+        <>
+          <div className="node-preview-stage node-preview-stage-audio">
+            {node.assetDataUrl ? (
+              <audio className="asset-preview" src={node.assetDataUrl} controls />
+            ) : (
+              <div className="node-preview-empty">暂无音频</div>
+            )}
+          </div>
+          <div className="node-asset-actions">
+            <label className="asset-upload">
+              导入音频
+              <input
+                type="file"
+                accept="audio/*"
+                onPointerDown={(event) => event.stopPropagation()}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void onAddAssetNodeFromFile(file, { x: node.x, y: node.y }).then((nodeId) => {
+                      if (nodeId) {
+                        onRemovePlaceholderNode(node.id);
+                      }
+                    });
+                  }
+                }}
+              />
+            </label>
+          </div>
+        </>
+      ) : (
+        <>
+          {node.kind === 'story'
+            ? (() => {
+                const storyProviders = providersForNode;
+                const storyProviderModels = findProviderModelsForNodeWithProviders(providers, node);
+                const resolvedStructuredOutput = resolveBestStoryStructuredOutput(
+                  node.storyStructuredOutput,
+                  node.storyRawOutput ?? node.modelOutputText ?? '',
+                );
+                const hasDownstreamOutputs = hasStoryDownstreamOutputs(node.id);
+
+                return (
+                  <div className="node-inline-story-config">
+                    <div className="node-inline-story-row">
+                      <label className="node-inline-story-inline-field">
+                        <span className="node-inline-story-inline-label">执行方式</span>
+                        <InlineOptionSelect
+                          ariaLabel="执行方式"
+                          value={node.storyExecutionMode ?? 'structure_only'}
+                          menuKey={`node-inline-story-execution-mode:${node.id}`}
+                          openMenuKey={openInlineSelectKey}
+                          setOpenMenuKey={setOpenInlineSelectKey}
+                          variant="compact"
+                          onChange={(value) =>
+                            onUpdateNode(node.id, (current) => ({
+                              ...current,
+                              storyExecutionMode: value as StoryNodeExecutionMode,
+                            }))
+                          }
+                          options={[
+                            { value: 'structure_only', label: '仅拆解' },
+                            { value: 'structure_and_nodes', label: '拆解并铺节点' },
+                            { value: 'structure_and_generate_images', label: '拆解并执行生图' },
+                            { value: 'fully_automatic', label: '拆解并全自动执行' },
+                          ]}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="node-inline-generate-button node-inline-story-action-button"
+                        disabled={isGenerating}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={() => void onSubmitNodeGeneration(node)}
+                      >
+                        {isGenerating ? '提交中' : '生成'}
+                      </button>
+                    </div>
+                    <div className="node-inline-story-row">
+                      <label className="node-inline-story-inline-field">
+                        <span className="node-inline-story-inline-label">供应商</span>
+                        <InlineOptionSelect
+                          ariaLabel="供应商"
+                          value={providerSelection.effectiveProviderId}
+                          menuKey={`node-inline-story-provider:${node.id}`}
+                          openMenuKey={openInlineSelectKey}
+                          setOpenMenuKey={setOpenInlineSelectKey}
+                          variant="compact"
+                          onChange={(value) => {
+                            const nextProviderId = value || undefined;
+                            const nextProvider = nextProviderId
+                              ? storyProviders.find((provider) => provider.id === nextProviderId)
+                              : storyProviders[0];
+                            const nextModel = nextProvider
+                              ? findProviderModelsForNodeWithSpecificProvider(node, nextProvider)[0]
+                              : undefined;
+
+                            onUpdateNode(node.id, (current) => ({
+                              ...current,
+                              providerId: nextProviderId,
+                              providerModelId: nextModel?.providerModelId,
+                              modelId: nextModel?.providerModelId ?? current.modelId,
+                            }));
+                          }}
+                          options={storyProviders.map((provider) => ({
+                            value: provider.id,
+                            label: provider.name,
+                          }))}
+                        />
+                      </label>
+                      <label className="node-inline-story-inline-field">
+                        <span className="node-inline-story-inline-label">模型</span>
+                        <InlineOptionSelect
+                          ariaLabel="供应商模型"
+                          value={providerSelection.effectiveProviderModelId}
+                          menuKey={`node-inline-story-provider-model:${node.id}`}
+                          openMenuKey={openInlineSelectKey}
+                          setOpenMenuKey={setOpenInlineSelectKey}
+                          variant="compact"
+                          onChange={(value) => {
+                            const nextProviderModelId = value || undefined;
+                            onUpdateNode(node.id, (current) => ({
+                              ...current,
+                              providerModelId: nextProviderModelId,
+                              modelId: nextProviderModelId ?? current.modelId,
+                            }));
+                          }}
+                          options={storyProviderModels.map((model) => ({
+                            value: model.providerModelId,
+                            label: model.displayName ?? model.providerModelId,
+                          }))}
+                        />
+                      </label>
+                    </div>
+                    {resolvedStructuredOutput ? (
+                      <div className="node-inline-story-actions">
+                        <label className="node-inline-story-inline-field">
+                          <span className="node-inline-story-inline-label">重建类型</span>
+                          <InlineOptionSelect
+                            ariaLabel="重建类型"
+                            value={node.storyExpansionMode ?? 'full'}
+                            menuKey={`node-inline-story-expansion-mode:${node.id}`}
+                            openMenuKey={openInlineSelectKey}
+                            setOpenMenuKey={setOpenInlineSelectKey}
+                            variant="compact"
+                            onChange={(value) =>
+                              onUpdateNode(node.id, (current) => ({
+                                ...current,
+                                storyExpansionMode: value as StoryNodeExpansionMode,
+                              }))
+                            }
+                            options={[
+                              { value: 'structure_only', label: '仅生成结构' },
+                              { value: 'global_assets', label: '结构 + 全局资产' },
+                              { value: 'full', label: '展开全部节点' },
+                            ]}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="node-inline-generate-button node-inline-story-action-button"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() => {
+                            if (hasDownstreamOutputs) {
+                              onClearStoryOutputs(node.id);
+                              return;
+                            }
+
+                            onRegenerateStoryNodes(node, {
+                              structuredOutput: resolvedStructuredOutput,
+                              expansionMode: node.storyExpansionMode ?? 'full',
+                            });
+                          }}
+                        >
+                          {hasDownstreamOutputs ? '清除节点' : '重建节点'}
+                        </button>
+                      </div>
+                    ) : null}
+                    <label>
+                      提示词
+                      <PromptTextarea
+                        canvas={activeCanvas}
+                        node={node}
+                        ariaLabel="节点提示词"
+                        placeholder={getNodePromptPlaceholder(node)}
+                        stopPointerDown
+                        onChange={(value) =>
+                          onUpdateNode(node.id, (current) => ({
+                            ...current,
+                            prompt: value,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                );
+              })()
+            : null}
+          {(node.kind === 'image' || node.kind === 'video' || node.kind === 'chat') ? (
+            <div className="node-inline-provider-row">
+              <label className="node-inline-story-inline-field">
+                <span className="node-inline-story-inline-label">供应商</span>
+                <InlineOptionSelect
+                  ariaLabel="供应商"
+                  value={providerSelection.effectiveProviderId}
+                  menuKey={`node-inline-provider:${node.id}`}
+                  openMenuKey={openInlineSelectKey}
+                  setOpenMenuKey={setOpenInlineSelectKey}
+                  variant="compact"
+                  onChange={(value) => {
+                    const nextProvider = providerSelection.availableProviders.find(
+                      (provider) => provider.id === value,
+                    );
+                    const nextModel = nextProvider
+                      ? findProviderModelsForNodeWithSpecificProvider(node, nextProvider)[0]
+                      : undefined;
+
+                    onUpdateNode(node.id, (current) => ({
+                      ...current,
+                      providerId: nextProvider?.id,
+                      providerModelId: nextModel?.providerModelId,
+                      modelId: getNextModelIdForNode(current, nextModel),
+                    }));
+                  }}
+                  options={providerSelection.availableProviders.map((provider) => ({
+                    value: provider.id,
+                    label: provider.name,
+                  }))}
+                />
+              </label>
+              <label className="node-inline-story-inline-field">
+                <span className="node-inline-story-inline-label">模型</span>
+                <InlineOptionSelect
+                  ariaLabel="供应商模型"
+                  value={providerSelection.effectiveProviderModelId}
+                  menuKey={`node-inline-provider-model:${node.id}`}
+                  openMenuKey={openInlineSelectKey}
+                  setOpenMenuKey={setOpenInlineSelectKey}
+                  variant="compact"
+                  onChange={(value) => {
+                    const nextModel = providerSelection.availableModels.find(
+                      (model) => model.providerModelId === value,
+                    );
+
+                    onUpdateNode(node.id, (current) => ({
+                      ...current,
+                      providerId: providerSelection.selectedProvider?.id,
+                      providerModelId: value,
+                      modelId: getNextModelIdForNode(current, nextModel),
+                    }));
+                  }}
+                  options={providerSelection.availableModels.map((model) => ({
+                    value: model.providerModelId,
+                    label: model.displayName ?? model.providerModelId,
+                  }))}
+                />
+              </label>
+            </div>
+          ) : null}
+          {node.kind === 'image' ? (
+            <div className="node-inline-media-grid node-inline-image-grid">
+              <label className="node-inline-story-inline-field node-inline-image-field-compact">
+                <span className="node-inline-story-inline-label">分辨率</span>
+                <InlineOptionSelect
+                  value={node.imageResolutionTier ?? defaultImageResolutionTier}
+                  ariaLabel="图片分辨率"
+                  menuKey={`node-inline-image-resolution-tier:${node.id}`}
+                  openMenuKey={openInlineSelectKey}
+                  setOpenMenuKey={setOpenInlineSelectKey}
+                  variant="compact"
+                  onChange={(value) => {
+                    const nextTier = value as ImageResolutionTier;
+                    const currentRatio = node.imageAspectRatio ?? defaultImageAspectRatio;
+                    const nextRatio = getImageAspectOptions(nextTier).some(
+                      (option) => option.ratio === currentRatio,
+                    )
+                      ? currentRatio
+                      : defaultImageAspectRatio;
+
+                    onUpdateNode(node.id, (current) => ({
+                      ...current,
+                      imageResolutionTier: nextTier,
+                      imageAspectRatio: nextRatio,
+                    }));
+                  }}
+                  options={imageResolutionOptions.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                  }))}
+                />
+              </label>
+              <label className="node-inline-story-inline-field node-inline-image-field-wide">
+                <span className="node-inline-story-inline-label">比例</span>
+                <InlineOptionSelect
+                  value={node.imageAspectRatio ?? defaultImageAspectRatio}
+                  ariaLabel="图片比例"
+                  menuKey={`node-inline-image-aspect-ratio:${node.id}`}
+                  openMenuKey={openInlineSelectKey}
+                  setOpenMenuKey={setOpenInlineSelectKey}
+                  variant="compact"
+                  onChange={(value) =>
+                    onUpdateNode(node.id, (current) => ({
+                      ...current,
+                      imageAspectRatio: value,
+                    }))
+                  }
+                  options={getImageAspectOptions(
+                    node.imageResolutionTier ?? defaultImageResolutionTier,
+                  ).map((option) => ({
+                    value: option.ratio,
+                    label: getImageAspectOptionLabel(option),
+                  }))}
+                />
+              </label>
+              <label className="node-inline-story-inline-field node-inline-image-field-compact">
+                <span className="node-inline-story-inline-label">质量</span>
+                <InlineOptionSelect
+                  value={node.imageQuality ?? defaultImageQuality}
+                  ariaLabel="图片质量"
+                  menuKey={`node-inline-image-quality:${node.id}`}
+                  openMenuKey={openInlineSelectKey}
+                  setOpenMenuKey={setOpenInlineSelectKey}
+                  variant="compact"
+                  onChange={(value) =>
+                    onUpdateNode(node.id, (current) => ({
+                      ...current,
+                      imageQuality: value as ImageQuality,
+                    }))
+                  }
+                  options={imageQualityOptions.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                  }))}
+                />
+              </label>
+            </div>
+          ) : null}
+          {node.kind === 'video' ? (
+            <>
+              <div className="node-inline-media-grid node-inline-video-grid">
+                <label className="node-inline-story-inline-field">
+                  <span className="node-inline-story-inline-label">类型</span>
+                  <InlineOptionSelect
+                    ariaLabel="节点类型"
+                    value={node.seedanceScenario ?? 'text_to_video'}
+                    menuKey={`node-inline-video-scenario:${node.id}`}
+                    openMenuKey={openInlineSelectKey}
+                    setOpenMenuKey={setOpenInlineSelectKey}
+                    variant="compact"
+                    onChange={(value) => onHandleVideoScenarioChange(node.id, value as SeedanceScenario)}
+                    options={getVideoScenarioOptions().map((option) => ({
+                      value: option.value,
+                      label: option.label,
+                    }))}
+                  />
+                </label>
+                <label className="node-inline-story-inline-field">
+                  <span className="node-inline-story-inline-label">调用格式</span>
+                  <InlineOptionSelect
+                    ariaLabel="节点模型调用格式"
+                    value={getVideoModelFormat(node)}
+                    menuKey={`node-inline-video-format:${node.id}`}
+                    openMenuKey={openInlineSelectKey}
+                    setOpenMenuKey={setOpenInlineSelectKey}
+                    variant="compact"
+                    onChange={(value) => {
+                      const nextFormat = value as VideoModelFormat;
+                      const nodeForFormat = {
+                        ...node,
+                        videoModelFormat: nextFormat,
+                        modelId: isSoraCompatibleVideoFormat(nextFormat) ? nextFormat : node.modelId,
+                      };
+                      const nextProviders = findProvidersForNodeWithProviders(providers, nodeForFormat);
+                      const nextProvider = nextProviders.find(
+                        (provider) => provider.id === node.providerId,
+                      ) ?? nextProviders[0];
+                      const nextModel = nextProvider
+                        ? findProviderModelsForNodeWithSpecificProvider(nodeForFormat, nextProvider)[0]
+                        : undefined;
+                      const nextProviderModelId = nextModel?.providerModelId;
+                      const nextCanonicalModel =
+                        isSoraCompatibleVideoFormat(nextFormat)
+                          ? nextFormat
+                          : nextModel && isSeedanceVideoModel(nextModel.canonicalModelId)
+                            ? nextModel.canonicalModelId
+                            : 'seedance2.0';
+                      const nextCapabilities = getVideoCapabilities(nextCanonicalModel);
+
+                      onUpdateNode(node.id, (current) => ({
+                        ...current,
+                        videoModelFormat: nextFormat,
+                        providerId: nextProvider?.id,
+                        providerModelId: nextProviderModelId,
+                        modelId: nextCanonicalModel,
+                        videoResolution: nextCapabilities.supportedResolutions.includes(
+                          current.videoResolution ?? '720p',
+                        )
+                          ? current.videoResolution
+                          : nextCapabilities.supportedResolutions[0],
+                        videoRatio: nextCapabilities.supportedRatios.includes(
+                          current.videoRatio ?? getDefaultVideoRatio(nextCanonicalModel),
+                        )
+                          ? current.videoRatio ?? getDefaultVideoRatio(nextCanonicalModel)
+                          : getDefaultVideoRatio(nextCanonicalModel),
+                        videoDurationSeconds: normalizeVideoDurationSeconds(
+                          nextCanonicalModel,
+                          current.videoDurationSeconds ?? 5,
+                        ),
+                        videoFramesPerSecond: nextCapabilities.fixedFrameRate,
+                      }));
+                    }}
+                    options={getVideoModelOptions({
+                      allowSoraFormat: nodeSoraFormatAvailable,
+                    }).map((option) => ({
+                      value: option.value,
+                      label: option.label,
+                    }))}
+                  />
+                </label>
+              </div>
+              <div className="node-inline-media-grid node-inline-video-grid node-inline-video-grid-secondary">
+                <label className="node-inline-story-inline-field">
+                  <span className="node-inline-story-inline-label">分辨率</span>
+                  <InlineOptionSelect
+                    ariaLabel="节点分辨率"
+                    value={node.videoResolution ?? getVideoCapabilities(node.modelId).supportedResolutions[0] ?? '720p'}
+                    menuKey={`node-inline-video-resolution:${node.id}`}
+                    openMenuKey={openInlineSelectKey}
+                    setOpenMenuKey={setOpenInlineSelectKey}
+                    variant="compact"
+                    options={getVideoCapabilities(node.modelId).supportedResolutions.map((resolution) => ({
+                      value: resolution,
+                      label: resolution,
+                    }))}
+                    onChange={(resolution) =>
+                      onUpdateNode(node.id, (current) => ({
+                        ...current,
+                        videoResolution: resolution as '480p' | '720p' | '1080p',
+                      }))
+                    }
+                  />
+                </label>
+                <label className="node-inline-story-inline-field">
+                  <span className="node-inline-story-inline-label">比例</span>
+                  <InlineOptionSelect
+                    ariaLabel="节点比例"
+                    value={node.videoRatio ?? getDefaultVideoRatio(node.modelId)}
+                    menuKey={`node-inline-video-ratio:${node.id}`}
+                    openMenuKey={openInlineSelectKey}
+                    setOpenMenuKey={setOpenInlineSelectKey}
+                    variant="compact"
+                    options={getVideoCapabilities(node.modelId).supportedRatios.map((ratio) => ({
+                      value: ratio,
+                      label: ratio === 'adaptive' ? 'adaptive' : ratio,
+                    }))}
+                    onChange={(ratio) =>
+                      onUpdateNode(node.id, (current) => ({
+                        ...current,
+                        videoRatio: ratio as SeedanceRatio,
+                      }))
+                    }
+                  />
+                </label>
+                <div className="node-inline-story-inline-field node-inline-readonly-field">
+                  <span className="node-inline-story-inline-label">帧率</span>
+                  <strong>{node.videoFramesPerSecond ?? getVideoCapabilities(node.modelId).fixedFrameRate}fps</strong>
+                </div>
+              </div>
+              <div className="node-inline-duration-row">
+                <label className="node-inline-duration-label" htmlFor={`node-inline-duration-${node.id}`}>
+                  <span>时长</span>
+                  <strong>{node.videoDurationSeconds === -1 ? 'Auto' : `${node.videoDurationSeconds ?? 5}s`}</strong>
+                </label>
+                <input
+                  id={`node-inline-duration-${node.id}`}
+                  className="node-inline-duration-range"
+                  aria-label="节点时长"
+                  type="range"
+                  min={getVideoDurationInputBounds(node.modelId).min}
+                  max={getVideoDurationInputBounds(node.modelId).max}
+                  step={1}
+                  value={
+                    node.videoDurationSeconds === -1
+                      ? getVideoCapabilities(node.modelId).durationRangeSeconds.min
+                      : node.videoDurationSeconds ?? 5
+                  }
+                  disabled={node.videoDurationSeconds === -1}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onChange={(event) =>
+                    onUpdateNode(node.id, (current) => ({
+                      ...current,
+                      videoDurationSeconds: normalizeVideoDurationSeconds(
+                        current.modelId,
+                        Number(event.target.value),
+                      ),
+                    }))
+                  }
+                />
+                <label className="node-inline-duration-toggle" title="自动时长">
+                  <input
+                    aria-label="节点自动时长"
+                    title="自动时长"
+                    type="checkbox"
+                    checked={node.videoDurationSeconds === -1}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onChange={(event) =>
+                      onUpdateNode(node.id, (current) => ({
+                        ...current,
+                        videoDurationSeconds: event.target.checked
+                          ? -1
+                          : normalizeVideoDurationSeconds(
+                              current.modelId,
+                              current.videoDurationSeconds === -1
+                                ? getVideoCapabilities(current.modelId).durationRangeSeconds.min
+                                : current.videoDurationSeconds ?? 5,
+                            ),
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            </>
+          ) : null}
+          {node.kind !== 'story' ? (
+            <p>
+              {providersForNode.length > 0
+                ? `可用供应商：${providersForNode.map((provider) => provider.name).join('、')}`
+                : isChatLikeNode(node)
+                  ? '对话模型供应商待配置'
+                  : '模型供应商待配置'}
+            </p>
+          ) : null}
+          {node.kind !== 'story' ? (
+            <PromptTextarea
+              canvas={activeCanvas}
+              node={node}
+              ariaLabel="节点提示词"
+              placeholder={getNodePromptPlaceholder(node)}
+              stopPointerDown
+              onChange={(value) =>
+                onUpdateNode(node.id, (current) => ({
+                  ...current,
+                  prompt: value,
+                }))
+              }
+            />
+          ) : null}
+          {node.kind === 'video' ? (
+            <>
+              <div className="node-inline-video-actions">
+                <button
+                  type="button"
+                  className="node-inline-generate-button node-inline-video-generate-button"
+                  disabled={isGenerating}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => void onSubmitNodeGeneration(node)}
+                >
+                  {isGenerating ? '提交中' : '生成'}
+                </button>
+              </div>
+              {node.generationId ? (
+                <p className="node-generation-id">生成ID：{node.generationId}</p>
+              ) : null}
+            </>
+          ) : node.kind === 'story' ? (
+            node.generationId ? <p className="node-generation-id">生成ID：{node.generationId}</p> : null
+          ) : (
+            <button
+              type="button"
+              disabled={isGenerating}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => void onSubmitNodeGeneration(node)}
+            >
+              {isGenerating ? '提交中' : '生成'}
+            </button>
+          )}
+          {node.generationError ? <p className="node-error">{node.generationError}</p> : null}
+          {node.outputDataUrl || node.outputUrl ? (
+            node.kind === 'video' ? (
+              <>
+                <div className="node-preview-stage node-output-preview-stage">
+                  <video className="asset-preview" src={node.outputDataUrl ?? node.outputUrl} controls />
+                </div>
+                {videoOutputStorageStatus ? (
+                  <p
+                    className={`node-storage-status is-${videoOutputStorageStatus.tone}`}
+                    title={videoOutputStorageStatus.detail}
+                  >
+                    {videoOutputStorageStatus.summary}
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <div className="node-preview-stage node-output-preview-stage">
+                <img
+                  className="asset-preview"
+                  src={node.outputDataUrl ?? node.outputUrl}
+                  alt={`${node.title} 输出`}
+                />
+              </div>
+            )
+          ) : null}
+          {isGenerating ? (
+            <StreamingOutputTail text={effectiveOutputText ?? ''} />
+          ) : effectiveOutputText ? (
+            isLongOutput ? (
+              <>
+                <div className="node-output-summary">{summarizeOutputText(effectiveOutputText)}</div>
+                <button
+                  type="button"
+                  className="node-output-open"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => onOpenOutputEditor(node)}
+                >
+                  查看 / 编辑完整输出
+                </button>
+              </>
+            ) : (
+              <div
+                className="node-output-markdown"
+                dangerouslySetInnerHTML={{
+                  __html: renderMarkdownToHtml(effectiveOutputText),
+                }}
+              />
+            )
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}, areCanvasNodeBodyPropsEqual);
+
+function areCanvasNodeBodyPropsEqual(
+  previous: Readonly<CanvasNodeBodyProps>,
+  next: Readonly<CanvasNodeBodyProps>,
+): boolean {
+  return (
+    previous.activeCanvas === next.activeCanvas &&
+    previous.node === next.node &&
+    previous.providers === next.providers &&
+    previous.isGenerating === next.isGenerating &&
+    previous.effectiveOutputText === next.effectiveOutputText &&
+    previous.openInlineSelectKey === next.openInlineSelectKey &&
+    previous.rootDirectoryReady === next.rootDirectoryReady &&
+    previous.folderStorageReady === next.folderStorageReady
   );
 }
 
@@ -2328,6 +3517,27 @@ function getVideoNodeSettingBadges(node: CanvasNodeView): string[] {
   return [resolution, ratio === 'adaptive' ? 'Adaptive' : ratio, durationLabel, `${frameRate}fps`];
 }
 
+function getNodeSettingSummaryText(node: CanvasNodeView): string | null {
+  if (node.kind === 'image') {
+    return getImageNodeSettingBadges(node).join(' · ');
+  }
+
+  if (node.kind === 'video') {
+    const format = getVideoModelFormat(node) === 'seedance-sora' ? 'sora' : getVideoModelFormat(node);
+    return [
+      getVideoScenarioOptions().find((option) => option.value === (node.seedanceScenario ?? 'text_to_video'))
+        ?.label,
+      format,
+      ...getVideoNodeSettingBadges(node),
+      `预计输出 ${getEstimatedVideoTokens(node) ?? 0} tokens`,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  return null;
+}
+
 function getVideoOutputStorageStatus(node: CanvasNodeView): {
   summary: string;
   detail?: string;
@@ -2366,6 +3576,33 @@ function getEstimatedVideoDurationSeconds(node: CanvasNodeView): number {
   }
 
   return duration ?? 5;
+}
+
+function getEstimatedVideoTokens(node: CanvasNodeView): number | null {
+  if (node.kind !== 'video') {
+    return null;
+  }
+
+  const model = node.modelId || 'seedance2.0';
+  const billingModel = getSeedanceConfigModel(model);
+  if (!billingModel) {
+    return null;
+  }
+  const resolution =
+    node.videoResolution ?? getVideoCapabilities(model).supportedResolutions[0] ?? '720p';
+  const ratio = node.videoRatio ?? getDefaultVideoRatio(model);
+  const framesPerSecond = node.videoFramesPerSecond ?? getVideoCapabilities(model).fixedFrameRate ?? 24;
+
+  return estimateSeedanceTokens({
+    resolution,
+    ratio,
+    duration: getEstimatedVideoDurationSeconds(node),
+    framespersecond: framesPerSecond,
+    scenario: node.seedanceScenario ?? 'text_to_video',
+    model: billingModel,
+    generateAudio: node.videoGenerateAudio ?? true,
+    multimodalCount: 0,
+  });
 }
 
 function getVideoScenarioOptions(): Array<{ value: SeedanceScenario; label: string }> {
@@ -3055,6 +4292,7 @@ function ProviderAvatar({
 export function App() {
   const workspaceStore = useMemo(() => getWorkspaceStore(), []);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const canvasPlaneRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>(loadProviders);
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderConfig>>({});
@@ -3068,8 +4306,13 @@ export function App() {
   const [providerVideoHistoryPage, setProviderVideoHistoryPage] = useState(1);
   const [providerVideoHistoryPageSize, setProviderVideoHistoryPageSize] = useState(20);
   const [providerVideoHistoryTotal, setProviderVideoHistoryTotal] = useState(0);
+  const [isCanvasNavigationActive, setIsCanvasNavigationActive] = useState(false);
   const providerVideoHistoryRequestIdRef = useRef(0);
-  const pendingStoryAutoRunNodeIdsRef = useRef<string[]>([]);
+  const pendingStoryAutoRunNodeIdsRef = useRef<{
+    nodeIds: string[];
+    imageConcurrencyLimit: number;
+    videoConcurrencyLimit: number;
+  } | null>(null);
   const generatedNodeIdRef = useRef(0);
   const [showProviderManager, setShowProviderManager] = useState(false);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
@@ -3154,6 +4397,14 @@ export function App() {
   const outputSelectionToolbarPointerDownRef = useRef(false);
   const outputSelectionRangesRef = useRef<Range[]>([]);
   const outputSelectionSyncingRef = useRef(false);
+  const canvasNavigationTimeoutRef = useRef<number | null>(null);
+  const viewportPersistenceTimeoutRef = useRef<number | null>(null);
+  const previousActiveCanvasIdRef = useRef(workspaceState.activeCanvasId);
+  const viewportRef = useRef(viewport);
+  const scheduledViewportRef = useRef<CanvasViewport | null>(null);
+  const scheduledViewportFrameRef = useRef<number | null>(null);
+  const stableVisibleCanvasNodesRef = useRef<CanvasNodeView[]>([]);
+  const stableVisibleCanvasEdgesRef = useRef<CanvasView['edges']>([]);
 
   function setWorkspaceState(
     action:
@@ -3170,6 +4421,72 @@ export function App() {
 
     workspaceStateRef.current = action;
     setWorkspaceStateRaw(action);
+  }
+
+  function scheduleViewportUpdate(
+    action: CanvasViewport | ((current: CanvasViewport) => CanvasViewport),
+  ) {
+    const baseViewport = scheduledViewportRef.current ?? viewportRef.current;
+    const nextViewport =
+      typeof action === 'function'
+        ? (action as (current: CanvasViewport) => CanvasViewport)(baseViewport)
+        : action;
+
+    scheduledViewportRef.current = nextViewport;
+    viewportRef.current = nextViewport;
+
+    if (scheduledViewportFrameRef.current !== null || typeof window === 'undefined') {
+      return;
+    }
+
+    scheduledViewportFrameRef.current = window.requestAnimationFrame(() => {
+      scheduledViewportFrameRef.current = null;
+      const pendingViewport = scheduledViewportRef.current;
+
+      if (!pendingViewport) {
+        return;
+      }
+
+      scheduledViewportRef.current = null;
+      applyViewportToCanvasPlane(pendingViewport);
+    });
+  }
+
+  function applyViewportToCanvasPlane(nextViewport: CanvasViewport) {
+    const canvasPlane = canvasPlaneRef.current;
+
+    if (!canvasPlane) {
+      return;
+    }
+
+    canvasPlane.style.transform = `translate3d(${nextViewport.x}px, ${nextViewport.y}px, 0) scale(${nextViewport.scale})`;
+  }
+
+  function commitViewportState(nextViewport = viewportRef.current) {
+    if (!isSameViewport(viewportRef.current, nextViewport)) {
+      viewportRef.current = nextViewport;
+    }
+
+    setViewport((current) => (isSameViewport(current, nextViewport) ? current : nextViewport));
+  }
+
+  function persistViewportForCanvas(canvasId: string, nextViewport: CanvasViewport) {
+    if (!canvasId) {
+      return;
+    }
+
+    setCanvasViewports((current) => {
+      const previous = current[canvasId];
+
+      if (previous && isSameViewport(previous, nextViewport)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [canvasId]: nextViewport,
+      };
+    });
   }
 
   function updateDirtyCanvasIds(updater: (current: Set<string>) => Set<string>) {
@@ -3291,6 +4608,10 @@ export function App() {
   const canRedoWorkspace = workspaceHistory.future.length > 0;
   const activeCanvas = canvases.find((canvas) => canvas.id === activeCanvasId) ?? null;
   const activeCanvasIsDirty = activeCanvas ? dirtyCanvasIds.has(activeCanvas.id) : false;
+  const isCanvasNavigating =
+    Boolean(dragState) || Boolean(minimapDragState) || isCanvasNavigationActive;
+  const shouldFreezeVisibleCanvas =
+    dragState?.mode === 'pan' || Boolean(minimapDragState) || isCanvasNavigationActive;
   const filteredCanvasAssets =
     assetFilter === 'all'
       ? canvasAssets
@@ -3322,6 +4643,87 @@ export function App() {
     () => (activeCanvas ? { ...activeCanvas, nodes: renderedCanvasNodes } : null),
     [activeCanvas, renderedCanvasNodes],
   );
+  const selectedNodeIdSet = useMemo(() => new Set(selectedNodeIds), [selectedNodeIds]);
+  const renderedCanvasNodeMap = useMemo(
+    () => new Map(renderedCanvasNodes.map((node) => [node.id, node])),
+    [renderedCanvasNodes],
+  );
+  const visibleCanvasBounds = useMemo(
+    () =>
+      canvasSize && canvasSize.width > 0 && canvasSize.height > 0
+        ? getCanvasViewportBounds(viewport, canvasSize, Math.max(240, 160 / Math.max(viewport.scale, 0.1)))
+        : null,
+    [canvasSize, viewport],
+  );
+  const nextVisibleCanvasNodes = useMemo(() => {
+    if (!visibleCanvasBounds) {
+      return renderedCanvasNodes;
+    }
+
+    return renderedCanvasNodes.filter((node) => {
+      if (node.id === selectedNodeId || selectedNodeIdSet.has(node.id)) {
+        return true;
+      }
+
+      const width = getCanvasNodeWidth(node);
+      const height = getCanvasNodeHeight(node);
+
+      return (
+        node.x <= visibleCanvasBounds.maxX &&
+        node.x + width >= visibleCanvasBounds.minX &&
+        node.y <= visibleCanvasBounds.maxY &&
+        node.y + height >= visibleCanvasBounds.minY
+      );
+    });
+  }, [renderedCanvasNodes, selectedNodeId, selectedNodeIdSet, visibleCanvasBounds]);
+  const visibleCanvasNodes = useMemo(() => {
+    const previous = stableVisibleCanvasNodesRef.current;
+
+    if (shouldFreezeVisibleCanvas && previous.length > 0) {
+      return previous;
+    }
+
+    if (
+      previous.length === nextVisibleCanvasNodes.length &&
+      previous.every((node, index) => node === nextVisibleCanvasNodes[index])
+    ) {
+      return previous;
+    }
+
+    stableVisibleCanvasNodesRef.current = nextVisibleCanvasNodes;
+    return nextVisibleCanvasNodes;
+  }, [nextVisibleCanvasNodes, shouldFreezeVisibleCanvas]);
+  const visibleCanvasNodeIdSet = useMemo(
+    () => new Set(visibleCanvasNodes.map((node) => node.id)),
+    [visibleCanvasNodes],
+  );
+  const nextVisibleCanvasEdges = useMemo(() => {
+    if (!renderedActiveCanvas) {
+      return [];
+    }
+
+    return renderedActiveCanvas.edges.filter(
+      (edge) =>
+        visibleCanvasNodeIdSet.has(edge.fromNodeId) || visibleCanvasNodeIdSet.has(edge.toNodeId),
+    );
+  }, [renderedActiveCanvas, visibleCanvasNodeIdSet]);
+  const visibleCanvasEdges = useMemo(() => {
+    const previous = stableVisibleCanvasEdgesRef.current;
+
+    if (shouldFreezeVisibleCanvas && previous.length > 0) {
+      return previous;
+    }
+
+    if (
+      previous.length === nextVisibleCanvasEdges.length &&
+      previous.every((edge, index) => edge === nextVisibleCanvasEdges[index])
+    ) {
+      return previous;
+    }
+
+    stableVisibleCanvasEdgesRef.current = nextVisibleCanvasEdges;
+    return nextVisibleCanvasEdges;
+  }, [nextVisibleCanvasEdges, shouldFreezeVisibleCanvas]);
 
   useEffect(() => {
     if (!editingOutputNodeId || outputEditorMode !== 'preview') {
@@ -3415,6 +4817,8 @@ export function App() {
     selectedNode?.kind === 'video'
       ? getVideoModelFormat(selectedNode)
       : 'seedance';
+  const selectedNodeProviderSelection =
+    selectedNode ? resolveNodeProviderSelectionWithProviders(providers, selectedNode) : null;
   const selectedVideoProviderModels =
     selectedNode?.kind === 'video' ? findProviderModelsForNode(selectedNode) : [];
   const selectedVideoModel =
@@ -3455,6 +4859,20 @@ export function App() {
     activeCanvas?.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const editingOutputNode =
     activeCanvas?.nodes.find((node) => node.id === editingOutputNodeId) ?? null;
+  const selectedStoryStructuredOutput =
+    selectedNode?.kind === 'story'
+      ? resolveBestStoryStructuredOutput(
+          selectedNode.storyStructuredOutput,
+          selectedNode.storyRawOutput ?? selectedNode.modelOutputText ?? '',
+        )
+      : null;
+  const editingOutputStoryStructuredOutput =
+    editingOutputNode?.kind === 'story'
+      ? resolveBestStoryStructuredOutput(
+          editingOutputNode.storyStructuredOutput,
+          editingOutputNode.storyRawOutput ?? editingOutputNode.modelOutputText ?? '',
+        )
+      : null;
   const outputVersionsForDisplay = editingOutputNode
     ? getOutputVersionsForDisplay(editingOutputNode)
     : [];
@@ -3535,9 +4953,37 @@ export function App() {
   const minimapViewportFrame = minimapViewport
     ? calculateMinimapViewportFrame(minimapViewport, minimapBounds, minimapSize)
     : null;
+  const minimapNodeElements = useMemo(
+    () =>
+      renderedCanvasNodes.map((node) => (
+        <span
+          key={node.id}
+          className={`canvas-minimap-node is-${node.kind}`}
+          style={{
+            left: (node.x - minimapBounds.minX) * minimapScale,
+            top: (node.y - minimapBounds.minY) * minimapScale,
+            width: Math.max(12, getCanvasNodeWidth(node) * minimapScale),
+            height: Math.max(8, getCanvasNodeHeight(node) * minimapScale),
+          }}
+        />
+      )),
+    [renderedCanvasNodes, minimapBounds.minX, minimapBounds.minY, minimapScale],
+  );
 
   useEffect(
     () => () => {
+      if (canvasNavigationTimeoutRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(canvasNavigationTimeoutRef.current);
+      }
+
+      if (viewportPersistenceTimeoutRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(viewportPersistenceTimeoutRef.current);
+      }
+
+      if (scheduledViewportFrameRef.current !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(scheduledViewportFrameRef.current);
+      }
+
       seedanceTrackersRef.current.forEach((tracker) => tracker.stop());
       seedanceTrackersRef.current.clear();
     },
@@ -3979,13 +5425,16 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (pendingStoryAutoRunNodeIdsRef.current.length === 0) {
+    if (!pendingStoryAutoRunNodeIdsRef.current) {
       return;
     }
 
-    const nodeIds = pendingStoryAutoRunNodeIdsRef.current.slice();
-    pendingStoryAutoRunNodeIdsRef.current = [];
-    void autoRunStoryGeneratedNodes(nodeIds);
+    const pendingAutoRun = pendingStoryAutoRunNodeIdsRef.current;
+    pendingStoryAutoRunNodeIdsRef.current = null;
+    void autoRunStoryGeneratedNodes(pendingAutoRun.nodeIds, {
+      imageConcurrencyLimit: pendingAutoRun.imageConcurrencyLimit,
+      videoConcurrencyLimit: pendingAutoRun.videoConcurrencyLimit,
+    });
   }, [workspaceState]);
 
   useEffect(() => {
@@ -4019,11 +5468,30 @@ export function App() {
       return;
     }
 
+    const previousCanvasId = previousActiveCanvasIdRef.current;
+    if (previousCanvasId && previousCanvasId !== activeCanvasId) {
+      persistViewportForCanvas(previousCanvasId, viewportRef.current);
+    }
+
+    if (viewportPersistenceTimeoutRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(viewportPersistenceTimeoutRef.current);
+      viewportPersistenceTimeoutRef.current = null;
+    }
+
+    if (scheduledViewportFrameRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(scheduledViewportFrameRef.current);
+      scheduledViewportFrameRef.current = null;
+    }
+
+    scheduledViewportRef.current = null;
+
     const restoredViewport = canvasViewports[activeCanvasId] ?? defaultViewport;
     pendingViewportRestoreRef.current = {
       canvasId: activeCanvasId,
       viewport: restoredViewport,
     };
+    previousActiveCanvasIdRef.current = activeCanvasId;
+    viewportRef.current = restoredViewport;
     setViewport(restoredViewport);
   }, [activeCanvasId]);
 
@@ -4055,18 +5523,19 @@ export function App() {
       pendingViewportRestoreRef.current = null;
     }
 
-    setCanvasViewports((current) => {
-      const previous = current[activeCanvasId];
+    if (viewportPersistenceTimeoutRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(viewportPersistenceTimeoutRef.current);
+    }
 
-      if (previous && isSameViewport(previous, viewport)) {
-        return current;
-      }
+    if (typeof window === 'undefined') {
+      persistViewportForCanvas(activeCanvasId, viewport);
+      return;
+    }
 
-      return {
-        ...current,
-        [activeCanvasId]: viewport,
-      };
-    });
+    viewportPersistenceTimeoutRef.current = window.setTimeout(() => {
+      viewportPersistenceTimeoutRef.current = null;
+      persistViewportForCanvas(activeCanvasId, viewportRef.current);
+    }, 140);
   }, [activeCanvasId, viewport]);
 
   useEffect(() => {
@@ -4325,7 +5794,9 @@ export function App() {
     function preventCanvasWheelScroll(event: globalThis.WheelEvent) {
       if (
         event.target instanceof Element &&
-        event.target.closest('.output-modal, .canvas-asset-sidebar, .asset-picker-layer')
+        event.target.closest(
+          '.output-modal, .canvas-asset-sidebar, .asset-picker-layer, .node-inspector, .inline-option-select, .inline-option-menu',
+        )
       ) {
         return;
       }
@@ -4552,7 +6023,61 @@ export function App() {
   }
 
   function getCanvasPointFromClient(clientX: number, clientY: number): Point {
-    return screenToCanvasPoint(getCanvasLocalPointFromClient(clientX, clientY), viewport);
+    return screenToCanvasPoint(getCanvasLocalPointFromClient(clientX, clientY), viewportRef.current);
+  }
+
+  function startNodeResize(event: PointerEvent<HTMLButtonElement>, node: CanvasNodeView) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const targetNode = event.currentTarget.closest('article.canvas-node');
+    if (!(targetNode instanceof HTMLElement)) {
+      return;
+    }
+
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startWidth = getCanvasNodeWidth(node);
+    const startHeight = getCanvasNodeHeight(node);
+    const minWidth = getCanvasNodeMinimumWidth(node);
+    const minHeight = getCanvasNodeMinimumHeight(node);
+    const bounds = targetNode.getBoundingClientRect();
+    const scaleX = bounds.width / Math.max(targetNode.offsetWidth, 1);
+    const scaleY = bounds.height / Math.max(targetNode.offsetHeight, 1);
+    const nextScaleX = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : viewportRef.current.scale || 1;
+    const nextScaleY = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : viewportRef.current.scale || 1;
+
+    const onPointerMove = (moveEvent: globalThis.PointerEvent) => {
+      const width = Math.max(minWidth, Math.round(startWidth + (moveEvent.clientX - startX) / nextScaleX));
+      const height = Math.max(minHeight, Math.round(startHeight + (moveEvent.clientY - startY) / nextScaleY));
+
+      updateNode(node.id, (current) => {
+        if (
+          current.width === width &&
+          current.height === height &&
+          current.minWidth === minWidth &&
+          current.minHeight === minHeight
+        ) {
+          return current;
+        }
+
+        return {
+          ...current,
+          width,
+          height,
+          minWidth,
+          minHeight,
+        };
+      });
+    };
+
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp, { once: true });
   }
 
   function getCanvasLocalPointFromClient(clientX: number, clientY: number): Point {
@@ -4569,6 +6094,24 @@ export function App() {
       x: (clientX - rect.left) / scaleX,
       y: (clientY - rect.top) / scaleY,
     };
+  }
+
+  function pulseCanvasNavigation(durationMs = 140) {
+    setIsCanvasNavigationActive(true);
+
+    if (canvasNavigationTimeoutRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(canvasNavigationTimeoutRef.current);
+    }
+
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    canvasNavigationTimeoutRef.current = window.setTimeout(() => {
+      canvasNavigationTimeoutRef.current = null;
+      commitViewportState();
+      setIsCanvasNavigationActive(false);
+    }, durationMs);
   }
 
   function getCanvasDeltaFromClientDelta(delta: { dx: number; dy: number }) {
@@ -4608,7 +6151,7 @@ export function App() {
 
   function getDefaultVideoScenarioForSource(fromNode?: CanvasNodeView): SeedanceScenario {
     if (!fromNode) {
-      return 'text_to_video';
+      return 'image_to_video_first_last_frame';
     }
 
     if (
@@ -4636,42 +6179,58 @@ export function App() {
       : undefined;
     const defaultVideoScenario =
       template.kind === 'video' ? getDefaultVideoScenarioForSource(fromNode) : undefined;
+    const draftNode: CanvasNodeView = {
+      id: nodeId,
+      title: template.title,
+      modelId: template.modelId,
+      videoModelFormat:
+        template.kind === 'video' ? getVideoModelFormat({ modelId: template.modelId }) : undefined,
+      kind: template.kind,
+      x: point.x,
+      y: point.y,
+      imageResolutionTier:
+        template.kind === 'image' ? defaultImageResolutionTier : undefined,
+      imageAspectRatio: template.kind === 'image' ? defaultImageAspectRatio : undefined,
+      imageQuality: template.kind === 'image' ? defaultImageQuality : undefined,
+      videoResolution: template.kind === 'video' ? '480p' : undefined,
+      videoRatio:
+        template.kind === 'video'
+          ? '16:9'
+          : undefined,
+      videoFramesPerSecond:
+        template.kind === 'video'
+          ? getVideoCapabilities(template.modelId).fixedFrameRate
+          : undefined,
+      seedanceScenario: defaultVideoScenario,
+      storyExecutionMode:
+        template.kind === 'story' ? ('structure_only' as StoryNodeExecutionMode) : undefined,
+      storyExpansionMode:
+        template.kind === 'story' ? ('full' as StoryNodeExpansionMode) : undefined,
+      storyImageConcurrencyLimit:
+        template.kind === 'story' ? defaultStoryAutoRunConcurrencyLimits.image : undefined,
+      storyVideoConcurrencyLimit:
+        template.kind === 'story' ? defaultStoryAutoRunConcurrencyLimits.video : undefined,
+      storyStructuredOutput:
+        template.kind === 'story' ? createEmptyStoryStructuredOutput() : undefined,
+      maskLineWidth: template.kind === 'diamondMask' ? 1 : undefined,
+      maskGridDensity: template.kind === 'diamondMask' ? 38 : undefined,
+      maskColor: template.kind === 'diamondMask' ? 'white' : undefined,
+      textContent: template.kind === 'textAsset' ? '在这里输入文本' : undefined,
+    };
+    const draftProviderSelection = resolveNodeProviderSelectionWithProviders(providers, draftNode);
+    const draftProviderModel = draftProviderSelection.availableModels.find(
+      (model) => model.providerModelId === draftProviderSelection.effectiveProviderModelId,
+    );
+    const nextNode: CanvasNodeView = {
+      ...draftNode,
+      providerId: draftProviderSelection.selectedProvider?.id,
+      providerModelId: draftProviderSelection.effectiveProviderModelId || undefined,
+      modelId: getNextModelIdForNode(draftNode, draftProviderModel),
+    };
 
     updateActiveCanvasNodes((nodes) => [
       ...nodes,
-      {
-        id: nodeId,
-        title: template.title,
-        modelId: template.modelId,
-        videoModelFormat:
-          template.kind === 'video' ? getVideoModelFormat({ modelId: template.modelId }) : undefined,
-        kind: template.kind,
-        x: point.x,
-        y: point.y,
-        imageResolutionTier:
-          template.kind === 'image' ? defaultImageResolutionTier : undefined,
-        imageAspectRatio: template.kind === 'image' ? defaultImageAspectRatio : undefined,
-        imageQuality: template.kind === 'image' ? defaultImageQuality : undefined,
-        videoRatio:
-          template.kind === 'video'
-            ? getDefaultVideoRatio(template.modelId)
-            : undefined,
-        videoFramesPerSecond:
-          template.kind === 'video'
-            ? getVideoCapabilities(template.modelId).fixedFrameRate
-            : undefined,
-        seedanceScenario: defaultVideoScenario,
-        storyExecutionMode:
-          template.kind === 'story' ? ('structure_only' as StoryNodeExecutionMode) : undefined,
-        storyExpansionMode:
-          template.kind === 'story' ? ('full' as StoryNodeExpansionMode) : undefined,
-        storyStructuredOutput:
-          template.kind === 'story' ? createEmptyStoryStructuredOutput() : undefined,
-        maskLineWidth: template.kind === 'diamondMask' ? 1 : undefined,
-        maskGridDensity: template.kind === 'diamondMask' ? 38 : undefined,
-        maskColor: template.kind === 'diamondMask' ? 'white' : undefined,
-        textContent: template.kind === 'textAsset' ? '在这里输入文本' : undefined,
-      },
+      nextNode,
     ]);
     if (addMenu?.fromNodeId && !template.outputOnly) {
       const toNode = {
@@ -5025,19 +6584,55 @@ export function App() {
     return null;
   }
 
-  async function autoRunStoryGeneratedNodes(nodeIds: string[]) {
-    for (const nodeId of nodeIds) {
+  async function autoRunStoryGeneratedNodes(
+    nodeIds: string[],
+    limits: {
+      imageConcurrencyLimit: number;
+      videoConcurrencyLimit: number;
+    },
+  ) {
+    const tasks = nodeIds.flatMap((nodeId) => {
       const target = findCanvasAndNodeById(nodeId);
       if (!target) {
-        continue;
+        return [];
       }
 
       if (target.node.kind !== 'image' && target.node.kind !== 'video') {
-        continue;
+        return [];
+      }
+
+      return [{ id: nodeId, kind: target.node.kind }];
+    });
+
+    await runStoryAutoRunQueue(tasks, async (task) => {
+      const target = findCanvasAndNodeById(task.id);
+      if (!target) {
+        return;
       }
 
       await submitNodeGeneration(target.node);
+    }, {
+      image: limits.imageConcurrencyLimit,
+      video: limits.videoConcurrencyLimit,
+    });
+  }
+
+  function getStoryAutoRunNodeIds(
+    executionMode: StoryNodeExecutionMode,
+    expansion: ReturnType<typeof buildStoryNodeExpansion>,
+  ): string[] {
+    if (executionMode === 'fully_automatic') {
+      return expansion.autoRunNodeIds.slice();
     }
+
+    if (executionMode === 'structure_and_generate_images') {
+      const autoRunNodeSet = new Set(expansion.autoRunNodeIds);
+      return expansion.nodes
+        .filter((node) => node.kind === 'image' && autoRunNodeSet.has(node.id))
+        .map((node) => node.id);
+    }
+
+    return [];
   }
 
   function createGeneratedNodeId(prefix: 'node_image_output' | 'node_video_output'): string {
@@ -5051,30 +6646,13 @@ export function App() {
     );
 
     if (!targetCanvas) {
-      return;
+      return false;
     }
 
-    const downstreamNodeIds = new Set<string>();
-    const visitQueue = [sourceNodeId];
-
-    while (visitQueue.length > 0) {
-      const currentNodeId = visitQueue.shift();
-      if (!currentNodeId) {
-        continue;
-      }
-
-      targetCanvas.edges.forEach((edge) => {
-        if (edge.fromNodeId !== currentNodeId || downstreamNodeIds.has(edge.toNodeId)) {
-          return;
-        }
-
-        downstreamNodeIds.add(edge.toNodeId);
-        visitQueue.push(edge.toNodeId);
-      });
-    }
+    const downstreamNodeIds = getStoryDownstreamNodeIds(targetCanvas, sourceNodeId);
 
     if (downstreamNodeIds.size === 0) {
-      return;
+      return false;
     }
 
     markCanvasDirty(targetCanvas.id);
@@ -5100,6 +6678,52 @@ export function App() {
         };
       }),
     }));
+    return true;
+  }
+
+  function getStoryDownstreamNodeIds(canvas: CanvasView, sourceNodeId: string) {
+    const downstreamNodeIds = new Set<string>();
+    const visitQueue = [sourceNodeId];
+
+    while (visitQueue.length > 0) {
+      const currentNodeId = visitQueue.shift();
+      if (!currentNodeId) {
+        continue;
+      }
+
+      canvas.edges.forEach((edge) => {
+        if (edge.fromNodeId !== currentNodeId || downstreamNodeIds.has(edge.toNodeId)) {
+          return;
+        }
+
+        downstreamNodeIds.add(edge.toNodeId);
+        visitQueue.push(edge.toNodeId);
+      });
+    }
+
+    return downstreamNodeIds;
+  }
+
+  function storyNodeHasDownstreamNodes(sourceNodeId: string) {
+    const targetCanvas = workspaceStateRef.current.canvases.find((canvas) =>
+      canvas.nodes.some((candidate) => candidate.id === sourceNodeId),
+    );
+
+    if (!targetCanvas) {
+      return false;
+    }
+
+    return getStoryDownstreamNodeIds(targetCanvas, sourceNodeId).size > 0;
+  }
+
+  function clearStoryNodeOutputs(sourceNodeId: string, successMessage = '已清除故事节点的下游输出。') {
+    if (!removeDownstreamNodesForStoryNode(sourceNodeId)) {
+      setCanvasMessage('当前没有可清除的下游输出。');
+      return false;
+    }
+
+    setCanvasMessage(successMessage);
+    return true;
   }
 
   function expandStoryNodeOutputs(
@@ -5169,8 +6793,13 @@ export function App() {
 
     setCanvasMessage(options.successMessage ?? `已从故事节点生成 ${expansion.nodes.length} 个下游节点。`);
 
-    if (executionMode === 'fully_automatic') {
-      pendingStoryAutoRunNodeIdsRef.current = expansion.autoRunNodeIds.slice();
+    const autoRunNodeIds = getStoryAutoRunNodeIds(executionMode, expansion);
+    if (autoRunNodeIds.length > 0) {
+      pendingStoryAutoRunNodeIdsRef.current = {
+        nodeIds: autoRunNodeIds,
+        imageConcurrencyLimit: getStoryImageConcurrencyLimit(sourceNode),
+        videoConcurrencyLimit: getStoryVideoConcurrencyLimit(sourceNode),
+      };
     }
   }
 
@@ -5184,15 +6813,15 @@ export function App() {
   ) {
     const structuredOutput =
       options.structuredOutput ??
-      (hasStoryExpansionContent(sourceNode.storyStructuredOutput)
-        ? sourceNode.storyStructuredOutput
-        : parseStoryStructuredOutput(sourceNode.storyRawOutput ?? sourceNode.modelOutputText ?? ''));
+      resolveBestStoryStructuredOutput(
+        sourceNode.storyStructuredOutput,
+        sourceNode.storyRawOutput ?? sourceNode.modelOutputText ?? '',
+      );
     if (!structuredOutput) {
       setCanvasMessage('当前结构化结果无法解析，请先检查 JSON 格式。');
       return;
     }
 
-    removeDownstreamNodesForStoryNode(sourceNode.id);
     expandStoryNodeOutputs(sourceNode, structuredOutput, {
       expansionMode: options.expansionMode,
       executionMode: 'structure_and_nodes',
@@ -5673,7 +7302,8 @@ export function App() {
     const delta = getCanvasDeltaFromClientDelta(clientDelta);
 
     if (activeDragState.mode === 'pan') {
-      setViewport((current) => panViewport(current, delta));
+      pulseCanvasNavigation();
+      scheduleViewportUpdate((current) => panViewport(current, delta));
     } else {
       const canvasDelta = {
         dx: delta.dx / viewport.scale,
@@ -5708,7 +7338,7 @@ export function App() {
       const selectedIds =
         rect.width < 4 && rect.height < 4
           ? []
-          : findNodesInSelectionRect(activeCanvas?.nodes ?? [], rect, canvasNodeSize);
+          : findNodesInSelectionRect(activeCanvas?.nodes ?? [], rect);
 
       setSelectedNodeIds(selectedIds);
       setSelectedNodeId(selectedIds.length === 1 ? selectedIds[0] : null);
@@ -5723,6 +7353,8 @@ export function App() {
           { history: false },
         );
       }
+    } else if (activeDragState.mode === 'pan') {
+      commitViewportState();
     }
 
     updateDragState(null);
@@ -5800,6 +7432,14 @@ export function App() {
       window.removeEventListener('pointercancel', handleWindowPointerEnd);
     };
   }, [dragState]);
+
+  useEffect(() => {
+    viewportRef.current = viewport;
+  }, [viewport]);
+
+  useLayoutEffect(() => {
+    applyViewportToCanvasPlane(viewport);
+  }, [viewport]);
 
   useEffect(() => {
     if (!edgeDraft) {
@@ -6088,12 +7728,15 @@ export function App() {
 
     if (
       event.target instanceof Element &&
-      event.target.closest('.output-modal, .canvas-asset-sidebar, .asset-picker-layer')
+      event.target.closest(
+        '.output-modal, .canvas-asset-sidebar, .asset-picker-layer, .node-inspector, .inline-option-select, .inline-option-menu',
+      )
     ) {
       return;
     }
 
     event.preventDefault();
+    pulseCanvasNavigation();
 
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) {
@@ -6101,7 +7744,7 @@ export function App() {
     }
 
     const zoomFactor = event.deltaY > 0 ? 0.92 : 1.08;
-    setViewport((current) =>
+    scheduleViewportUpdate((current) =>
       zoomViewportAtPoint(
         current,
         getCanvasLocalPointFromClient(event.clientX, event.clientY),
@@ -6123,16 +7766,18 @@ export function App() {
   }, []);
 
   function zoomBy(factor: number) {
+    pulseCanvasNavigation();
     const rect = canvasRef.current?.getBoundingClientRect();
     const center = rect
       ? { x: rect.width / 2, y: rect.height / 2 }
       : { x: 480, y: 320 };
 
-    setViewport((current) => zoomViewportAtPoint(current, center, current.scale * factor));
+    scheduleViewportUpdate((current) => zoomViewportAtPoint(current, center, current.scale * factor));
   }
 
   function resetViewport() {
-    setViewport(defaultViewport);
+    pulseCanvasNavigation();
+    scheduleViewportUpdate(defaultViewport);
   }
 
   function getViewportSizeForMinimap() {
@@ -6157,8 +7802,9 @@ export function App() {
       y: bounds.minY + bounds.height * Math.min(1, Math.max(0, localPoint.y / minimapSize.height)),
     };
 
-    setViewport(
-      getViewportForCanvasCenter(center, getViewportSizeForMinimap(), viewport.scale),
+    pulseCanvasNavigation();
+    scheduleViewportUpdate(
+      getViewportForCanvasCenter(center, getViewportSizeForMinimap(), viewportRef.current.scale),
     );
   }
 
@@ -6173,13 +7819,14 @@ export function App() {
       minimapBounds,
       minimapSize,
       {
-        width: getViewportSizeForMinimap().width / viewport.scale,
-        height: getViewportSizeForMinimap().height / viewport.scale,
+        width: getViewportSizeForMinimap().width / viewportRef.current.scale,
+        height: getViewportSizeForMinimap().height / viewportRef.current.scale,
       },
     );
 
-    setViewport(
-      getViewportForCanvasCenter(center, getViewportSizeForMinimap(), viewport.scale),
+    pulseCanvasNavigation();
+    scheduleViewportUpdate(
+      getViewportForCanvasCenter(center, getViewportSizeForMinimap(), viewportRef.current.scale),
     );
   }
 
@@ -6234,6 +7881,7 @@ export function App() {
   function handleMinimapPointerEnd(event: PointerEvent<HTMLButtonElement>) {
     if (minimapDragState?.pointerId === event.pointerId) {
       setMinimapDragState(null);
+      commitViewportState();
     }
   }
 
@@ -7096,6 +8744,7 @@ export function App() {
         endedAt: new Date().toISOString(),
       }));
       if (node.kind === 'story' && nextStoryStructuredOutput) {
+        removeDownstreamNodesForStoryNode(node.id);
         expandStoryNodeOutputs(node, nextStoryStructuredOutput);
       }
       return;
@@ -7313,18 +8962,7 @@ export function App() {
               onPointerUp={handleMinimapPointerEnd}
               onPointerCancel={handleMinimapPointerEnd}
             >
-              {renderedCanvasNodes.map((node) => (
-                <span
-                  key={node.id}
-                  className={`canvas-minimap-node is-${node.kind}`}
-                  style={{
-                    left: (node.x - minimapBounds.minX) * minimapScale,
-                    top: (node.y - minimapBounds.minY) * minimapScale,
-                    width: Math.max(12, canvasNodeSize.width * minimapScale),
-                    height: Math.max(8, canvasNodeSize.height * minimapScale),
-                  }}
-                />
-              ))}
+              {minimapNodeElements}
               {minimapViewportFrame ? (
                 <span
                   className={`canvas-minimap-window ${
@@ -7354,6 +8992,31 @@ export function App() {
     setInspectedNodeId(null);
   }
 
+  function bringNodeToFront(nodeId: string) {
+    setWorkspaceState((current) => ({
+      ...current,
+      canvases: current.canvases.map((canvas) => {
+        if (!current.activeCanvasId || canvas.id !== current.activeCanvasId) {
+          return canvas;
+        }
+
+        const index = canvas.nodes.findIndex((node) => node.id === nodeId);
+        if (index === -1 || index === canvas.nodes.length - 1) {
+          return canvas;
+        }
+
+        const nextNodes = canvas.nodes.slice();
+        const [targetNode] = nextNodes.splice(index, 1);
+        nextNodes.push(targetNode);
+
+        return {
+          ...canvas,
+          nodes: nextNodes,
+        };
+      }),
+    }));
+  }
+
   function selectSingleNode(
     nodeId: string,
     options: {
@@ -7361,6 +9024,7 @@ export function App() {
       preserveInspector?: boolean;
     } = {},
   ) {
+    bringNodeToFront(nodeId);
     setSelectedNodeId(nodeId);
     setSelectedNodeIds([nodeId]);
     setSelectedEdgeId(null);
@@ -8102,6 +9766,8 @@ export function App() {
         <div
           ref={canvasRef}
           className={`infinite-canvas ${dragState?.mode === 'pan' ? 'is-panning' : ''} ${
+            isCanvasNavigating ? 'is-navigating' : ''
+          } ${
             edgeDraft?.snapTarget ? 'is-edge-snapping' : ''
           }`}
           onContextMenu={(event) => {
@@ -8325,15 +9991,16 @@ export function App() {
             <span>拖节点右侧圆点到另一个节点左侧圆点连线</span>
           </div>
           <div
+            ref={canvasPlaneRef}
             className="canvas-plane"
             style={{
-              transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
+              transform: `translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(${viewport.scale})`,
             }}
           >
             <svg className="edge-layer" aria-label="节点连线">
-              {renderedActiveCanvas?.edges.map((edge) => {
-                const fromNode = renderedActiveCanvas.nodes.find((node) => node.id === edge.fromNodeId);
-                const toNode = renderedActiveCanvas.nodes.find((node) => node.id === edge.toNodeId);
+              {visibleCanvasEdges.map((edge) => {
+                const fromNode = renderedCanvasNodeMap.get(edge.fromNodeId);
+                const toNode = renderedCanvasNodeMap.get(edge.toNodeId);
 
                 if (!fromNode || !toNode) {
                   return null;
@@ -8389,7 +10056,7 @@ export function App() {
                 }}
               />
             ) : null}
-            {renderedCanvasNodes.map((node) => {
+            {visibleCanvasNodes.map((node) => {
               const Icon = getNodeIcon(node.kind);
               const providersForNode = findProvidersForNode(node);
               const isGenerating = runningNodeIds.has(node.id);
@@ -8398,6 +10065,7 @@ export function App() {
                 effectiveOutputText !== undefined && shouldCollapseMarkdown(effectiveOutputText);
               const videoOutputStorageStatus =
                 node.kind === 'video' ? getVideoOutputStorageStatus(node) : null;
+              const nodeSettingSummary = getNodeSettingSummaryText(node);
               const videoInputPorts =
                 node.kind === 'video'
                   ? getVideoInputPorts(node.seedanceScenario ?? 'text_to_video')
@@ -8407,19 +10075,32 @@ export function App() {
                 <article
                   key={node.id}
                   className={`canvas-node canvas-node-${node.kind} ${
-                    node.id === selectedNodeId || selectedNodeIds.includes(node.id)
+                    node.id === selectedNodeId || selectedNodeIdSet.has(node.id)
                       ? 'is-selected'
                       : ''
                   }`}
                   style={{
-                    transform: `translate(${node.x}px, ${node.y}px)`,
+                    transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
                     width: `${getCanvasNodeWidth(node)}px`,
-                    maxWidth: `${canvasNodeSize.width * 3}px`,
+                    minHeight: `${getCanvasNodeHeight(node)}px`,
+                  }}
+                  onPointerDownCapture={(event) => {
+                    if (isNodeInteractionTarget(event.target)) {
+                      return;
+                    }
+
+                    bringNodeToFront(node.id);
                   }}
                   onPointerDown={(event) => {
                     event.stopPropagation();
                     selectSingleNode(node.id, { preserveInspector: true });
                     setAddMenu(null);
+
+                    if (isNodeInteractionTarget(event.target)) {
+                      return;
+                    }
+
+                    handleNodePointerDown(event, node.id);
                   }}
                 >
                   {node.kind === 'video' ? (
@@ -8462,7 +10143,7 @@ export function App() {
                       onPointerDown={(event) => event.stopPropagation()}
                     />
                   ) : null}
-                  <header onPointerDown={(event) => handleNodePointerDown(event, node.id)}>
+                  <header>
                     <span className="node-icon">
                       <Icon size={18} />
                     </span>
@@ -8492,20 +10173,17 @@ export function App() {
                         <div
                           className="node-title-row"
                           onPointerDown={(event) => {
-                            event.stopPropagation();
+                            if (isNodeInteractionTarget(event.target)) {
+                              event.stopPropagation();
+                            }
                           }}
                           onMouseDown={(event) => {
-                            event.stopPropagation();
-
                             if (event.detail >= 2) {
                               event.preventDefault();
+                              event.stopPropagation();
                               startRenameNode(node, 'canvas');
                               return;
                             }
-
-                            setAddMenu(null);
-                            setEdgeDraft(null);
-                            selectSingleNode(node.id, { preserveInspector: true });
                           }}
                           onDoubleClick={(event) => {
                             event.stopPropagation();
@@ -8550,462 +10228,55 @@ export function App() {
                           </button>
                         </div>
                       )}
-                      {node.kind === 'diamondMask' ? null : <p>{node.modelId}</p>}
-                      {node.kind === 'image' ? (
-                        <div className="node-image-settings-meta" aria-label="图片生成参数">
-                          {getImageNodeSettingBadges(node).map((badge) => (
-                            <span key={badge}>{badge}</span>
-                          ))}
-                        </div>
-                      ) : node.kind === 'video' ? (
-                        <div className="node-image-settings-meta node-video-settings-meta" aria-label="视频生成参数">
-                          {getVideoNodeSettingBadges(node).map((badge) => (
-                            <span key={badge}>{badge}</span>
-                          ))}
-                        </div>
-                      ) : null}
+                      {node.kind === 'diamondMask' ? null : (
+                        <p className="node-model-line">
+                          <span>{node.modelId}</span>
+                          {nodeSettingSummary ? (
+                            <small className="node-model-summary">{nodeSettingSummary}</small>
+                          ) : null}
+                        </p>
+                      )}
                     </div>
                   </header>
-                  <div
-                    className="node-body"
-                    onDoubleClick={(event) => {
-                      if (!(event.target instanceof HTMLImageElement)) {
-                        return;
-                      }
-
-                      if (!event.target.classList.contains('asset-preview')) {
-                        return;
-                      }
-
-                      const imageUrl =
-                        node.kind === 'imageAsset'
-                          ? node.assetDataUrl
-                          : node.kind === 'image'
-                            ? node.outputDataUrl ?? node.outputUrl
-                            : undefined;
-
-                      if (!imageUrl) {
-                        return;
-                      }
-
-                      event.stopPropagation();
-                      openImagePreview(node.title, imageUrl);
-                    }}
-                  >
-                    {node.kind === 'diamondMask' ? (
-                      <DiamondMaskNodeBody
-                        node={node}
-                        canChooseSource={Boolean(rootDirectoryHandle && folderStorageReady)}
-                        onReplaceImage={(file) => void replaceDiamondMaskImage(node.id, file)}
-                        onSelectAsset={() =>
-                          openAssetPicker({
-                            nodeId: node.id,
-                            kind: 'image',
-                            purpose: 'diamondMask',
-                          })
-                        }
-                        onRequireStorage={requestDiamondMaskStorageSetup}
-                        onUpdateNode={(updater) => updateNode(node.id, updater)}
-                        onGenerate={() => void generateDiamondMaskAsset(node)}
-                      />
-                    ) : node.kind === 'textAsset' ? (
-                      <textarea
-                        value={node.textContent ?? ''}
-                        placeholder="输入文本"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onChange={(event) =>
-                          updateNode(node.id, (current) => ({
-                            ...current,
-                            textContent: event.target.value,
-                          }))
-                        }
-                      />
-                    ) : node.kind === 'imageAsset' ? (
-                      <>
-                        {node.assetDataUrl ? (
-                          <img className="asset-preview" src={node.assetDataUrl} alt={node.assetName ?? '图片'} />
-                        ) : null}
-                        <label className="asset-upload">
-                          导入图片
-                          <input
-                            type="file"
-                            accept="image/*"
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onChange={(event) => {
-                              const file = event.target.files?.[0];
-                              if (file) {
-                                void addAssetNodeFromFile(file, { x: node.x, y: node.y }).then((nodeId) => {
-                                  if (nodeId) {
-                                    updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== node.id));
-                                  }
-                                });
-                              }
-                            }}
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="asset-upload asset-select-button"
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={() =>
-                            openAssetPicker({
-                              nodeId: node.id,
-                              kind: 'image',
-                              purpose: 'assetNode',
-                            })
-                          }
-                        >
-                          选择资产
-                        </button>
-                      </>
-                    ) : node.kind === 'videoAsset' ? (
-                      <>
-                        {node.assetDataUrl ? (
-                          <video className="asset-preview" src={node.assetDataUrl} controls />
-                        ) : null}
-                        <label className="asset-upload">
-                          导入视频
-                          <input
-                            type="file"
-                            accept="video/*"
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onChange={(event) => {
-                              const file = event.target.files?.[0];
-                              if (file) {
-                                void addAssetNodeFromFile(file, { x: node.x, y: node.y }).then((nodeId) => {
-                                  if (nodeId) {
-                                    updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== node.id));
-                                  }
-                                });
-                              }
-                            }}
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="asset-upload asset-select-button"
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={() =>
-                            openAssetPicker({
-                              nodeId: node.id,
-                              kind: 'video',
-                              purpose: 'assetNode',
-                            })
-                          }
-                        >
-                          选择资产
-                        </button>
-                      </>
-                    ) : node.kind === 'audioAsset' ? (
-                      <>
-                        {node.assetDataUrl ? (
-                          <audio className="asset-preview" src={node.assetDataUrl} controls />
-                        ) : null}
-                        <label className="asset-upload">
-                          导入音频
-                          <input
-                            type="file"
-                            accept="audio/*"
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onChange={(event) => {
-                              const file = event.target.files?.[0];
-                              if (file) {
-                                void addAssetNodeFromFile(file, { x: node.x, y: node.y }).then((nodeId) => {
-                                  if (nodeId) {
-                                    updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== node.id));
-                                  }
-                                });
-                              }
-                            }}
-                          />
-                        </label>
-                      </>
-                    ) : (
-                      <>
-                        {node.kind === 'story'
-                          ? (() => {
-                              const storyProviders = findProvidersForNode(node);
-                              const storyProviderModels = findProviderModelsForNode(node);
-                              const resolvedStructuredOutput =
-                                hasStoryExpansionContent(node.storyStructuredOutput)
-                                  ? node.storyStructuredOutput
-                                  : parseStoryStructuredOutput(
-                                      node.storyRawOutput ?? node.modelOutputText ?? '',
-                                    );
-
-                              return (
-                                <div className="node-inline-story-config">
-                                  <div className="node-inline-story-row">
-                                    <label className="node-inline-story-inline-field">
-                                      <span className="node-inline-story-inline-label">供应商</span>
-                                      <InlineOptionSelect
-                                        ariaLabel="供应商"
-                                        value={node.providerId ?? ''}
-                                        menuKey={`node-inline-story-provider:${node.id}`}
-                                        openMenuKey={openInlineSelectKey}
-                                        setOpenMenuKey={setOpenInlineSelectKey}
-                                        variant="compact"
-                                        onChange={(value) => {
-                                          const nextProviderId = value || undefined;
-                                          const nextProvider = nextProviderId
-                                            ? storyProviders.find((provider) => provider.id === nextProviderId)
-                                            : storyProviders[0];
-                                          const nextModel = nextProvider
-                                            ? findProviderModelsForNodeWithProvider(node, nextProvider)[0]
-                                            : undefined;
-
-                                          updateNode(node.id, (current) => ({
-                                            ...current,
-                                            providerId: nextProviderId,
-                                            providerModelId: nextProviderId ? nextModel?.providerModelId : undefined,
-                                            modelId: nextModel?.providerModelId ?? current.modelId,
-                                          }));
-                                        }}
-                                        options={[
-                                          { value: '', label: '自动选择供应商' },
-                                          ...storyProviders.map((provider) => ({
-                                            value: provider.id,
-                                            label: provider.name,
-                                          })),
-                                        ]}
-                                      />
-                                    </label>
-                                    <label className="node-inline-story-inline-field">
-                                      <span className="node-inline-story-inline-label">供应商模型</span>
-                                      <InlineOptionSelect
-                                        ariaLabel="供应商模型"
-                                        value={node.providerModelId ?? ''}
-                                        menuKey={`node-inline-story-provider-model:${node.id}`}
-                                        openMenuKey={openInlineSelectKey}
-                                        setOpenMenuKey={setOpenInlineSelectKey}
-                                        variant="compact"
-                                        onChange={(value) => {
-                                          const nextProviderModelId = value || undefined;
-                                          updateNode(node.id, (current) => ({
-                                            ...current,
-                                            providerModelId: nextProviderModelId,
-                                            modelId: nextProviderModelId ?? current.modelId,
-                                          }));
-                                        }}
-                                        options={[
-                                          { value: '', label: '自动选择模型' },
-                                          ...storyProviderModels.map((model) => ({
-                                            value: model.providerModelId,
-                                            label: model.displayName ?? model.providerModelId,
-                                          })),
-                                        ]}
-                                      />
-                                    </label>
-                                  </div>
-                                  <div className="node-inline-story-row">
-                                    <label className="node-inline-story-inline-field">
-                                      <span className="node-inline-story-inline-label">执行方式</span>
-                                      <InlineOptionSelect
-                                        ariaLabel="执行方式"
-                                        value={node.storyExecutionMode ?? 'structure_only'}
-                                        menuKey={`node-inline-story-execution-mode:${node.id}`}
-                                        openMenuKey={openInlineSelectKey}
-                                        setOpenMenuKey={setOpenInlineSelectKey}
-                                        variant="compact"
-                                        onChange={(value) =>
-                                          updateNode(node.id, (current) => ({
-                                            ...current,
-                                            storyExecutionMode: value as StoryNodeExecutionMode,
-                                          }))
-                                        }
-                                        options={[
-                                          { value: 'structure_only', label: '仅拆解' },
-                                          { value: 'structure_and_nodes', label: '拆解并铺节点' },
-                                          { value: 'fully_automatic', label: '拆解并全自动执行' },
-                                        ]}
-                                      />
-                                    </label>
-                                    <button
-                                      type="button"
-                                      className="node-inline-generate-button node-inline-story-generate-button"
-                                      disabled={isGenerating}
-                                      onPointerDown={(event) => event.stopPropagation()}
-                                      onClick={() => void submitNodeGeneration(node)}
-                                    >
-                                      {isGenerating ? '提交中' : '生成'}
-                                    </button>
-                                  </div>
-                                  {resolvedStructuredOutput ? (
-                                    <div className="node-inline-story-actions">
-                                      <label className="node-inline-story-inline-field">
-                                        <span className="node-inline-story-inline-label">重建类型</span>
-                                        <InlineOptionSelect
-                                          ariaLabel="重建类型"
-                                          value={node.storyExpansionMode ?? 'full'}
-                                          menuKey={`node-inline-story-expansion-mode:${node.id}`}
-                                          openMenuKey={openInlineSelectKey}
-                                          setOpenMenuKey={setOpenInlineSelectKey}
-                                          variant="compact"
-                                          onChange={(value) =>
-                                            updateNode(node.id, (current) => ({
-                                              ...current,
-                                              storyExpansionMode: value as StoryNodeExpansionMode,
-                                            }))
-                                          }
-                                          options={[
-                                            { value: 'structure_only', label: '仅生成结构' },
-                                            { value: 'global_assets', label: '结构 + 全局资产' },
-                                            { value: 'full', label: '展开全部节点' },
-                                          ]}
-                                        />
-                                      </label>
-                                      <button
-                                        type="button"
-                                        className="node-inline-generate-button"
-                                        onPointerDown={(event) => event.stopPropagation()}
-                                        onClick={() =>
-                                          regenerateStoryNodesFromStructuredOutput(node, {
-                                            structuredOutput: resolvedStructuredOutput,
-                                            expansionMode: node.storyExpansionMode ?? 'full',
-                                          })
-                                        }
-                                      >
-                                        重建输出
-                                      </button>
-                                    </div>
-                                  ) : null}
-                                </div>
-                              );
-                            })()
-                          : null}
-                        {node.kind !== 'story' ? (
-                        <p>
-                          {providersForNode.length > 0
-                            ? `可用供应商：${providersForNode
-                                .map((provider) => provider.name)
-                                .join('、')}`
-                            : isChatLikeNode(node)
-                              ? '对话模型供应商待配置'
-                              : '模型供应商待配置'}
-                        </p>
-                        ) : null}
-                        <PromptTextarea
-                          canvas={activeCanvas}
-                          node={node}
-                          ariaLabel="节点提示词"
-                          placeholder={getNodePromptPlaceholder(node)}
-                          stopPointerDown
-                          onChange={(value) =>
-                            updateNode(node.id, (current) => ({
-                              ...current,
-                              prompt: value,
-                            }))
-                          }
-                        />
-                        {node.kind === 'video' ? (
-                          <>
-                            <div className="node-inline-video-actions">
-                              <span className="node-inline-video-mode-label">模式</span>
-                              <label className="node-inline-video-mode">
-                                <InlineOptionSelect
-                                  ariaLabel="模式"
-                                  value={node.seedanceScenario ?? 'text_to_video'}
-                                  menuKey={`node-inline-video-scenario:${node.id}`}
-                                  openMenuKey={openInlineSelectKey}
-                                  setOpenMenuKey={setOpenInlineSelectKey}
-                                  variant="compact"
-                                  onChange={(value) =>
-                                    handleVideoScenarioChange(
-                                      node.id,
-                                      value as SeedanceScenario,
-                                    )
-                                  }
-                                  options={getVideoScenarioOptions().map((option) => ({
-                                    value: option.value,
-                                    label: option.label,
-                                  }))}
-                                />
-                              </label>
-                              <button
-                                type="button"
-                                className="node-inline-generate-button"
-                                disabled={isGenerating}
-                                onPointerDown={(event) => event.stopPropagation()}
-                                onClick={() => void submitNodeGeneration(node)}
-                              >
-                                {isGenerating ? '提交中' : '生成'}
-                              </button>
-                            </div>
-                            {node.generationId ? (
-                              <p className="node-generation-id">生成ID：{node.generationId}</p>
-                            ) : null}
-                          </>
-                        ) : node.kind === 'story' ? (
-                          node.generationId ? (
-                            <p className="node-generation-id">生成ID：{node.generationId}</p>
-                          ) : null
-                        ) : (
-                          <button
-                            type="button"
-                            disabled={isGenerating}
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onClick={() => void submitNodeGeneration(node)}
-                          >
-                            {isGenerating ? '提交中' : '生成'}
-                          </button>
-                        )}
-                        {node.generationError ? (
-                          <p className="node-error">{node.generationError}</p>
-                        ) : null}
-                        {node.outputDataUrl || node.outputUrl ? (
-                          node.kind === 'video' ? (
-                            <>
-                              <video
-                                className="asset-preview"
-                                src={node.outputDataUrl ?? node.outputUrl}
-                                controls
-                              />
-                              {videoOutputStorageStatus ? (
-                                <p
-                                  className={`node-storage-status is-${videoOutputStorageStatus.tone}`}
-                                  title={videoOutputStorageStatus.detail}
-                                >
-                                  {videoOutputStorageStatus.summary}
-                                </p>
-                              ) : null}
-                            </>
-                          ) : (
-                            <img
-                              className="asset-preview"
-                              src={node.outputDataUrl ?? node.outputUrl}
-                              alt={`${node.title} 输出`}
-                            />
-                          )
-                        ) : null}
-                        {isGenerating ? (
-                          <StreamingOutputTail text={effectiveOutputText ?? ''} />
-                        ) : effectiveOutputText ? (
-                          isLongOutput ? (
-                            <>
-                            <div className="node-output-summary">
-                              {summarizeOutputText(effectiveOutputText)}
-                            </div>
-                            <button
-                              type="button"
-                              className="node-output-open"
-                              onPointerDown={(event) => event.stopPropagation()}
-                              onClick={() => openOutputEditor(node)}
-                            >
-                              查看 / 编辑完整输出
-                            </button>
-                            </>
-                          ) : (
-                            <div
-                              className="node-output-markdown"
-                              dangerouslySetInnerHTML={{
-                                __html: renderMarkdownToHtml(effectiveOutputText),
-                              }}
-                            />
-                          )
-                        ) : null}
-                      </>
-                    )}
-                  </div>
+                  <CanvasNodeBody
+                    activeCanvas={activeCanvas}
+                    node={node}
+                    providers={providers}
+                    isGenerating={isGenerating}
+                    effectiveOutputText={effectiveOutputText}
+                    openInlineSelectKey={openInlineSelectKey}
+                    setOpenInlineSelectKey={setOpenInlineSelectKey}
+                    rootDirectoryReady={Boolean(rootDirectoryHandle)}
+                    folderStorageReady={folderStorageReady}
+                    onOpenImagePreview={openImagePreview}
+                    onReplaceDiamondMaskImage={(nodeId, file) => void replaceDiamondMaskImage(nodeId, file)}
+                    onOpenAssetPicker={openAssetPicker}
+                    onRequireDiamondMaskStorage={requestDiamondMaskStorageSetup}
+                    onUpdateNode={updateNode}
+                    onGenerateDiamondMaskAsset={(targetNode) => void generateDiamondMaskAsset(targetNode)}
+                    onAddAssetNodeFromFile={addAssetNodeFromFile}
+                    onRemovePlaceholderNode={(nodeId) =>
+                      updateActiveCanvasNodes((nodes) => nodes.filter((current) => current.id !== nodeId))
+                    }
+                    onHandleVideoScenarioChange={handleVideoScenarioChange}
+                    onSubmitNodeGeneration={submitNodeGeneration}
+                    onRegenerateStoryNodes={(sourceNode, options) =>
+                      regenerateStoryNodesFromStructuredOutput(sourceNode, {
+                        structuredOutput: options.structuredOutput ?? undefined,
+                        expansionMode: options.expansionMode,
+                      })
+                    }
+                    onClearStoryOutputs={clearStoryNodeOutputs}
+                    hasStoryDownstreamOutputs={storyNodeHasDownstreamNodes}
+                    onOpenOutputEditor={openOutputEditor}
+                  />
+                  <button
+                    type="button"
+                    className={`node-resize-handle ${node.kind === 'textAsset' ? 'text-asset-resize-handle' : ''}`}
+                    aria-label="调整节点大小"
+                    title="调整节点大小"
+                    onPointerDown={(event) => startNodeResize(event, node)}
+                  />
                   <button
                     type="button"
                     className="edge-handle edge-handle-output"
@@ -9051,7 +10322,10 @@ export function App() {
             const selectedNode = inspectedNode;
 
             return (
-            <aside className="node-inspector">
+            <aside
+              className="node-inspector"
+              onWheelCapture={(event) => event.stopPropagation()}
+            >
               <header className="node-inspector-header">
                 <div className="node-inspector-title-block">
                   {editingNodeTitleId === selectedNode.id &&
@@ -9188,6 +10462,7 @@ export function App() {
                       options={[
                         { value: 'structure_only', label: '仅拆解' },
                         { value: 'structure_and_nodes', label: '拆解并铺节点' },
+                        { value: 'structure_and_generate_images', label: '拆解并执行生图' },
                         { value: 'fully_automatic', label: '拆解并全自动执行' },
                       ]}
                     />
@@ -9213,21 +10488,142 @@ export function App() {
                       ]}
                     />
                   </label>
-                  {selectedNode.storyStructuredOutput &&
-                  (selectedNode.storyStructuredOutput.storySummary.trim() ||
-                    selectedNode.storyStructuredOutput.narrativeSegments.length > 0 ||
-                    getStoryGlobalAssetCount(selectedNode.storyStructuredOutput) > 0) ? (
+                  <label>
+                    图片并发
+                    <InlineOptionSelect
+                      ariaLabel="故事图片并发"
+                      value={getStoryImageConcurrencyLimit(selectedNode)}
+                      menuKey={`story-image-concurrency:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          storyImageConcurrencyLimit: normalizeStoryAutoRunConcurrencyLimit(Number(value)),
+                        }))
+                      }
+                      options={Array.from({ length: 10 }, (_, index) => ({
+                        value: String(index + 1),
+                        label: String(index + 1),
+                      }))}
+                    />
+                  </label>
+                  <label>
+                    视频并发
+                    <InlineOptionSelect
+                      ariaLabel="故事视频并发"
+                      value={getStoryVideoConcurrencyLimit(selectedNode)}
+                      menuKey={`story-video-concurrency:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          storyVideoConcurrencyLimit: normalizeStoryAutoRunConcurrencyLimit(Number(value)),
+                        }))
+                      }
+                      options={Array.from({ length: 10 }, (_, index) => ({
+                        value: String(index + 1),
+                        label: String(index + 1),
+                      }))}
+                    />
+                  </label>
+                  <label>
+                    供应商
+                    <InlineOptionSelect
+                      value={selectedNodeProviderSelection?.effectiveProviderId ?? ''}
+                      ariaLabel="供应商"
+                      menuKey={`story-provider:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) => {
+                        const nextProviderId = value || undefined;
+                        const nextProvider = findProvidersForNode(selectedNode).find(
+                          (provider) => provider.id === nextProviderId,
+                        );
+                        const nextModel = nextProvider
+                          ? findProviderModelsForNodeWithProvider(selectedNode, nextProvider)[0]
+                          : undefined;
+
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          providerId: nextProviderId,
+                          providerModelId: nextModel?.providerModelId,
+                          modelId: nextModel?.providerModelId ?? current.modelId,
+                        }));
+                      }}
+                      options={findProvidersForNode(selectedNode).map((provider) => ({
+                        value: provider.id,
+                        label: provider.name,
+                      }))}
+                    />
+                  </label>
+                  <label>
+                    供应商模型
+                    <InlineOptionSelect
+                      value={selectedNodeProviderSelection?.effectiveProviderModelId ?? ''}
+                      ariaLabel="供应商模型"
+                      menuKey={`story-provider-model:${selectedNode.id}`}
+                      openMenuKey={openInlineSelectKey}
+                      setOpenMenuKey={setOpenInlineSelectKey}
+                      onChange={(value) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          providerModelId: value || undefined,
+                          modelId: value || current.modelId,
+                        }))
+                      }
+                      options={findProviderModelsForNode(selectedNode).map((model) => ({
+                        value: model.providerModelId,
+                        label: model.displayName ?? model.providerModelId,
+                      }))}
+                    />
+                  </label>
+                  <label>
+                    提示词
+                    <PromptTextarea
+                      canvas={activeCanvas}
+                      node={selectedNode}
+                      ariaLabel="提示词"
+                      placeholder={getNodePromptPlaceholder(selectedNode)}
+                      onChange={(value) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          prompt: value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="story-system-prompt-field">
+                    故事内置提示词
+                    <textarea
+                      aria-label="故事内置提示词"
+                      value={selectedNode.storySystemPrompt ?? buildStorySystemInstruction()}
+                      onWheelCapture={(event) => event.stopPropagation()}
+                      onWheel={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        updateNode(selectedNode.id, (current) => ({
+                          ...current,
+                          storySystemPrompt: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  {selectedStoryStructuredOutput &&
+                  (selectedStoryStructuredOutput.storySummary.trim() ||
+                    selectedStoryStructuredOutput.narrativeSegments.length > 0 ||
+                    getStoryGlobalAssetCount(selectedStoryStructuredOutput) > 0) ? (
                       <section className="story-structured-panel" aria-label="故事结构概览">
                         <div className="story-structured-panel-header">
                           <h3>结构概览</h3>
                           <span>
-                            {selectedNode.storyStructuredOutput.narrativeSegments.length > 0
-                              ? `${selectedNode.storyStructuredOutput.narrativeSegments.length} 段`
+                            {selectedStoryStructuredOutput.narrativeSegments.length > 0
+                              ? `${selectedStoryStructuredOutput.narrativeSegments.length} 段`
                               : '待补充分段'}
                           </span>
                         </div>
                         <p className="story-structured-summary">
-                          {selectedNode.storyStructuredOutput.storySummary || '当前还没有可用的结构化摘要。'}
+                          {selectedStoryStructuredOutput.storySummary || '当前还没有可用的结构化摘要。'}
                         </p>
                         <div className="story-structured-actions">
                           <button
@@ -9241,43 +10637,84 @@ export function App() {
                         <div className="story-structured-stats">
                           <article className="story-structured-stat">
                             <span>全局资产</span>
-                            <strong>{getStoryGlobalAssetCount(selectedNode.storyStructuredOutput)}</strong>
+                            <strong>{getStoryGlobalAssetCount(selectedStoryStructuredOutput)}</strong>
                           </article>
                           <article className="story-structured-stat">
                             <span>叙事段落</span>
-                            <strong>{selectedNode.storyStructuredOutput.narrativeSegments.length}</strong>
+                            <strong>{selectedStoryStructuredOutput.narrativeSegments.length}</strong>
                           </article>
                           <article className="story-structured-stat">
                             <span>预计总时长</span>
-                            <strong>{getStoryDurationSeconds(selectedNode.storyStructuredOutput)} 秒</strong>
+                            <strong>{getStoryDurationSeconds(selectedStoryStructuredOutput)} 秒</strong>
                           </article>
                           <article className="story-structured-stat">
                             <span>分镜数量</span>
-                            <strong>{getStoryShotCount(selectedNode.storyStructuredOutput)}</strong>
+                            <strong>{getStoryShotCount(selectedStoryStructuredOutput)}</strong>
                           </article>
                         </div>
-                        {selectedNode.storyStructuredOutput.styleNotes?.length ? (
+                        {selectedStoryStructuredOutput.styleNotes?.length ? (
                           <div className="story-structured-tags" aria-label="风格说明">
-                            {selectedNode.storyStructuredOutput.styleNotes.map((note, index) => (
+                            {selectedStoryStructuredOutput.styleNotes.map((note, index) => (
                               <span className="story-structured-tag" key={`${note}-${index}`}>
                                 {note}
                               </span>
                             ))}
                           </div>
                         ) : null}
-                        {selectedNode.storyStructuredOutput.narrativeSegments.length > 0 ? (
+                        {selectedStoryStructuredOutput.narrativeSegments.length > 0 ? (
                           <div className="story-segment-list">
-                            {selectedNode.storyStructuredOutput.narrativeSegments.map((segment) => (
+                            {selectedStoryStructuredOutput.narrativeSegments.map((segment) => (
                               <article className="story-segment-card" key={segment.id}>
                                 <div className="story-segment-card-head">
                                   <strong>{segment.title}</strong>
                                   <span>{segment.durationSeconds} 秒</span>
                                 </div>
-                                <p>{segment.prompt}</p>
                                 <div className="story-segment-card-meta">
                                   <span>{segment.shots.length} 个分镜</span>
                                   <span>{segment.continuityNotes.length} 条连续性要求</span>
+                                  <span>
+                                    开场转场：{segment.openingTransition.description}
+                                  </span>
                                 </div>
+                                <div className="story-segment-detail-grid">
+                                  {getStorySegmentAssetSummary(segment).map((item) => (
+                                    <section
+                                      className="story-segment-detail-block"
+                                      key={`${segment.id}:${item.label}`}
+                                    >
+                                      <h4>{item.label}</h4>
+                                      <p>{formatStoryPromptPreview(item.prompt)}</p>
+                                    </section>
+                                  ))}
+                                </div>
+                                <section className="story-segment-detail-block">
+                                  <h4>分镜详情</h4>
+                                  <div className="story-shot-list">
+                                    {segment.shots.map((shot) => (
+                                      <article className="story-shot-card" key={shot.id}>
+                                        <div className="story-shot-card-head">
+                                          <strong>{shot.title}</strong>
+                                          <span>{shot.durationSeconds} 秒</span>
+                                        </div>
+                                        <ul>
+                                          {formatStoryShotMeta(shot).map((line) => (
+                                            <li key={`${shot.id}:${line}`}>{line}</li>
+                                          ))}
+                                        </ul>
+                                      </article>
+                                    ))}
+                                  </div>
+                                </section>
+                                {segment.continuityNotes.length > 0 ? (
+                                  <section className="story-segment-detail-block">
+                                    <h4>连续性说明</h4>
+                                    <ul className="story-segment-note-list">
+                                      {segment.continuityNotes.map((note, index) => (
+                                        <li key={`${segment.id}:continuity:${index}`}>{note}</li>
+                                      ))}
+                                    </ul>
+                                  </section>
+                                ) : null}
                                 <div className="story-segment-card-actions">
                                   <button
                                     type="button"
@@ -9285,7 +10722,7 @@ export function App() {
                                     onClick={() =>
                                       regenerateStoryNodesFromStructuredOutput(selectedNode, {
                                         structuredOutput: {
-                                          ...selectedNode.storyStructuredOutput!,
+                                          ...selectedStoryStructuredOutput,
                                           globalAssets: {
                                             scenePrompts: [],
                                             characterSheetPrompts: [],
@@ -9386,8 +10823,7 @@ export function App() {
                           const nextModel = nextProvider
                             ? findProviderModelsForNodeWithProvider(nodeForFormat, nextProvider)[0]
                             : undefined;
-                          const nextProviderModelId =
-                            isSoraCompatibleVideoFormat(nextFormat) ? undefined : nextModel?.providerModelId;
+                          const nextProviderModelId = nextModel?.providerModelId;
                           const nextCanonicalModel =
                             isSoraCompatibleVideoFormat(nextFormat)
                               ? nextFormat
@@ -9592,35 +11028,28 @@ export function App() {
                   ) : null}
                 </div>
               ) : null}
-              {isChatLikeNode(selectedNode) ||
+              {selectedNode.kind === 'chat' ||
               selectedNode.kind === 'image' ||
               selectedNode.kind === 'video' ? (
                 <>
                   <label>
                     供应商
                     <InlineOptionSelect
-                      value={selectedNode.providerId ?? ''}
+                      value={selectedNodeProviderSelection?.effectiveProviderId ?? ''}
                       ariaLabel="供应商"
                       menuKey={`node-provider:${selectedNode.id}`}
                       openMenuKey={openInlineSelectKey}
                       setOpenMenuKey={setOpenInlineSelectKey}
                       onChange={(value) => {
                         const nextProviderId = value || undefined;
-                        const nextProvider = nextProviderId
-                          ? findProvidersForNode(selectedNode).find(
-                              (provider) => provider.id === nextProviderId,
-                            )
-                          : findProvidersForNode(selectedNode)[0];
+                        const nextProvider = findProvidersForNode(selectedNode).find(
+                          (provider) => provider.id === nextProviderId,
+                        );
                         const nextModel = nextProvider
                           ? findProviderModelsForNodeWithProvider(selectedNode, nextProvider)[0]
                           : undefined;
                         const nextProviderModelId =
-                          selectedNode.kind === 'video' &&
-                          isSoraCompatibleVideoFormat(getVideoModelFormat(selectedNode))
-                            ? undefined
-                            : nextProviderId
-                              ? nextModel?.providerModelId
-                              : undefined;
+                          nextModel?.providerModelId;
 
                         updateNode(selectedNode.id, (current) => ({
                           ...current,
@@ -9630,25 +11059,21 @@ export function App() {
                             isChatLikeNode(selectedNode) && nextModel
                               ? nextModel.providerModelId
                               : selectedNode.kind === 'video' &&
-                                  !isSoraCompatibleVideoFormat(getVideoModelFormat(selectedNode)) &&
                                   nextModel
                                 ? nextModel.canonicalModelId
                               : current.modelId,
                         }));
                       }}
-                      options={[
-                        { value: '', label: '自动选择供应商' },
-                        ...findProvidersForNode(selectedNode).map((provider) => ({
-                          value: provider.id,
-                          label: provider.name,
-                        })),
-                      ]}
+                      options={findProvidersForNode(selectedNode).map((provider) => ({
+                        value: provider.id,
+                        label: provider.name,
+                      }))}
                     />
                   </label>
                   <label>
                     供应商模型
                     <InlineOptionSelect
-                      value={selectedNode.providerModelId ?? ''}
+                      value={selectedNodeProviderSelection?.effectiveProviderModelId ?? ''}
                       ariaLabel="供应商模型"
                       menuKey={`node-provider-model:${selectedNode.id}`}
                       openMenuKey={openInlineSelectKey}
@@ -9666,19 +11091,15 @@ export function App() {
                             isChatLikeNode(selectedNode) && nextProviderModelId
                               ? nextProviderModelId
                               : selectedNode.kind === 'video' &&
-                                  !isSoraCompatibleVideoFormat(getVideoModelFormat(selectedNode)) &&
                                   nextModel
                                 ? nextModel.canonicalModelId
-                                : current.modelId,
+                              : current.modelId,
                         }));
                       }}
-                      options={[
-                        { value: '', label: '自动选择模型' },
-                        ...findProviderModelsForNode(selectedNode).map((model) => ({
-                          value: model.providerModelId,
-                          label: model.displayName ?? model.providerModelId,
-                        })),
-                      ]}
+                      options={findProviderModelsForNode(selectedNode).map((model) => ({
+                        value: model.providerModelId,
+                        label: model.displayName ?? model.providerModelId,
+                      }))}
                     />
                   </label>
                 </>
@@ -9759,7 +11180,7 @@ export function App() {
                   </label>
                 </div>
               ) : null}
-              {isChatLikeNode(selectedNode) ||
+              {selectedNode.kind === 'chat' ||
               selectedNode.kind === 'image' ||
               selectedNode.kind === 'video' ? (
                 <label>
@@ -9872,10 +11293,10 @@ export function App() {
                       </button>
                     </div>
                     {editingOutputNode.kind === 'story' &&
-                    editingOutputNode.storyStructuredOutput &&
-                    (editingOutputNode.storyStructuredOutput.storySummary.trim() ||
-                      editingOutputNode.storyStructuredOutput.narrativeSegments.length > 0 ||
-                      getStoryGlobalAssetCount(editingOutputNode.storyStructuredOutput) > 0) ? (
+                    editingOutputStoryStructuredOutput &&
+                    (editingOutputStoryStructuredOutput.storySummary.trim() ||
+                      editingOutputStoryStructuredOutput.narrativeSegments.length > 0 ||
+                      getStoryGlobalAssetCount(editingOutputStoryStructuredOutput) > 0) ? (
                         <div className="output-modal-story-actions">
                           <button
                             type="button"
@@ -9884,7 +11305,7 @@ export function App() {
                           >
                             从当前 JSON 重新生成节点
                           </button>
-                          {editingOutputNode.storyStructuredOutput.narrativeSegments.map((segment) => (
+                          {editingOutputStoryStructuredOutput.narrativeSegments.map((segment) => (
                             <button
                               key={segment.id}
                               type="button"
@@ -9892,7 +11313,7 @@ export function App() {
                               onClick={() =>
                                 regenerateStoryNodesFromStructuredOutput(editingOutputNode, {
                                   structuredOutput: {
-                                    ...editingOutputNode.storyStructuredOutput!,
+                                    ...editingOutputStoryStructuredOutput,
                                     globalAssets: {
                                       scenePrompts: [],
                                       characterSheetPrompts: [],
