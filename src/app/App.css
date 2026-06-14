@@ -937,6 +937,102 @@ button:disabled {
     0 0 0 8px rgba(143, 202, 255, 0.06);
 }
 
+/* 画布分组：淡黑色半透明背景 + 略突出的边框，位于节点下层（DOM 顺序在前）。 */
+.canvas-group {
+  background: rgba(12, 16, 22, 0.42);
+  border: 1px solid rgba(143, 202, 255, 0.3);
+  border-radius: 14px;
+  position: absolute;
+  left: 0;
+  top: 0;
+  contain: layout style;
+}
+
+.canvas-group-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  pointer-events: auto;
+  z-index: 10;
+  background: rgba(12, 16, 22, 0.56);
+  border-bottom: 1px solid rgba(143, 202, 255, 0.18);
+  border-radius: 14px 14px 0 0;
+  box-sizing: border-box;
+}
+
+.canvas-group-name {
+  color: #cdd6e3;
+  font-size: 13px;
+  font-weight: 540;
+  cursor: default;
+  user-select: none;
+}
+
+.canvas-group-name-input {
+  background: rgba(8, 10, 13, 0.94);
+  border: 1px solid rgba(160, 173, 190, 0.28);
+  border-radius: 6px;
+  color: #eef2f5;
+  font: inherit;
+  font-size: 13px;
+  padding: 2px 6px;
+  width: 120px;
+}
+
+.canvas-group-action {
+  background: rgba(20, 25, 32, 0.9);
+  border: 1px solid rgba(173, 186, 201, 0.18);
+  border-radius: 6px;
+  color: #cdd6e3;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.canvas-group-action:hover {
+  border-color: rgba(143, 202, 255, 0.4);
+  color: #f2f6fb;
+}
+
+/* 选中 ≥2 节点时自动出现的「添加分组」按钮，位于最后选中节点右侧不远处。 */
+.canvas-group-add-button {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 20;
+  background: rgba(20, 25, 32, 0.96);
+  border: 1px solid rgba(143, 202, 255, 0.4);
+  border-radius: 8px;
+  color: #f2f6fb;
+  font-size: 13px;
+  padding: 8px 14px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.canvas-group-add-button:hover {
+  border-color: rgba(143, 202, 255, 0.7);
+  box-shadow: 0 0 0 3px rgba(143, 202, 255, 0.1);
+}
+
+.canvas-group-resize-handle {
+  background: rgba(23, 28, 35, 0.98);
+  border: 1px solid rgba(170, 184, 198, 0.18);
+  border-radius: 9px;
+  bottom: -8px;
+  cursor: nwse-resize;
+  height: 18px;
+  position: absolute;
+  right: -8px;
+  width: 18px;
+  z-index: 2;
+}
+
 .edge-handle {
   background: #0a0d11;
   border: 2px solid #6f7f91;

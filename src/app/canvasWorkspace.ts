@@ -123,6 +123,22 @@ export type CanvasSelectionRect = {
   height: number;
 };
 
+export type CanvasGroupBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type CanvasGroupView = {
+  id: string;
+  name: string;
+  nodeIds: string[];
+  // 手动设定的「最小框」（缩放/拖拽后记录）；实际渲染范围 = 该框 ∪ 所含节点并集，
+  // 即节点拖出分组时分组自动扩大包含，拖入时不收缩（只扩不缩）。
+  bounds?: CanvasGroupBounds;
+};
+
 export type CanvasView = {
   id: string;
   name: string;
@@ -130,6 +146,7 @@ export type CanvasView = {
   updatedAt: string;
   nodes: CanvasNodeView[];
   edges: CanvasEdgeView[];
+  groups?: CanvasGroupView[];
 };
 
 export type CanvasClipboardPayload = {
@@ -231,15 +248,54 @@ function isCanvasView(value: unknown): value is CanvasView {
     Array.isArray(canvas.nodes) &&
     canvas.nodes.every(isCanvasNodeView) &&
     (canvas.edges === undefined ||
-      (Array.isArray(canvas.edges) && canvas.edges.every(isCanvasEdgeView)))
+      (Array.isArray(canvas.edges) && canvas.edges.every(isCanvasEdgeView))) &&
+    (canvas.groups === undefined ||
+      (Array.isArray(canvas.groups) && canvas.groups.every(isCanvasGroupView)))
+  );
+}
+
+function isCanvasGroupView(value: unknown): value is CanvasGroupView {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const group = value as CanvasGroupView;
+  return (
+    typeof group.id === 'string' &&
+    typeof group.name === 'string' &&
+    Array.isArray(group.nodeIds) &&
+    group.nodeIds.every((id) => typeof id === 'string')
   );
 }
 
 function normalizeCanvas(canvas: CanvasView): CanvasView {
-  return {
+  const normalized: CanvasView = {
     ...canvas,
     nodes: canvas.nodes.map(normalizeNode),
     edges: canvas.edges ?? [],
+  };
+  if (canvas.groups) {
+    normalized.groups = canvas.groups.filter(isCanvasGroupView).map(normalizeGroup);
+  }
+  return normalized;
+}
+
+function normalizeGroup(group: CanvasGroupView): CanvasGroupView {
+  return {
+    id: group.id,
+    name: group.name,
+    nodeIds: group.nodeIds.filter((id): id is string => typeof id === 'string'),
+    ...(group.bounds ? { bounds: normalizeGroupBounds(group.bounds) } : {}),
+  };
+}
+
+function normalizeGroupBounds(bounds: unknown): CanvasGroupBounds {
+  const raw = bounds as Partial<CanvasGroupBounds>;
+  return {
+    x: typeof raw.x === 'number' ? raw.x : 0,
+    y: typeof raw.y === 'number' ? raw.y : 0,
+    width: typeof raw.width === 'number' && raw.width > 0 ? raw.width : 0,
+    height: typeof raw.height === 'number' && raw.height > 0 ? raw.height : 0,
   };
 }
 
@@ -1002,5 +1058,137 @@ export function removeCanvasNode(canvas: CanvasView, nodeId: string): CanvasView
     edges: canvas.edges.filter(
       (edge) => edge.fromNodeId !== nodeId && edge.toNodeId !== nodeId,
     ),
+    ...(canvas.groups
+      ? {
+          groups: canvas.groups.map((group) => ({
+            ...group,
+            nodeIds: group.nodeIds.filter((id) => id !== nodeId),
+          })),
+        }
+      : {}),
   };
+}
+
+// 分组顶部 title 行预留高度（title 独立占一行，与内容区分开）。
+const GROUP_TITLE_HEIGHT = 40;
+
+// 计算分组的实际渲染范围：所含节点并集 ∪ 手动 bounds（节点超出仍包含，只扩不缩）。
+export function getGroupRenderBounds(
+  group: CanvasGroupView,
+  nodes: CanvasNodeView[],
+  measuredHeights?: Map<string, number>,
+): CanvasGroupBounds | null {
+  const groupNodes = nodes.filter((node) => group.nodeIds.includes(node.id));
+  if (groupNodes.length === 0) {
+    return group.bounds ?? null;
+  }
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const node of groupNodes) {
+    minX = Math.min(minX, node.x);
+    minY = Math.min(minY, node.y);
+    maxX = Math.max(maxX, node.x + getCanvasNodeWidth(node));
+    const measuredHeight = measuredHeights?.get(node.id);
+    maxY = Math.max(maxY, node.y + (measuredHeight ?? getCanvasNodeHeight(node)));
+  }
+
+  if (group.bounds) {
+    minX = Math.min(minX, group.bounds.x);
+    minY = Math.min(minY, group.bounds.y);
+    maxX = Math.max(maxX, group.bounds.x + group.bounds.width);
+    maxY = Math.max(maxY, group.bounds.y + group.bounds.height);
+  }
+
+  return {
+    x: minX,
+    y: minY - GROUP_TITLE_HEIGHT,
+    width: maxX - minX,
+    height: maxY - minY + GROUP_TITLE_HEIGHT,
+  };
+}
+
+export function createCanvasGroup(
+  canvas: CanvasView,
+  nodeIds: string[],
+  createId: () => string,
+): { canvas: CanvasView; groupId: string } {
+  const existing = new Set(canvas.nodes.map((node) => node.id));
+  const groupId = createId();
+  const group: CanvasGroupView = {
+    id: groupId,
+    name: '分组',
+    nodeIds: nodeIds.filter((id) => existing.has(id)),
+  };
+
+  return {
+    canvas: {
+      ...canvas,
+      groups: [...(canvas.groups ?? []), group],
+      updatedAt: '刚刚',
+    },
+    groupId,
+  };
+}
+
+export function moveCanvasGroup(
+  canvas: CanvasView,
+  groupId: string,
+  delta: { dx: number; dy: number },
+): CanvasView {
+  const group = canvas.groups?.find((current) => current.id === groupId);
+  if (!group) {
+    return canvas;
+  }
+
+  const groupNodeIds = new Set(group.nodeIds);
+  const nodes = canvas.nodes.map((node) =>
+    groupNodeIds.has(node.id)
+      ? { ...node, x: node.x + delta.dx, y: node.y + delta.dy }
+      : node,
+  );
+  const groups = (canvas.groups ?? []).map((current) =>
+    current.id === groupId && current.bounds
+      ? {
+          ...current,
+          bounds: {
+            ...current.bounds,
+            x: current.bounds.x + delta.dx,
+            y: current.bounds.y + delta.dy,
+          },
+        }
+      : current,
+  );
+
+  return { ...canvas, nodes, groups, updatedAt: '刚刚' };
+}
+
+export function setCanvasGroupBounds(
+  canvas: CanvasView,
+  groupId: string,
+  bounds: CanvasGroupBounds,
+): CanvasView {
+  const groups = (canvas.groups ?? []).map((current) =>
+    current.id === groupId ? { ...current, bounds } : current,
+  );
+  return { ...canvas, groups, updatedAt: '刚刚' };
+}
+
+export function renameCanvasGroup(
+  canvas: CanvasView,
+  groupId: string,
+  name: string,
+): CanvasView {
+  const nextName = name.trim() || '分组';
+  const groups = (canvas.groups ?? []).map((current) =>
+    current.id === groupId ? { ...current, name: nextName } : current,
+  );
+  return { ...canvas, groups, updatedAt: '刚刚' };
+}
+
+export function removeCanvasGroup(canvas: CanvasView, groupId: string): CanvasView {
+  const groups = (canvas.groups ?? []).filter((current) => current.id !== groupId);
+  return { ...canvas, groups, updatedAt: '刚刚' };
 }
