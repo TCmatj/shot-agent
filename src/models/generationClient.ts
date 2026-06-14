@@ -22,6 +22,7 @@ import {
   type SeedanceModelId,
   type SeedanceScenario,
 } from '../domain/seedance';
+import { runtimeFetch } from './httpFetch';
 
 type ModelNodeKind = 'image' | 'video' | 'chat' | 'story';
 
@@ -453,7 +454,7 @@ export async function submitGenerationNode(
     };
   }
 
-  const fetcher = input.fetcher ?? fetch;
+  const fetcher = input.fetcher ?? runtimeFetch;
   let response: Awaited<ReturnType<GenerationFetch>>;
 
   try {
@@ -493,7 +494,7 @@ export async function queryGenerationTask(
     return { ok: false, error: `当前供应商不支持任务查询：${input.provider.protocol}` };
   }
 
-  const fetcher = input.fetcher ?? fetch;
+  const fetcher = input.fetcher ?? runtimeFetch;
   let response: Awaited<ReturnType<GenerationFetch>>;
   const taskUrl =
     input.provider.protocol === 'volcengine'
@@ -565,7 +566,7 @@ export async function listVideoGenerationTasks(
   const pageIndex = Math.max(1, Math.floor(input.pageIndex ?? 1));
   const pageSize = Math.max(1, Math.floor(input.pageSize ?? 20));
   const status = input.status ?? 'succeeded';
-  const fetcher = input.fetcher ?? fetch;
+  const fetcher = input.fetcher ?? runtimeFetch;
   const query = new URLSearchParams({
     page_num: String(pageIndex),
     page_size: String(pageSize),
@@ -620,7 +621,7 @@ export async function streamChatGenerationNode(
     return built;
   }
 
-  const fetcher = input.fetcher ?? fetch;
+  const fetcher = input.fetcher ?? runtimeFetch;
   let response: Response;
 
   try {
