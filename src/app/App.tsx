@@ -420,7 +420,12 @@ type CanvasNodeBodyProps = {
   onClearStoryOutputs: (nodeId: string) => void;
   hasStoryDownstreamOutputs: (nodeId: string) => boolean;
   onOpenOutputEditor: (node: CanvasNodeView) => void;
+  isLowDetail?: boolean;
 };
+
+// LOD（细节层次）：节点屏幕宽度低于阈值时进入简化模式（仅保留 header，不渲染配置/prompt/输出/资产），
+// 大幅减少缩小后的 DOM 量；选中/生成中的节点豁免，保证交互与反馈。
+const LOD_LOW_DETAIL_ENTER_PX = 160;
 
 function getStoryImageConcurrencyLimit(node: CanvasNodeView): number {
   return normalizeStoryAutoRunConcurrencyLimit(
@@ -2254,6 +2259,7 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
   onClearStoryOutputs,
   hasStoryDownstreamOutputs,
   onOpenOutputEditor,
+  isLowDetail,
 }: CanvasNodeBodyProps) {
   const providersForNode = useMemo(
     () => findProvidersForNodeWithProviders(providers, node),
@@ -2269,6 +2275,10 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
     node.kind === 'video' ? getVideoOutputStorageStatus(node) : null;
   const nodeSettingSummary = getNodeSettingSummaryText(node);
   const nodeSoraFormatAvailable = findProvidersForVideoFormat(providers, 'seedance-sora').length > 0;
+
+  if (isLowDetail) {
+    return <div className={`node-body node-body-${node.kind} node-body-low-detail`} />;
+  }
 
   return (
     <div
@@ -2336,7 +2346,7 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
         <>
           <div className="node-preview-stage">
             {node.assetDataUrl ? (
-              <img className="asset-preview" src={node.assetDataUrl} alt={node.assetName ?? '图片'} />
+              <img className="asset-preview" src={node.assetDataUrl} alt={node.assetName ?? '图片'} loading="lazy" />
             ) : (
               <div className="node-preview-empty">暂无图片</div>
             )}
@@ -2380,7 +2390,7 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
         <>
           <div className="node-preview-stage">
             {node.assetDataUrl ? (
-              <video className="asset-preview" src={node.assetDataUrl} controls />
+              <video className="asset-preview" src={node.assetDataUrl} controls preload="none" />
             ) : (
               <div className="node-preview-empty">暂无视频</div>
             )}
@@ -3002,7 +3012,7 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
             node.kind === 'video' ? (
               <>
                 <div className="node-preview-stage node-output-preview-stage">
-                  <video className="asset-preview" src={node.outputDataUrl ?? node.outputUrl} controls />
+                  <video className="asset-preview" src={node.outputDataUrl ?? node.outputUrl} controls preload="none" />
                 </div>
                 {videoOutputStorageStatus ? (
                   <p
@@ -3065,7 +3075,8 @@ function areCanvasNodeBodyPropsEqual(
     previous.effectiveOutputText === next.effectiveOutputText &&
     previous.openInlineSelectKey === next.openInlineSelectKey &&
     previous.rootDirectoryReady === next.rootDirectoryReady &&
-    previous.folderStorageReady === next.folderStorageReady
+    previous.folderStorageReady === next.folderStorageReady &&
+    previous.isLowDetail === next.isLowDetail
   );
 }
 
@@ -10124,6 +10135,10 @@ export function App() {
               const providersForNode = findProvidersForNode(node);
               const isGenerating = runningNodeIds.has(node.id);
               const effectiveOutputText = getEffectiveNodeOutputText(node);
+              const isLowDetailNode =
+                getCanvasNodeWidth(node) * viewport.scale < LOD_LOW_DETAIL_ENTER_PX &&
+                !selectedNodeIdSet.has(node.id) &&
+                !isGenerating;
               const isLongOutput =
                 effectiveOutputText !== undefined && shouldCollapseMarkdown(effectiveOutputText);
               const videoOutputStorageStatus =
@@ -10306,6 +10321,7 @@ export function App() {
                   <CanvasNodeBody
                     activeCanvas={activeCanvas}
                     node={node}
+                    isLowDetail={isLowDetailNode}
                     providers={providers}
                     isGenerating={isGenerating}
                     effectiveOutputText={effectiveOutputText}
