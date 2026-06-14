@@ -163,6 +163,14 @@ import {
   removeCanvasNode,
   serializeWorkspaceState,
   updateWorkspaceStorage,
+  createCanvasGroup,
+  getGroupRenderBounds,
+  moveCanvasGroup,
+  removeCanvasGroup,
+  renameCanvasGroup,
+  setCanvasGroupBounds,
+  type CanvasGroupBounds,
+  type CanvasGroupView,
   type CanvasNodeKind,
   type CanvasNodeView,
   type CanvasView,
@@ -420,7 +428,12 @@ type CanvasNodeBodyProps = {
   onClearStoryOutputs: (nodeId: string) => void;
   hasStoryDownstreamOutputs: (nodeId: string) => boolean;
   onOpenOutputEditor: (node: CanvasNodeView) => void;
+  isLowDetail?: boolean;
 };
+
+// LOD（细节层次）：节点屏幕宽度低于阈值时进入简化模式（仅保留 header，不渲染配置/prompt/输出/资产），
+// 大幅减少缩小后的 DOM 量；选中/生成中的节点豁免，保证交互与反馈。
+const LOD_LOW_DETAIL_ENTER_PX = 160;
 
 function getStoryImageConcurrencyLimit(node: CanvasNodeView): number {
   return normalizeStoryAutoRunConcurrencyLimit(
@@ -2254,6 +2267,7 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
   onClearStoryOutputs,
   hasStoryDownstreamOutputs,
   onOpenOutputEditor,
+  isLowDetail,
 }: CanvasNodeBodyProps) {
   const providersForNode = useMemo(
     () => findProvidersForNodeWithProviders(providers, node),
@@ -2269,6 +2283,10 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
     node.kind === 'video' ? getVideoOutputStorageStatus(node) : null;
   const nodeSettingSummary = getNodeSettingSummaryText(node);
   const nodeSoraFormatAvailable = findProvidersForVideoFormat(providers, 'seedance-sora').length > 0;
+
+  if (isLowDetail) {
+    return <div className={`node-body node-body-${node.kind} node-body-low-detail`} />;
+  }
 
   return (
     <div
@@ -2336,7 +2354,7 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
         <>
           <div className="node-preview-stage">
             {node.assetDataUrl ? (
-              <img className="asset-preview" src={node.assetDataUrl} alt={node.assetName ?? '图片'} />
+              <img className="asset-preview" src={node.assetDataUrl} alt={node.assetName ?? '图片'} loading="lazy" />
             ) : (
               <div className="node-preview-empty">暂无图片</div>
             )}
@@ -2380,7 +2398,7 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
         <>
           <div className="node-preview-stage">
             {node.assetDataUrl ? (
-              <video className="asset-preview" src={node.assetDataUrl} controls />
+              <video className="asset-preview" src={node.assetDataUrl} controls preload="none" />
             ) : (
               <div className="node-preview-empty">暂无视频</div>
             )}
@@ -3002,7 +3020,7 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
             node.kind === 'video' ? (
               <>
                 <div className="node-preview-stage node-output-preview-stage">
-                  <video className="asset-preview" src={node.outputDataUrl ?? node.outputUrl} controls />
+                  <video className="asset-preview" src={node.outputDataUrl ?? node.outputUrl} controls preload="none" />
                 </div>
                 {videoOutputStorageStatus ? (
                   <p
@@ -3065,7 +3083,8 @@ function areCanvasNodeBodyPropsEqual(
     previous.effectiveOutputText === next.effectiveOutputText &&
     previous.openInlineSelectKey === next.openInlineSelectKey &&
     previous.rootDirectoryReady === next.rootDirectoryReady &&
-    previous.folderStorageReady === next.folderStorageReady
+    previous.folderStorageReady === next.folderStorageReady &&
+    previous.isLowDetail === next.isLowDetail
   );
 }
 
@@ -4374,6 +4393,29 @@ export function App() {
   const dragPreviewRef = useRef<DragPreviewState>(null);
   const dragPreviewFrameRef = useRef<number | null>(null);
   const [addMenu, setAddMenu] = useState<AddMenuState>(null);
+  const [groupContextMenu, setGroupContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [draftGroupName, setDraftGroupName] = useState('');
+
+  // 分组改名：编辑中点击输入框外的任意位置（含不可聚焦区域）都提交保存，
+  // 不依赖 onBlur（点击不可聚焦元素不触发 blur，会导致静默取消）。
+  useEffect(() => {
+    if (!editingGroupId) {
+      return;
+    }
+    const onPointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.canvas-group-name-input')) {
+        return;
+      }
+      const groupId = editingGroupId;
+      const name = draftGroupName;
+      setEditingGroupId(null);
+      applyCanvasUpdate((canvas) => renameCanvasGroup(canvas, groupId, name));
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => window.removeEventListener('pointerdown', onPointerDown, true);
+  }, [editingGroupId, draftGroupName]);
   const [edgeDraft, setEdgeDraft] = useState<EdgeDraft>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
@@ -6193,6 +6235,148 @@ export function App() {
     };
   }
 
+  function applyCanvasUpdate(updater: (canvas: CanvasView) => CanvasView) {
+    markCanvasDirty(workspaceStateRef.current.activeCanvasId);
+    setWorkspaceState((current) => ({
+      ...current,
+      canvases: current.canvases.map((canvas) =>
+        canvas.id === current.activeCanvasId ? updater(canvas) : canvas,
+      ),
+    }));
+  }
+
+  function createGroupFromSelection() {
+    if (!activeCanvas || selectedNodeIds.length < 2) {
+      return;
+    }
+    // 过滤已属于其他分组的节点：一个节点不允许加入多个分组。
+    const takenNodeIds = new Set(
+      (activeCanvas.groups ?? []).flatMap((group) => group.nodeIds),
+    );
+    const ids = selectedNodeIds.filter((id) => !takenNodeIds.has(id));
+    if (ids.length < 2) {
+      return;
+    }
+    applyCanvasUpdate((canvas) =>
+      createCanvasGroup(canvas, ids, () => `group_${crypto.randomUUID()}`).canvas,
+    );
+    setSelectedNodeIds([]);
+    setSelectedNodeId(null);
+    setGroupContextMenu(null);
+  }
+
+  function startEditGroupName(groupId: string, name: string) {
+    setEditingGroupId(groupId);
+    setDraftGroupName(name);
+  }
+
+  function commitGroupName(groupId: string) {
+    const name = draftGroupName;
+    setEditingGroupId(null);
+    applyCanvasUpdate((canvas) => renameCanvasGroup(canvas, groupId, name));
+  }
+
+  function deleteCanvasGroupById(groupId: string) {
+    applyCanvasUpdate((canvas) => removeCanvasGroup(canvas, groupId));
+    setEditingGroupId(null);
+  }
+
+  // 分组内空余区域左键拖拽：移动整个分组（bounds + 内部所有节点）。
+  // 用 rAF 节流累积 delta，避免 pointermove 高频 setState 导致抖动。
+  function handleGroupPointerDown(event: PointerEvent<HTMLDivElement>, groupId: string) {
+    if (event.button !== 0) {
+      return;
+    }
+    event.stopPropagation();
+    setAddMenu(null);
+    setGroupContextMenu(null);
+    setEditingGroupId(null);
+
+    let lastX = event.clientX;
+    let lastY = event.clientY;
+    let pendingDx = 0;
+    let pendingDy = 0;
+    let frame: number | null = null;
+    const scale = viewport.scale || 1;
+
+    const flush = () => {
+      frame = null;
+      if (pendingDx === 0 && pendingDy === 0) {
+        return;
+      }
+      const dx = pendingDx;
+      const dy = pendingDy;
+      pendingDx = 0;
+      pendingDy = 0;
+      applyCanvasUpdate((canvas) => moveCanvasGroup(canvas, groupId, { dx, dy }));
+    };
+    const onPointerMove = (moveEvent: globalThis.PointerEvent) => {
+      pendingDx += (moveEvent.clientX - lastX) / scale;
+      pendingDy += (moveEvent.clientY - lastY) / scale;
+      lastX = moveEvent.clientX;
+      lastY = moveEvent.clientY;
+      if (frame === null && typeof window !== 'undefined') {
+        frame = window.requestAnimationFrame(flush);
+      }
+    };
+    const onPointerUp = () => {
+      if (frame !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(frame);
+      }
+      flush();
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+  }
+
+  // 分组右下角缩放：设定分组「最小框」bounds；节点超出仍自动扩大（最小框语义）。
+  function handleGroupResizePointerDown(event: PointerEvent<HTMLDivElement>, groupId: string) {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setAddMenu(null);
+    setGroupContextMenu(null);
+
+    const group = activeCanvas?.groups?.find((current) => current.id === groupId);
+    const startBounds = group ? getGroupRenderBounds(group, activeCanvas?.nodes ?? []) : null;
+    if (!startBounds) {
+      return;
+    }
+
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const originX = startBounds.x;
+    const originY = startBounds.y;
+    const startWidth = startBounds.width;
+    const startHeight = startBounds.height;
+    const scale = viewport.scale || 1;
+
+    const onPointerMove = (moveEvent: globalThis.PointerEvent) => {
+      const dx = (moveEvent.clientX - startX) / scale;
+      const dy = (moveEvent.clientY - startY) / scale;
+      applyCanvasUpdate((canvas) =>
+        setCanvasGroupBounds(canvas, groupId, {
+          x: originX,
+          y: originY,
+          width: Math.max(120, startWidth + dx),
+          height: Math.max(120, startHeight + dy),
+        }),
+      );
+    };
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp, { once: true });
+  }
+
   function openAddMenu(clientX: number, clientY: number, fromNodeId?: string) {
     const point = getCanvasLocalPointFromClient(clientX, clientY);
 
@@ -7321,8 +7505,10 @@ export function App() {
 
     event.stopPropagation();
     setAddMenu(null);
+    setGroupContextMenu(null);
     setEdgeDraft(null);
     clearDragPreview();
+
     const nodeIdsToDrag = selectedNodeIds.includes(nodeId) ? selectedNodeIds : [nodeId];
 
     if (!selectedNodeIds.includes(nodeId)) {
@@ -9835,7 +10021,9 @@ export function App() {
           }`}
           onContextMenu={(event) => {
             event.preventDefault();
-            openAddMenu(event.clientX, event.clientY);
+            if (selectedNodeIds.length < 2) {
+              openAddMenu(event.clientX, event.clientY);
+            }
           }}
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={handlePointerMove}
@@ -10060,6 +10248,114 @@ export function App() {
               transform: `translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(${viewport.scale})`,
             }}
           >
+            {(activeCanvas?.groups ?? []).map((group) => {
+              const groupBounds = getGroupRenderBounds(
+                group,
+                activeCanvas?.nodes ?? [],
+                measuredNodeHeights,
+              );
+              if (!groupBounds) {
+                return null;
+              }
+              return (
+                <div
+                  key={group.id}
+                  className="canvas-group"
+                  style={{
+                    left: `${groupBounds.x}px`,
+                    top: `${groupBounds.y}px`,
+                    width: `${groupBounds.width}px`,
+                    height: `${groupBounds.height}px`,
+                  }}
+                  onPointerDown={(event) => handleGroupPointerDown(event, group.id)}
+                >
+                  <div className="canvas-group-header" onPointerDown={(event) => event.stopPropagation()}>
+                    {editingGroupId === group.id ? (
+                      <input
+                        className="canvas-group-name-input"
+                        value={draftGroupName}
+                        autoFocus
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onChange={(event) => setDraftGroupName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            commitGroupName(group.id);
+                          }
+                          if (event.key === 'Escape') {
+                            setEditingGroupId(null);
+                          }
+                        }}
+                        onBlur={() => commitGroupName(group.id)}
+                      />
+                    ) : (
+                      <span
+                        className="canvas-group-name"
+                        onDoubleClick={(event) => {
+                          event.stopPropagation();
+                          startEditGroupName(group.id, group.name);
+                        }}
+                      >
+                        {group.name}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className="canvas-group-action"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={() => startEditGroupName(group.id, group.name)}
+                    >
+                      编辑
+                    </button>
+                    <button
+                      type="button"
+                      className="canvas-group-action"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={() => deleteCanvasGroupById(group.id)}
+                    >
+                      删除
+                    </button>
+                  </div>
+                  <div
+                    className="canvas-group-resize-handle"
+                    onPointerDown={(event) => handleGroupResizePointerDown(event, group.id)}
+                  />
+                </div>
+              );
+            })}
+            {(() => {
+              if (!activeCanvas || selectedNodeIds.length < 2) {
+                return null;
+              }
+              const takenNodeIds = new Set(
+                (activeCanvas.groups ?? []).flatMap((group) => group.nodeIds),
+              );
+              const availableNodeIds = selectedNodeIds.filter(
+                (id) => !takenNodeIds.has(id),
+              );
+              if (availableNodeIds.length < 2) {
+                return null;
+              }
+              const lastNodeId = availableNodeIds[availableNodeIds.length - 1];
+              const lastNode = activeCanvas.nodes.find((node) => node.id === lastNodeId);
+              if (!lastNode) {
+                return null;
+              }
+              return (
+                <button
+                  type="button"
+                  className="canvas-group-add-button"
+                  style={{
+                    transform: `translate3d(${lastNode.x + getCanvasNodeWidth(lastNode) + 16}px, ${
+                      lastNode.y
+                    }px, 0)`,
+                  }}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => createGroupFromSelection()}
+                >
+                  添加分组
+                </button>
+              );
+            })()}
             <svg className="edge-layer" aria-label="节点连线">
               {visibleCanvasEdges.map((edge) => {
                 const fromNode = renderedCanvasNodeMap.get(edge.fromNodeId);
@@ -10124,6 +10420,10 @@ export function App() {
               const providersForNode = findProvidersForNode(node);
               const isGenerating = runningNodeIds.has(node.id);
               const effectiveOutputText = getEffectiveNodeOutputText(node);
+              const isLowDetailNode =
+                getCanvasNodeWidth(node) * viewport.scale < LOD_LOW_DETAIL_ENTER_PX &&
+                !selectedNodeIdSet.has(node.id) &&
+                !isGenerating;
               const isLongOutput =
                 effectiveOutputText !== undefined && shouldCollapseMarkdown(effectiveOutputText);
               const videoOutputStorageStatus =
@@ -10158,6 +10458,18 @@ export function App() {
                   }}
                   onPointerDown={(event) => {
                     event.stopPropagation();
+                    if (event.ctrlKey || event.metaKey) {
+                      setSelectedNodeIds((current) =>
+                        current.includes(node.id)
+                          ? current.filter((id) => id !== node.id)
+                          : [...current, node.id],
+                      );
+                      setSelectedNodeId(null);
+                      setSelectedEdgeId(null);
+                      setAddMenu(null);
+                      setGroupContextMenu(null);
+                      return;
+                    }
                     selectSingleNode(node.id, { preserveInspector: true });
                     setAddMenu(null);
 
@@ -10306,6 +10618,7 @@ export function App() {
                   <CanvasNodeBody
                     activeCanvas={activeCanvas}
                     node={node}
+                    isLowDetail={isLowDetailNode}
                     providers={providers}
                     isGenerating={isGenerating}
                     effectiveOutputText={effectiveOutputText}
