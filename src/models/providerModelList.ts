@@ -1,5 +1,6 @@
 import type { ProviderConfig, ProviderModelConfig, ProviderProtocol } from '../domain/provider';
 import { resolveProviderToken } from './generationClient';
+import { runtimeFetch } from './httpFetch';
 
 export type ProviderModelListRequest = {
   url: string;
@@ -32,7 +33,7 @@ export function buildProviderModelListRequest(provider: ProviderConfig): Provide
 
 export async function fetchProviderModelList(
   provider: ProviderConfig,
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = runtimeFetch,
 ): Promise<ProviderModelListResult> {
   try {
     const request = buildProviderModelListRequest(provider);

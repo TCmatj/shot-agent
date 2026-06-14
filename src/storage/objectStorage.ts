@@ -1,3 +1,5 @@
+import { runtimeFetch } from '../models/httpFetch';
+
 export type ObjectStorageConfig = {
   endpoint: string;
   bucket: string;
@@ -90,7 +92,7 @@ export function isRemoteAssetUrl(value?: string): boolean {
 }
 
 export async function uploadBlobToR2(input: UploadBlobToR2Input): Promise<string> {
-  const fetcher = input.fetcher ?? fetch;
+  const fetcher = input.fetcher ?? runtimeFetch;
   const endpoint = normalizeUrlBase(input.config.endpoint);
   const publicBaseURL = normalizeUrlBase(input.config.publicBaseURL);
   const objectKey = normalizeObjectKey(input.key);
@@ -168,7 +170,7 @@ export async function uploadBlobToAssetEndpoint(
   formData.set('nodeId', input.nodeId);
   formData.set('file', input.blob, input.filename);
 
-  const response = await (input.fetcher ?? fetch)(endpoint, {
+  const response = await (input.fetcher ?? runtimeFetch)(endpoint, {
     method: 'POST',
     body: formData,
   });

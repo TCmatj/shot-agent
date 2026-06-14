@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   clampScale,
+  filterVisibleCanvasNodes,
   getCanvasContentBounds,
   getCanvasViewportBounds,
   getViewportForCanvasCenter,
@@ -92,5 +93,55 @@ describe('canvas viewport', () => {
       width: 640,
       height: 540,
     });
+  });
+
+  it('keeps selected nodes visible even when fully outside the viewport', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 800, maxY: 600, width: 800, height: 600 };
+    const node = {
+      id: 'node_selected',
+      title: '选中节点',
+      modelId: 'gpt-image-2',
+      kind: 'image' as const,
+      x: 5000,
+      y: 5000,
+    };
+
+    expect(
+      filterVisibleCanvasNodes([node], bounds, {
+        selectedNodeId: 'node_selected',
+        selectedNodeIds: new Set(),
+      }),
+    ).toHaveLength(1);
+  });
+
+  it('uses measured height so a tall node partly inside the viewport is not culled', () => {
+    // 视口位于 canvas 坐标 y∈[-240, 1040]（含 overscan）。
+    const bounds = { minX: -240, minY: -240, maxX: 1040, maxY: 1040, width: 1280, height: 1280 };
+    // 高节点：顶部在视口上方（y=-500），但真实高度 700，底部到 200 仍在视口内。
+    const node = {
+      id: 'node_tall',
+      title: '高节点',
+      modelId: 'gpt-image-2',
+      kind: 'image' as const,
+      x: 100,
+      y: -500,
+    };
+
+    // 无实测高度：估算高度 220 → 底部 -280 < minY(-240) → 被误剔除（复现 bug）。
+    expect(
+      filterVisibleCanvasNodes([node], bounds, {
+        selectedNodeId: null,
+        selectedNodeIds: new Set(),
+      }),
+    ).toHaveLength(0);
+
+    // 有实测高度 700：底部 200 > minY → 保留（修复后行为）。
+    expect(
+      filterVisibleCanvasNodes([node], bounds, {
+        selectedNodeId: null,
+        selectedNodeIds: new Set(),
+        measuredHeights: new Map([['node_tall', 700]]),
+      }),
+    ).toHaveLength(1);
   });
 });

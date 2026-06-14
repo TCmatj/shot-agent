@@ -1859,6 +1859,21 @@ button:disabled {
   word-break: break-word;
 }
 
+/* 画布节点内：让提示词编辑区随节点拉高而填充剩余空间，配合生成按钮的 margin-top:auto
+   贴底，避免拉长后提示词与按钮之间出现留白。仅作用于节点 body 的直接 prompt（image/video/chat）。 */
+.node-body > .prompt-reference-field {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.node-body > .prompt-reference-field > .prompt-reference-editor {
+  flex: 1 1 auto;
+  min-height: 96px;
+  overflow: auto;
+}
+
 .prompt-reference-editor:focus {
   background:
     linear-gradient(180deg, rgba(16, 20, 26, 0.98), rgba(10, 13, 18, 0.98)),
@@ -3635,6 +3650,15 @@ body.preview-image-zoomed .canvas-navigation-panel {
 
 .node-inline-video-generate-button {
   width: 100%;
+}
+
+/* 将生成按钮区锚定到节点 body 底部：节点被右下角拉长（高度增大）后，
+   按钮跟随节点底部下移，而不是停在内容流位置。未拉长时无多余空间，行为不变。
+   - .node-inline-video-actions：视频节点（按钮包裹在 div 内）
+   - .node-inline-generate-action：图片/对话节点（生成按钮本身） */
+.node-inline-video-actions,
+.node-inline-generate-action {
+  margin-top: auto;
 }
 
 .node-inline-story-action-button {

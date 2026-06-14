@@ -137,3 +137,44 @@ export function getCanvasViewportBounds(
     height: maxY - minY,
   };
 }
+
+// 节点矩形与视口边界是否相交（标准 AABB 相交测试）。
+// 注意：height 必须取节点真实可见高度，否则边缘的高节点会被误判为出界。
+export function isNodeWithinViewport(
+  node: { x: number; y: number },
+  bounds: Bounds,
+  width: number,
+  height: number,
+): boolean {
+  return (
+    node.x <= bounds.maxX &&
+    node.x + width >= bounds.minX &&
+    node.y <= bounds.maxY &&
+    node.y + height >= bounds.minY
+  );
+}
+
+// 视口剔除：选中节点恒保留；其余节点用「实测高度优先、否则估算高度」做相交判断。
+// measuredHeights 由 ResizeObserver 在运行时测量，解决内容撑开后真实高度大于估算值的问题。
+export function filterVisibleCanvasNodes(
+  nodes: CanvasNodeView[],
+  bounds: Bounds,
+  options: {
+    selectedNodeId: string | null;
+    selectedNodeIds: Set<string>;
+    measuredHeights?: Map<string, number>;
+  },
+): CanvasNodeView[] {
+  const { selectedNodeId, selectedNodeIds, measuredHeights } = options;
+
+  return nodes.filter((node) => {
+    if (node.id === selectedNodeId || selectedNodeIds.has(node.id)) {
+      return true;
+    }
+
+    const width = getCanvasNodeWidth(node);
+    const height = measuredHeights?.get(node.id) ?? getCanvasNodeHeight(node);
+
+    return isNodeWithinViewport(node, bounds, width, height);
+  });
+}

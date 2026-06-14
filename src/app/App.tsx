@@ -170,6 +170,7 @@ import {
   type CanvasWorkspaceState,
 } from './canvasWorkspace';
 import {
+  filterVisibleCanvasNodes,
   getCanvasViewportBounds,
   getCanvasContentBounds,
   getViewportForCanvasCenter,
@@ -528,10 +529,10 @@ const InlineOptionSelect = memo(function InlineOptionSelect({
       }
     }
 
-    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('pointerdown', handlePointerDown, true);
     window.addEventListener('keydown', handleKeyDown);
     return () => {
-      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('pointerdown', handlePointerDown, true);
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isOpen, setOpenMenuKey]);
@@ -584,6 +585,11 @@ const InlineOptionSelect = memo(function InlineOptionSelect({
                 className={isActive ? 'is-active' : ''}
                 role="option"
                 aria-selected={isActive}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  onChange(option.value);
+                  setOpenMenuKey(null);
+                }}
                 onClick={() => {
                   onChange(option.value);
                   setOpenMenuKey(null);
@@ -2983,6 +2989,7 @@ const CanvasNodeBody = memo(function CanvasNodeBody({
           ) : (
             <button
               type="button"
+              className="node-inline-generate-action"
               disabled={isGenerating}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => void onSubmitNodeGeneration(node)}
@@ -4648,6 +4655,66 @@ export function App() {
     () => new Map(renderedCanvasNodes.map((node) => [node.id, node])),
     [renderedCanvasNodes],
   );
+  const [measuredNodeHeights, setMeasuredNodeHeights] = useState<Map<string, number>>(
+    () => new Map(),
+  );
+  const nodeHeightObserverRef = useRef<ResizeObserver | null>(null);
+  // 在 render 阶段 lazy 创建 observer（而非 useEffect/passive effect），确保 article 的
+  // ref callback（commit 阶段，早于 passive effect）执行时 observer 已就绪，节点能被真正
+  // observe；否则 ref callback 先于 useEffect 运行、observer 仍为 null，测量永不生效。
+  if (
+    nodeHeightObserverRef.current === null &&
+    typeof window !== 'undefined' &&
+    typeof ResizeObserver !== 'undefined'
+  ) {
+    nodeHeightObserverRef.current = new ResizeObserver((entries) => {
+      setMeasuredNodeHeights((previous) => {
+        let next = previous;
+
+        for (const entry of entries) {
+          const element = entry.target as HTMLElement;
+          const nodeId = element.dataset.nodeId;
+
+          if (!nodeId) {
+            continue;
+          }
+
+          const measured = entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height;
+          const height = Math.round(measured);
+
+          if (height > 0 && previous.get(nodeId) !== height) {
+            if (next === previous) {
+              next = new Map(previous);
+            }
+            next.set(nodeId, height);
+          }
+        }
+
+        return next;
+      });
+    });
+  }
+  useEffect(() => {
+    const observer = nodeHeightObserverRef.current;
+
+    if (!observer) {
+      return;
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+  const observeNodeElement = useCallback((element: HTMLElement | null) => {
+    const observer = nodeHeightObserverRef.current;
+
+    if (!observer || !element) {
+      return;
+    }
+
+    observer.observe(element);
+    return () => observer.unobserve(element);
+  }, []);
   const visibleCanvasBounds = useMemo(
     () =>
       canvasSize && canvasSize.width > 0 && canvasSize.height > 0
@@ -4660,22 +4727,18 @@ export function App() {
       return renderedCanvasNodes;
     }
 
-    return renderedCanvasNodes.filter((node) => {
-      if (node.id === selectedNodeId || selectedNodeIdSet.has(node.id)) {
-        return true;
-      }
-
-      const width = getCanvasNodeWidth(node);
-      const height = getCanvasNodeHeight(node);
-
-      return (
-        node.x <= visibleCanvasBounds.maxX &&
-        node.x + width >= visibleCanvasBounds.minX &&
-        node.y <= visibleCanvasBounds.maxY &&
-        node.y + height >= visibleCanvasBounds.minY
-      );
+    return filterVisibleCanvasNodes(renderedCanvasNodes, visibleCanvasBounds, {
+      selectedNodeId,
+      selectedNodeIds: selectedNodeIdSet,
+      measuredHeights: measuredNodeHeights,
     });
-  }, [renderedCanvasNodes, selectedNodeId, selectedNodeIdSet, visibleCanvasBounds]);
+  }, [
+    renderedCanvasNodes,
+    selectedNodeId,
+    selectedNodeIdSet,
+    visibleCanvasBounds,
+    measuredNodeHeights,
+  ]);
   const visibleCanvasNodes = useMemo(() => {
     const previous = stableVisibleCanvasNodesRef.current;
 
@@ -10074,6 +10137,8 @@ export function App() {
               return (
                 <article
                   key={node.id}
+                  data-node-id={node.id}
+                  ref={observeNodeElement}
                   className={`canvas-node canvas-node-${node.kind} ${
                     node.id === selectedNodeId || selectedNodeIdSet.has(node.id)
                       ? 'is-selected'
