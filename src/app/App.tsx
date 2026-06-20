@@ -86,6 +86,7 @@ import {
 import type { ChatFormat, ProviderConfig, VideoModelFormat } from '../domain/provider';
 import { initialProviders } from '../models/providerCatalog';
 import { fetchProviderModelList, mergeFetchedProviderModels } from '../models/providerModelList';
+import { runtimeFetch } from '../models/httpFetch';
 import {
   appendOutputVersion,
   getLatestOutputVersion,
@@ -9112,7 +9113,9 @@ export function App() {
 
       if (imageSource) {
         try {
-          const blob = await (await fetch(imageSource)).blob();
+          // 桌面端用 runtimeFetch（Tauri HTTP 插件）绕过 WebView2 的 CORS/TLS 限制，
+          // 避免 Windows 上拉取远程图片 URL 时 fetch 挂起导致任务永久卡在"处理中"。
+          const blob = await (await runtimeFetch(imageSource)).blob();
           const generatedName = `${node.id}-${Date.now()}.png`;
           savedImageAsset =
             rootDirectoryHandle && folderStorageReady
